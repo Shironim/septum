@@ -1,0 +1,62 @@
+{
+  "name": "septum",
+  "version": "0.1.0",
+  "description": "Deterministic Bounded-Context, Structural File Catalog & Anti-Poisoning Partition for AI Agents",
+  "type": "module",
+  "main": "src/index.ts",
+  "bin": {
+    "septum": "./bin/septum.ts"
+  },
+  "engines": {
+    "bun": ">=1.1.0"
+  },
+  "scripts": {
+    "start": "bun run bin/septum.ts",
+    "serve": "bun run bin/septum.ts serve",
+    "ingest": "bun run bin/septum.ts ingest",
+    "sync": "bun run bin/septum.ts sync",
+    "check": "bun run bin/septum.ts check",
+    "test": "bun test",
+    "build": "bun build ./bin/septum.ts --compile --outfile dist/septum",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.5.0",
+    "web-tree-sitter": "^0.24.0",
+    "yaml": "^2.7.0",
+    "zod": "^3.24.2"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/shironim/septum.git"
+  },
+  "homepage": "https://github.com/shironim/septum#readme",
+  "bugs": {
+    "url": "https://github.com/shironim/septum/issues"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "bounded-context",
+    "architecture",
+    "ai-agent",
+    "tree-sitter",
+    "clean-architecture",
+    "domain-driven-design",
+    "codebase-catalog",
+    "antigravity"
+  ],
+  "files": [
+    "bin",
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "devDependencies": {
+    "@types/bun": "latest",
+    "@types/node": "^22.13.4",
+    "tree-sitter-wasms": "^0.1.13",
+    "typescript": "^5.7.3"
+  }
+}

@@ -1,0 +1,25 @@
+# Septum Local Database & Cache
+.septum/
+*.db
+*.db-shm
+*.db-wal
+
+# Version Control & Agent Workspace
+.git/
+.gitignore
+.codegraph/
+.agents/
+.husky/
+
+# Tests & Reports
+tests/
+test/
+coverage/
+report.txt
+report*.txt
+
+# IDE & OS
+.vscode/
+.idea/
+.DS_Store
+*.log

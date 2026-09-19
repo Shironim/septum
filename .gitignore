@@ -1,0 +1,65 @@
+# Dependencies
+node_modules/
+.bun/
+
+# Build & Compilation Output
+dist/
+build/
+out/
+*.tsbuildinfo
+
+# Septum Database & Runtime State
+.septum/septum.db
+.septum/*.db
+.septum/*.db-journal
+.septum/*.db-wal
+.septum/*.db-shm
+
+# Environment Variables & Secrets
+.env
+.env.*
+!.env.example
+*.local
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+bun.lockb
+bun.lock
+
+# Test & Coverage
+coverage/
+.nyc_output/
+
+# IDE & Editor Configurations
+.idea/
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+*.sublime-project
+*.sublime-workspace
+*.swp
+*.swo
+
+# Operating System Files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Agent & Brain Scratch Files
+.system_generated/
+scratch/
+tmp/
+.agents/
+.codegraph/
+report*.txt
+
+# Septum local runtime directory
+.septum/
