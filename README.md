@@ -11,14 +11,26 @@ Septum stops **context poisoning** in AI coding agents. It indexes your codebase
 
 ---
 
-## Quick Start
+## Installation
 
-### 1. Initialize in Any Project (Zero-Install)
+Install Septum globally using [Bun](https://bun.sh):
 
 ```bash
-bunx septum init
-# or if installed globally:
+bun add -g septum
+```
+
+> **Note:** You can also run commands on-the-fly without global installation using `bunx septum <command>`.
+
+---
+
+## Quick Start
+
+### 1. Initialize in Any Project
+
+```bash
 septum init
+# or zero-install via bunx:
+bunx septum init
 ```
 *Auto-detects project topology (Monorepos, Laravel, Next.js, Go, NestJS), registers domains, and ingests AST symbols into `.septum/septum.db`.*
 
@@ -30,13 +42,13 @@ Add Septum to your MCP client (`mcp.json` or `claude_desktop_config.json`):
 {
   "mcpServers": {
     "septum": {
-      "command": "bunx",
-      "args": ["septum", "serve"]
+      "command": "septum",
+      "args": ["serve"]
     }
   }
 }
 ```
-*(Or `"command": "septum", "args": ["serve"]` if installed globally via `bun add -g septum`).*
+*(Or use `"command": "bunx", "args": ["septum", "serve"]` if running without global installation).*
 
 ---
 
