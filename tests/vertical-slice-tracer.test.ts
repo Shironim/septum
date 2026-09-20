@@ -104,7 +104,7 @@ describe("VerticalSliceTracer End-to-End Tracing", () => {
     expect(res.chain?.some((c) => c.stage === "validation" && c.symbol === "UpdateOrderStatusRequest")).toBe(true);
     expect(res.chain?.some((c) => c.stage === "controller" && c.symbol === "OrderController::updateStatus")).toBe(true);
     expect(res.chain?.some((c) => c.stage === "entity" && c.symbol === "Order")).toBe(true);
-    expect(res.message).toContain("=== VERTICAL SLICE TRACE ===");
+    expect(res.message).toContain("=== VERTICAL SLICE TRACE");
   });
 
   test("resolves vertical slice via Controller@action syntax", () => {

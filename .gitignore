@@ -63,3 +63,6 @@ report*.txt
 
 # Septum local runtime directory
 .septum/
+
+# Septum local database and cache
+.septum/*.db*

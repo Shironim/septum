@@ -9,15 +9,15 @@
     "noEmit": true,
     "composite": true,
     "strict": true,
-    "downlevelIteration": true,
     "skipLibCheck": true,
     "jsx": "preserve",
     "allowSyntheticDefaultImports": true,
     "forceConsistentCasingInFileNames": true,
     "allowJs": true,
     "types": [
-      "bun-types"
-    ]
+      "bun"
+    ],
+    "resolveJsonModule": true
   },
   "include": [
     "src/**/*",

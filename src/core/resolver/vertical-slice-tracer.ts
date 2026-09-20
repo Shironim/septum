@@ -22,6 +22,7 @@ export class VerticalSliceTracer {
    */
   public trace(rawQuery: string): VerticalSliceTraceResponse {
     const trimmed = rawQuery.trim();
+    const lowerTrimmed = trimmed.toLowerCase();
     let allSlices = this.repo.getAllVerticalSlices();
 
     // Lazy fallback: If no slices cataloged, attempt heuristic call-graph tracing

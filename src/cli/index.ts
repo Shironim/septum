@@ -1,4 +1,6 @@
+import { parseArgs } from "node:util";
 import { SessionManager } from "../core/session/session-manager.ts";
+import { SEPTUM_VERSION } from "../version.ts";
 import { handleCheckCommand } from "./commands/check.ts";
 import { handleHookCommand } from "./commands/hook.ts";
 import { handleIngestCommand } from "./commands/ingest.ts";
@@ -10,23 +12,47 @@ import { handleSliceCommand } from "./commands/slice.ts";
 import { handleSyncCommand } from "./commands/sync.ts";
 
 export async function runCLI(argv: string[]): Promise<void> {
-  const args = argv.slice(2);
-  const command = args[0];
+  let parsed;
+  try {
+    parsed = parseArgs({
+      args: argv.slice(2),
+      options: {
+        help: { type: "boolean", short: "h" },
+        version: { type: "boolean", short: "v" },
+        force: { type: "boolean", short: "f" },
+        json: { type: "boolean" },
+        strict: { type: "boolean" },
+        staged: { type: "boolean" },
+        domain: { type: "string", short: "d" },
+        archetype: { type: "string", short: "a" },
+        feature: { type: "string" },
+      },
+      allowPositionals: true,
+      strict: false,
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`\x1b[31m[Septum Error]\x1b[0m ${message}`);
+    process.exit(1);
+  }
 
-  if (!command || command === "--help" || command === "-h" || command === "help") {
-    printHelp();
+  const { values: flags, positionals } = parsed;
+  const command = positionals[0];
+
+  if (flags.version || command === "version") {
+    console.log(`Septum v${SEPTUM_VERSION}`);
     return;
   }
 
-  if (command === "--version" || command === "-v" || command === "version") {
-    console.log("Septum v0.1.0");
+  if (flags.help || !command || command === "help") {
+    printHelp();
     return;
   }
 
   try {
     switch (command) {
       case "init": {
-        const force = args.includes("--force") || args.includes("-f");
+        const force = Boolean(flags.force);
         await handleInitCommand(force);
         break;
       }
@@ -37,58 +63,46 @@ export async function runCLI(argv: string[]): Promise<void> {
       }
 
       case "sync": {
-        const json = args.includes("--json");
+        const json = Boolean(flags.json);
         await handleSyncCommand({ json });
         break;
       }
 
       case "query": {
-        const domainName = args[1] && !args[1].startsWith("-") ? args[1] : undefined;
-        let archetype: string | undefined;
-        const archIndex = args.indexOf("--archetype");
-        if (archIndex !== -1 && args[archIndex + 1]) {
-          archetype = args[archIndex + 1];
-        }
-        const jsonOutput = args.includes("--json");
+        const domainName = positionals[1];
+        const archetype = typeof flags.archetype === "string" ? flags.archetype : undefined;
+        const jsonOutput = Boolean(flags.json);
         await handleQueryCommand(domainName, archetype, jsonOutput);
         break;
       }
 
       case "locate": {
-        const query = args[1];
+        const query = positionals[1];
         if (!query) {
           console.error("Usage: septum locate <symbol-or-error> [--domain <domain>] [--json]");
           process.exit(1);
         }
-        let domain: string | undefined;
-        const domIndex = args.indexOf("--domain");
-        if (domIndex !== -1 && args[domIndex + 1]) {
-          domain = args[domIndex + 1];
-        }
-        const json = args.includes("--json");
+        const domain = typeof flags.domain === "string" ? flags.domain : undefined;
+        const json = Boolean(flags.json);
         await handleLocateCommand(query, { domain, json });
         break;
       }
 
       case "slice": {
-        const query = args[1];
+        const query = positionals[1];
         if (!query) {
           console.error("Usage: septum slice <route-or-intent> [--json]");
           process.exit(1);
         }
-        const json = args.includes("--json");
+        const json = Boolean(flags.json);
         await handleSliceCommand(query, { json });
         break;
       }
 
       case "check": {
-        const strict = args.includes("--strict");
-        const staged = args.includes("--staged");
-        let feature: string | undefined;
-        const featIndex = args.indexOf("--feature");
-        if (featIndex !== -1 && args[featIndex + 1]) {
-          feature = args[featIndex + 1];
-        }
+        const strict = Boolean(flags.strict);
+        const staged = Boolean(flags.staged);
+        const feature = typeof flags.feature === "string" ? flags.feature : undefined;
         await handleCheckCommand({ strict, staged, feature });
         break;
       }
@@ -99,7 +113,7 @@ export async function runCLI(argv: string[]): Promise<void> {
       }
 
       case "feature": {
-        const sub = args[1];
+        const sub = positionals[1];
         if (sub === "clear") {
           const cleared = SessionManager.clearActiveSession(process.cwd());
           if (cleared) {
@@ -126,7 +140,7 @@ export async function runCLI(argv: string[]): Promise<void> {
       }
 
       case "hook": {
-        await handleHookCommand(args);
+        await handleHookCommand(argv.slice(2));
         break;
       }
 
@@ -146,33 +160,40 @@ export async function runCLI(argv: string[]): Promise<void> {
 function printHelp(): void {
   console.log(`
 Septum — Deterministic Bounded-Context & Structural File Catalog
-Version: 0.1.0
+Version: v${SEPTUM_VERSION}
 
 USAGE:
   septum <command> [options]
+  septum [flags]
 
 COMMANDS:
-  init                  Initialize configuration, gitignore, pre-commit hook, and ingest catalog
-                        Options:
-                          --force, -f           Overwrite existing catalog and configuration
-  ingest                Scan codebase, parse AST, and synchronize .septum/septum.db
-  sync                  Fast incremental synchronization of changed files to SQLite SSOT
-                        Options:
-                          --json                Output formatted JSON metrics
-  query [domain]        Query structural catalog for a domain or list all domains
-                        Options:
-                          --archetype <name>    Filter by archetype (service, model, controller)
-                          --json                Output formatted JSON
-  check                 Audit codebase for cross-domain boundary violations
-                        Options:
-                          --staged              Audit only git staged changes (ideal for pre-commit)
-                          --feature <name>      Enforce feature-specific allowed_touchpoints
-                          --strict              Exit with code 1 on any violation
-  feature [status|clear] View or release active feature context session lock
-  serve                 Start Model Context Protocol (MCP) server over stdio
+  Catalog & Ingestion:
+    init                  Initialize configuration, gitignore, pre-commit hook, and catalog
+                          Flags: -f, --force
+    ingest                Full AST scan and synchronization to SQLite database
+    sync                  Incremental fast synchronization of modified files
+                          Flags: --json
 
-FLAGS:
-  -h, --help            Show this help message
-  -v, --version         Show current version
+  Structural Discovery:
+    query [domain]        Query structural catalog for a domain or whole project
+                          Flags: -a, --archetype <name>, --json
+    locate <query>        Locate symbol, class, interface, method, or error source
+                          Flags: -d, --domain <name>, --json
+    slice <route|intent>  Trace end-to-end vertical execution slice for route/intent
+                          Flags: --json
+
+  Boundary & Enforcement:
+    check                 Audit codebase for cross-domain boundary violations
+                          Flags: --strict, --staged, --feature <name>
+    feature [status|clear] View or release active feature context session lock
+    hook [subhook]        Internal pre-tool guardrail hook (e.g. pre-write)
+
+  Daemon & Protocol:
+    serve                 Start Model Context Protocol (MCP) server over stdio
+
+GLOBAL FLAGS:
+  -h, --help              Show this help message
+  -v, --version           Show current version
+  --json                  Output formatted JSON metrics / results
 `);
 }

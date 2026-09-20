@@ -53,6 +53,7 @@ import {
   RegisterDomainSchema,
   TraceVerticalSliceSchema,
 } from "./schemas.ts";
+import { SEPTUM_VERSION } from "../version.ts";
 
 export async function runMCPServer(): Promise<void> {
   const config = ConfigLoader.load();
@@ -63,7 +64,7 @@ export async function runMCPServer(): Promise<void> {
   const server = new Server(
     {
       name: "septum-mcp-server",
-      version: "0.1.0",
+      version: SEPTUM_VERSION,
     },
     {
       capabilities: {
@@ -598,5 +599,14 @@ export async function runMCPServer(): Promise<void> {
   });
 
   await server.connect(transport);
-  console.error("[Septum MCP] Server started successfully on stdio transport.");
+  if (process.stdin.isTTY) {
+    console.error(
+      `\x1b[36m[Septum MCP]\x1b[0m Server daemon running on stdio (PID: ${process.pid}, v${SEPTUM_VERSION}).`
+    );
+    console.error(
+      `\x1b[36m[Septum MCP]\x1b[0m Listening for JSON-RPC client messages. Press Ctrl+C to terminate.`
+    );
+  } else {
+    console.error(`[Septum MCP] Server started successfully on stdio transport (v${SEPTUM_VERSION}).`);
+  }
 }
