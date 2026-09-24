@@ -201,23 +201,42 @@ export class ModuleResolver {
     return null;
   }
 
+  public toCanonicalPath(filePath: string): string {
+    let resolved = path.isAbsolute(filePath)
+      ? path.normalize(filePath)
+      : path.resolve(this.projectRoot, filePath);
+
+    if (process.platform === "win32") {
+      // Normalize drive letter to uppercase (e.g. c:\ -> C:\)
+      resolved = resolved.replace(/^[a-zA-Z]:/, (m) => m.toUpperCase());
+    }
+    return resolved;
+  }
+
   private isSubPathOrSame(targetPath: string, rootPath: string): boolean {
-    const normalizedTarget = path.normalize(targetPath);
-    const normalizedRoot = path.normalize(rootPath);
+    const canonicalTarget = this.toCanonicalPath(targetPath);
+    const canonicalRoot = this.toCanonicalPath(rootPath);
 
-    if (normalizedTarget === normalizedRoot) return true;
-    const rootWithSep = normalizedRoot.endsWith(path.sep)
-      ? normalizedRoot
-      : normalizedRoot + path.sep;
+    if (process.platform === "win32") {
+      const lowerTarget = canonicalTarget.toLowerCase();
+      const lowerRoot = canonicalRoot.toLowerCase();
+      if (lowerTarget === lowerRoot) return true;
+      const rootWithSep = lowerRoot.endsWith(path.sep)
+        ? lowerRoot
+        : lowerRoot + path.sep;
+      return lowerTarget.startsWith(rootWithSep);
+    }
 
-    return normalizedTarget.startsWith(rootWithSep);
+    if (canonicalTarget === canonicalRoot) return true;
+    const rootWithSep = canonicalRoot.endsWith(path.sep)
+      ? canonicalRoot
+      : canonicalRoot + path.sep;
+
+    return canonicalTarget.startsWith(rootWithSep);
   }
 
   private toAbsolutePath(filePath: string): string {
-    if (path.isAbsolute(filePath)) {
-      return path.normalize(filePath);
-    }
-    return path.resolve(this.projectRoot, filePath);
+    return this.toCanonicalPath(filePath);
   }
 
   private extractSymbolName(target: string): string | null {
