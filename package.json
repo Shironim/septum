@@ -1,6 +1,6 @@
 {
   "name": "septum",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Deterministic Bounded-Context, Structural File Catalog & Anti-Poisoning Partition for AI Agents",
   "type": "module",
   "main": "src/index.ts",
