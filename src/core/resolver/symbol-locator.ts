@@ -148,12 +148,109 @@ export class SymbolLocator {
     const containers = this.repo.findContainers(simpleContainerName);
 
     if (containers.length === 0) {
+      // Container not found directly: search for fuzzy container matches across the catalog
+      const allSymbols = this.repo.getAllSymbolsWithFiles();
+      const containerCandidates = allSymbols.filter((s) =>
+        ["class", "interface", "trait", "enum", "struct"].includes(s.kind)
+      );
+
+      // Score containers by similarity
+      const scoredContainers = containerCandidates
+        .map((s) => {
+          const bare = s.name.includes("::")
+            ? s.name.split("::")[0]
+            : s.name.split(/\\|\//).pop() || s.name;
+          const score = calculateSimilarity(simpleContainerName, bare);
+          return {
+            name: s.name,
+            bare,
+            kind: s.kind,
+            signature: s.signature,
+            line_start: s.line_start,
+            line_end: s.line_end,
+            file_path: s.file_path,
+            similarity_score: Math.round(score * 100) / 100,
+          };
+        })
+        .filter((c) => c.similarity_score >= 0.3)
+        .sort((a, b) => b.similarity_score - a.similarity_score);
+
+      // Deduplicate by name + file_path
+      const seenContainers = new Set<string>();
+      const uniqueContainers = scoredContainers.filter((c) => {
+        const key = `${c.name}@${c.file_path}`;
+        if (seenContainers.has(key)) return false;
+        seenContainers.add(key);
+        return true;
+      }).slice(0, 5);
+
+      // If a member was requested, prioritize methods within top fuzzy candidate containers
+      let memberSuggestions: SuggestionMatch[] = [];
+      if (memberName) {
+        const topCandidateFilePaths = new Set(uniqueContainers.map((c) => c.file_path));
+
+        const candidateMethods = allSymbols.filter(
+          (s) =>
+            (s.kind === "method" || s.kind === "function") &&
+            topCandidateFilePaths.has(s.file_path)
+        );
+
+        const methodsToScore =
+          candidateMethods.length > 0
+            ? candidateMethods
+            : allSymbols
+                .filter(
+                  (s) =>
+                    (s.kind === "method" || s.kind === "function") &&
+                    Math.abs(s.name.length - memberName.length) <= 8
+                )
+                .slice(0, 100);
+
+        memberSuggestions = methodsToScore
+          .map((s) => {
+            const bare = s.name.includes("::") ? s.name.split("::")[1] : s.name;
+            const score = calculateSimilarity(memberName, bare);
+            return {
+              name: s.name,
+              kind: s.kind,
+              signature: `${s.signature} (${s.file_path}:${s.line_start})`,
+              line_start: s.line_start,
+              line_end: s.line_end,
+              similarity_score: Math.round(score * 100) / 100,
+              file_path: s.file_path,
+            };
+          })
+          .filter((s) => s.similarity_score >= 0.35)
+          .sort((a, b) => b.similarity_score - a.similarity_score)
+          .slice(0, 5);
+      }
+
+      const suggestions: SuggestionMatch[] = uniqueContainers.map((c) => ({
+        name: c.name,
+        kind: c.kind,
+        signature: `${c.signature || c.kind} (${c.file_path}:${c.line_start})`,
+        line_start: c.line_start,
+        line_end: c.line_end,
+        similarity_score: c.similarity_score,
+        file_path: c.file_path,
+      }));
+
+      // Combine container suggestions with member suggestions if available
+      const combinedSuggestions = [...suggestions, ...memberSuggestions]
+        .sort((a, b) => b.similarity_score - a.similarity_score)
+        .slice(0, 7);
+
+      const topSuggestion = combinedSuggestions.length > 0 ? combinedSuggestions[0].name : null;
+      const hint = topSuggestion
+        ? ` Container '${containerQuery}' was not found. Did you mean '${topSuggestion}'?`
+        : ` Container '${containerQuery}' was not found in cataloged files.`;
+
       return {
         query: parsed.raw,
         parsed,
         found: false,
-        suggestions: [],
-        message: `Container '${containerQuery}' was not found in any cataloged files. Run 'septum ingest' if recently added.`,
+        suggestions: combinedSuggestions,
+        message: `${hint} Run 'septum ingest' if this file was recently added.`,
       };
     }
 
@@ -327,7 +424,9 @@ export class SymbolLocator {
     const suggestions: SuggestionMatch[] = allSymbols
       .map((s) => {
         const bareName = s.name.includes("::") ? s.name.split("::")[1] : s.name;
-        const score = calculateSimilarity(targetName, bareName);
+        const scoreBare = calculateSimilarity(targetName, bareName);
+        const scoreFull = calculateSimilarity(targetName, s.name);
+        const score = Math.max(scoreBare, scoreFull);
         return {
           name: s.name,
           kind: s.kind,
@@ -335,9 +434,10 @@ export class SymbolLocator {
           line_start: s.line_start,
           line_end: s.line_end,
           similarity_score: Math.round(score * 100) / 100,
+          file_path: s.file_path,
         };
       })
-      .filter((s) => s.similarity_score >= 0.35)
+      .filter((s) => s.similarity_score >= 0.3)
       .sort((a, b) => b.similarity_score - a.similarity_score)
       .slice(0, 5);
 
@@ -352,7 +452,9 @@ export class SymbolLocator {
 }
 
 /**
- * Standard Levenshtein distance with token substring bonus.
+ * Enhanced similarity matching:
+ * Combines Damerau-Levenshtein distance (handling typos & transpositions),
+ * prefix/suffix matching, substring inclusion, and token Jaccard similarity.
  */
 export function calculateSimilarity(source: string, target: string): number {
   const s1 = source.toLowerCase();
@@ -361,20 +463,43 @@ export function calculateSimilarity(source: string, target: string): number {
   if (s1 === s2) return 1.0;
   if (!s1 || !s2) return 0.0;
 
+  // Prefix bonus: highly relevant for autocomplete-style / partial searches
+  let prefixBonus = 0;
+  if (s2.startsWith(s1) || s1.startsWith(s2)) {
+    const minLen = Math.min(s1.length, s2.length);
+    const maxLen = Math.max(s1.length, s2.length);
+    prefixBonus = 0.25 * (minLen / maxLen);
+  }
+
   // Substring inclusion bonus
+  let substringBonus = 0;
   if (s2.includes(s1) || s1.includes(s2)) {
     const minLen = Math.min(s1.length, s2.length);
     const maxLen = Math.max(s1.length, s2.length);
-    return 0.5 + 0.5 * (minLen / maxLen);
+    substringBonus = 0.3 * (minLen / maxLen);
   }
 
-  // Token-based matching (e.g. calculateTotal vs recalculateOrder shares 'calculate')
-  const tokenize = (str: string) => str.replace(/([a-z])([A-Z])/g, "$1 $2").toLowerCase().split(/[\s_-]+/);
-  const t1 = tokenize(s1);
-  const t2 = tokenize(s2);
-  const sharedTokens = t1.filter((token) => t2.some((t) => t.includes(token) || token.includes(t)));
-  const tokenBonus = sharedTokens.length > 0 ? 0.3 : 0.0;
+  // Token-based matching (CamelCase, snake_case, kebab-case, namespaces)
+  const tokenize = (str: string) =>
+    str
+      .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+      .toLowerCase()
+      .split(/[\s_\-\.\:\/\\]+/)
+      .filter((t) => t.length > 1);
 
+  const t1 = tokenize(source);
+  const t2 = tokenize(target);
+  let tokenBonus = 0;
+  if (t1.length > 0 && t2.length > 0) {
+    const sharedTokens = t1.filter((token) =>
+      t2.some((t) => t.includes(token) || token.includes(t))
+    );
+    const allUniqueTokens = new Set([...t1, ...t2]);
+    const jaccard = sharedTokens.length / (allUniqueTokens.size || 1);
+    tokenBonus = jaccard * 0.35;
+  }
+
+  // Damerau-Levenshtein Matrix
   const len1 = s1.length;
   const len2 = s2.length;
   const matrix: number[][] = [];
@@ -389,11 +514,23 @@ export function calculateSimilarity(source: string, target: string): number {
   for (let i = 1; i <= len1; i++) {
     for (let j = 1; j <= len2; j++) {
       const cost = s1[i - 1] === s2[j - 1] ? 0 : 1;
-      matrix[i][j] = Math.min(
+      let minCost = Math.min(
         matrix[i - 1][j] + 1, // deletion
         matrix[i][j - 1] + 1, // insertion
         matrix[i - 1][j - 1] + cost // substitution
       );
+
+      // Transposition check (Damerau)
+      if (
+        i > 1 &&
+        j > 1 &&
+        s1[i - 1] === s2[j - 2] &&
+        s1[i - 2] === s2[j - 1]
+      ) {
+        minCost = Math.min(minCost, matrix[i - 2][j - 2] + 1);
+      }
+
+      matrix[i][j] = minCost;
     }
   }
 
@@ -401,5 +538,6 @@ export function calculateSimilarity(source: string, target: string): number {
   const maxLen = Math.max(len1, len2);
   const rawSimilarity = 1.0 - distance / maxLen;
 
-  return Math.min(1.0, Math.max(0.0, rawSimilarity + tokenBonus));
+  const totalScore = rawSimilarity + prefixBonus + substringBonus + tokenBonus;
+  return Math.min(1.0, Math.max(0.0, totalScore));
 }

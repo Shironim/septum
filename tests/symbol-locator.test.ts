@@ -56,6 +56,21 @@ describe("calculateSimilarity & Fuzzy Matching", () => {
     expect(score).toBeGreaterThan(0.4);
   });
 
+  test("splits CamelCase and awards token similarity bonus", () => {
+    const score = calculateSimilarity("calculateTotal", "recalculateOrder");
+    expect(score).toBeGreaterThan(0.4);
+  });
+
+  test("scores internal typo high (> 0.85) without requiring prefix or substring match", () => {
+    const score = calculateSimilarity("OrderControllr", "OrderController");
+    expect(score).toBeGreaterThan(0.85);
+  });
+
+  test("scores adjacent character transposition high (> 0.8) via Damerau-Levenshtein", () => {
+    const score = calculateSimilarity("getUser", "getUsre");
+    expect(score).toBeGreaterThan(0.8);
+  });
+
   test("ranks closest method highest", () => {
     const query = "calculateTotal";
     const methods = ["index", "store", "destroy", "recalculateOrder"];
@@ -96,5 +111,23 @@ describe("SymbolLocator Mock Resolution", () => {
     expect(result.sibling_methods).toContain("destroy");
     expect(result.suggestions.length).toBeGreaterThan(0);
     expect(result.suggestions[0].name).toBe("recalculateOrder");
+  });
+
+  test("suggests candidate container and scoped member when container name has a typo", () => {
+    const mockRepo: any = {
+      findContainers: () => [],
+      getAllSymbolsWithFiles: () => [
+        { name: "OrderController", kind: "class", signature: "class OrderController", line_start: 1, line_end: 50, file_path: "app/Http/Controllers/OrderController.php" },
+        { name: "OrderController::calculateTotal", kind: "method", signature: "public function calculateTotal()", line_start: 15, line_end: 25, file_path: "app/Http/Controllers/OrderController.php" },
+      ],
+      getSymbolsByFileId: () => [],
+    };
+
+    const locator = new SymbolLocator(mockRepo);
+    const result = locator.locate("Method OrderControllr::calculateTotal() does not exist");
+
+    expect(result.found).toBe(false);
+    expect(result.suggestions.length).toBeGreaterThan(0);
+    expect(result.message).toContain("OrderController");
   });
 });
