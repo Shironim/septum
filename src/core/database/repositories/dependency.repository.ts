@@ -276,4 +276,74 @@ export class DependencyRepository {
     };
   }
 
+  public getFileInboundImpact(filePath: string): {
+    direct_dependents_count: number;
+    top_consumers: string[];
+    symbols_count: number;
+    risk_level: "low" | "medium" | "high";
+  } {
+    const cleanPath = filePath.replace(/\\/g, "/");
+    const baseName = cleanPath.split("/").pop()?.replace(/\.[^.]+$/, "") || "";
+
+    const symbols = this.db
+      .query<{ name: string }, [string, string]>(
+        `SELECT s.name 
+         FROM symbols s 
+         JOIN files f ON s.file_id = f.id 
+         WHERE f.path = ? OR f.path LIKE ?`
+      )
+      .all(cleanPath, `%${cleanPath}`);
+
+    const matchedFiles = new Set<string>();
+
+    if (baseName.length >= 3) {
+      const depRows = this.db
+        .query<{ file: string }, [string, string, string]>(
+          `SELECT DISTINCT f.path AS file
+           FROM dependencies d
+           JOIN files f ON d.source_file_id = f.id
+           WHERE (d.target_symbol_or_path LIKE ? OR d.target_symbol_or_path LIKE ?)
+             AND f.path NOT LIKE ?`
+        )
+        .all(`%${cleanPath}%`, `%${baseName}%`, `%${cleanPath}`);
+
+      for (const row of depRows) {
+        matchedFiles.add(row.file);
+      }
+    }
+
+    for (const sym of symbols.slice(0, 8)) {
+      const symName = sym.name.split("::").pop() || sym.name;
+      if (symName.length >= 4) {
+        const symDeps = this.db
+          .query<{ file: string }, [string, string]>(
+            `SELECT DISTINCT f.path AS file
+             FROM dependencies d
+             JOIN files f ON d.source_file_id = f.id
+             WHERE d.target_symbol_or_path LIKE ?
+               AND f.path NOT LIKE ?
+             LIMIT 10`
+          )
+          .all(`%${symName}%`, `%${cleanPath}`);
+        for (const r of symDeps) {
+          matchedFiles.add(r.file);
+        }
+      }
+    }
+
+    const consumerList = Array.from(matchedFiles);
+    let riskLevel: "low" | "medium" | "high" = "low";
+    if (consumerList.length >= 5) {
+      riskLevel = "high";
+    } else if (consumerList.length >= 2) {
+      riskLevel = "medium";
+    }
+
+    return {
+      direct_dependents_count: consumerList.length,
+      top_consumers: consumerList.slice(0, 5),
+      symbols_count: symbols.length,
+      risk_level: riskLevel,
+    };
+  }
 }

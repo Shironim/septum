@@ -1,31 +1,44 @@
 import { existsSync } from "node:fs";
+import { isAbsolute, join } from "node:path";
 import { Database } from "bun:sqlite";
 import type { ValidatedSeptumConfig } from "./schema.ts";
 import { TopologyDetector } from "../discovery/topology-detector.ts";
 import { SeptumDatabase } from "../database/client.ts";
 import { SeptumRepository } from "../database/repository.ts";
+import { resolveWorkspaceRoot, isAppHostDirectory } from "../resolver/path-resolver.ts";
 
 export class ConfigLoader {
   /**
    * Loads configuration with SQLite as the Single Source of Truth (SSOT).
    * Automatically executes Zero-Config TopologyDetector if the database has no domains.
    */
-  public static load(dbPath: string = ".septum/septum.db"): ValidatedSeptumConfig {
+  public static load(
+    dbPath?: string,
+    projectRoot?: string
+  ): ValidatedSeptumConfig {
+    const root = resolveWorkspaceRoot(projectRoot);
+    const resolvedDbPath = dbPath
+      ? (isAbsolute(dbPath) ? dbPath : join(root, dbPath))
+      : join(root, ".septum", "septum.db");
+
     // 1. If database exists and has registered domains, load directly from SQLite SSOT
-    if (existsSync(dbPath)) {
-      const dbConfig = ConfigLoader.loadFromDatabaseOrDefaults(dbPath);
+    if (existsSync(resolvedDbPath)) {
+      const dbConfig = ConfigLoader.loadFromDatabaseOrDefaults(resolvedDbPath);
       if (Object.keys(dbConfig.domains).length > 0) {
         return dbConfig;
       }
     }
 
     // 2. Zero-Config Auto-Discovery: Discover project topology and persist to SQLite
-    const septumDb = new SeptumDatabase(dbPath);
-    const repo = new SeptumRepository(septumDb.raw);
-    TopologyDetector.discoverAndPersist(repo, process.cwd());
-    septumDb.close();
+    // Guard against running auto-discovery inside MCP host / IDE installation folders
+    if (!isAppHostDirectory(root)) {
+      const septumDb = new SeptumDatabase(resolvedDbPath);
+      const repo = new SeptumRepository(septumDb.raw);
+      TopologyDetector.discoverAndPersist(repo, root);
+      septumDb.close();
+    }
 
-    return ConfigLoader.loadFromDatabaseOrDefaults(dbPath);
+    return ConfigLoader.loadFromDatabaseOrDefaults(resolvedDbPath);
   }
 
   public static getDefaultConfig(): ValidatedSeptumConfig {

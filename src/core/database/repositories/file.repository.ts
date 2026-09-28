@@ -22,6 +22,13 @@ export class FileRepository {
       .all(domainId);
   }
 
+  public countFiles(): number {
+    const row = this.db
+      .query<{ count: number }, []>("SELECT COUNT(*) as count FROM files")
+      .get();
+    return row?.count ?? 0;
+  }
+
   public upsertFile(
     domainId: number,
     path: string,

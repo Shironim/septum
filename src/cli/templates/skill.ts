@@ -25,11 +25,14 @@ Skill ini berakar langsung pada riset rekayasa perangkat lunak terkemuka:
 
 ## 2. Kapan Wajib Menggunakan (Trigger Moments)
 
-Gunakan skill ini saat:
-1. Menghubungkan Septum pertama kali ke repositori baru atau codebase yang belum terpetakan.
+> [!NOTE] Zero-Config Default (\`septum init\`)
+> Untuk mayoritas proyek (library kecil/menengah, layered monolith standar, MVC, CLI, MCP tools), pengguna atau agen **cukup menjalankan \`septum init\`** di terminal. Perintah \`septum init\` secara default berjalan 100% otomatis tanpa wawancara manual (zero-config heuristic auto-detect & auto-ingest).
+
+Gunakan alur 4 langkah skill ini HANYA saat:
+1. Memetakan domain bisnis kustom / modular DDD enterprise yang kompleks di mana batasan dependency non-standar perlu disepakati bersama Tech Lead.
 2. Memetakan ulang domain bisnis setelah terjadi refactoring arsitektur besar (*re-mapping*).
-3. Mengonfigurasi fitur baru (\`features\` session) untuk mengunci daftar file yang boleh dimodifikasi (*allowed_touchpoints*) dan simbol yang wajib dipakai ulang (*reuse_symbols*).
-4. Pengguna meminta inisialisasi cerdas berbasis pemahaman AI pada struktur proyek.
+3. Mengonfigurasi sesi fitur baru (\`features\` session) untuk mengunci daftar file yang boleh dimodifikasi (*allowed_touchpoints*) dan simbol yang wajib dipakai ulang (*reuse_symbols*).
+4. Pengguna secara eksplisit meminta konsultasi desain domain boundary interaktif.
 
 ---
 

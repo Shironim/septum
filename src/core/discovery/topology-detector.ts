@@ -43,7 +43,73 @@ export class TopologyDetector {
     ".idea",
     ".agents",
     "bin",
+    "locales",
+    "resources",
+    "public",
+    "assets",
+    "static",
+    ".output",
+    ".nuxt",
+    ".next",
+    ".turbo",
+    ".cache",
   ]);
+
+  private static readonly SOURCE_EXTENSIONS = new Set([
+    ".ts",
+    ".js",
+    ".tsx",
+    ".jsx",
+    ".php",
+    ".py",
+    ".go",
+    ".rs",
+    ".vue",
+  ]);
+
+  /**
+   * Reads compilerOptions.paths from tsconfig.json or jsconfig.json.
+   */
+  public static readTsConfigPaths(projectRoot: string): Record<string, string[]> {
+    for (const file of ["tsconfig.json", "jsconfig.json"]) {
+      const fullPath = path.join(projectRoot, file);
+      if (fs.existsSync(fullPath)) {
+        try {
+          const raw = fs.readFileSync(fullPath, "utf-8");
+          const stripped = raw.replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, "");
+          const parsed = JSON.parse(stripped);
+          if (parsed.compilerOptions?.paths) {
+            return parsed.compilerOptions.paths;
+          }
+        } catch {
+          // Ignore tsconfig parse error
+        }
+      }
+    }
+    return {};
+  }
+
+  /**
+   * Checks whether a directory recursively contains any source code files.
+   */
+  private static hasSourceFiles(dir: string): boolean {
+    try {
+      const entries = fs.readdirSync(dir, { withFileTypes: true });
+      for (const entry of entries) {
+        if (entry.name.startsWith(".") || this.IGNORED_DIRS.has(entry.name)) continue;
+        const full = path.join(dir, entry.name);
+        if (entry.isFile()) {
+          const ext = path.extname(entry.name).toLowerCase();
+          if (this.SOURCE_EXTENSIONS.has(ext)) return true;
+        } else if (entry.isDirectory()) {
+          if (this.hasSourceFiles(full)) return true;
+        }
+      }
+    } catch {
+      // Ignore read errors
+    }
+    return false;
+  }
 
   /**
    * Detects project topology, classifies project type & architecture style, and maps domains.
@@ -213,9 +279,11 @@ export class TopologyDetector {
       }
     }
 
-    // 5. Fallback: Top-level directories
+    // 5. Fallback: Top-level directories that contain source code
     if (Object.keys(domains).length === 0) {
-      const topDirs = this.getSubdirectories(projectRoot);
+      const topDirs = this.getSubdirectories(projectRoot).filter((d) =>
+        this.hasSourceFiles(path.join(projectRoot, d))
+      );
       for (const d of topDirs) {
         domains[d.toLowerCase()] = {
           root: d,
@@ -384,8 +452,8 @@ export class TopologyDetector {
       return "generic-php";
     }
     if (language === "typescript" || language === "javascript") {
+      const pkgJson = path.join(projectRoot, "package.json");
       try {
-        const pkgJson = path.join(projectRoot, "package.json");
         if (fs.existsSync(pkgJson)) {
           const pkg = JSON.parse(fs.readFileSync(pkgJson, "utf-8"));
           const allDeps = { ...pkg.dependencies, ...pkg.devDependencies };

@@ -13,6 +13,7 @@ export type ArchetypeKind =
   | "request"
   | "resource"
   | "util"
+  | "view"
   | "unknown";
 
 export type SymbolKind =
@@ -23,7 +24,9 @@ export type SymbolKind =
   | "method"
   | "function"
   | "type"
-  | "property";
+  | "property"
+  | "component"
+  | "view";
 
 export type Visibility = "public" | "protected" | "private";
 

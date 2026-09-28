@@ -75,6 +75,10 @@ export class SeptumRepository {
     return this.files.getFileByPath(path);
   }
 
+  public countFiles(): number {
+    return this.files.countFiles();
+  }
+
   public getFilesByDomain(domainId: number): FileRecord[] {
     return this.files.getFilesByDomain(domainId);
   }
@@ -224,6 +228,15 @@ export class SeptumRepository {
 
   public getSymbolImpact(symbolName: string): GetSymbolImpactResponse {
     return this.dependencies.getSymbolImpact(symbolName);
+  }
+
+  public getFileInboundImpact(filePath: string): {
+    direct_dependents_count: number;
+    top_consumers: string[];
+    symbols_count: number;
+    risk_level: "low" | "medium" | "high";
+  } {
+    return this.dependencies.getFileInboundImpact(filePath);
   }
 
   // --- Metadata Methods ---
