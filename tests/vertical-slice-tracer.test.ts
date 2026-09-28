@@ -17,7 +17,7 @@ describe("LaravelSemanticExtractor Route Parser", () => {
 
     const parsed = extractor.parseRoutesContent(routeContent);
     expect(parsed.length).toBe(1);
-    expect(parsed[0].httpMethod).toBe("post");
+    expect(parsed[0].httpMethod).toBe("POST");
     expect(parsed[0].uri).toBe("/orders/{id}/status");
     expect(parsed[0].controllerClass).toBe("OrderController");
     expect(parsed[0].actionName).toBe("updateStatus");

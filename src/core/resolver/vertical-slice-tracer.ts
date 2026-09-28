@@ -5,9 +5,11 @@ import type {
 } from "../../types/index.ts";
 import type { SeptumRepository } from "../database/repository.ts";
 import { CallGraphTracer } from "./call-graph-tracer.ts";
+import { SemanticSliceExtractorRegistry } from "../parser/extractors/registry.ts";
+import { TopologyDetector } from "../discovery/topology-detector.ts";
 
 export class VerticalSliceTracer {
-  constructor(private repo: SeptumRepository) {}
+  constructor(private repo: SeptumRepository, private projectRoot: string = process.cwd()) {}
 
   /**
    * Trace an end-to-end vertical slice from route/action/intent query.
@@ -25,16 +27,29 @@ export class VerticalSliceTracer {
     const lowerTrimmed = trimmed.toLowerCase();
     let allSlices = this.repo.getAllVerticalSlices();
 
-    // Lazy fallback: If no slices cataloged, attempt heuristic call-graph tracing
-    if (allSlices.length === 0) {
+    // Lazy on-demand fallback: If no slices cataloged, extract framework routes or trace call-graph
+    const hasCatalogData = typeof (this.repo as any).getAllDomains === "function" && this.repo.getAllDomains().length > 0;
+    if (allSlices.length === 0 && hasCatalogData) {
       try {
-        const tracer = new CallGraphTracer(this.repo);
-        const traced = tracer.traceAllSlices();
-        if (traced.length > 0) {
-          for (const s of traced) {
+        const topology = TopologyDetector.detect(this.projectRoot);
+        const semanticSlices = SemanticSliceExtractorRegistry.extractAllSlicesSync(
+          this.projectRoot,
+          topology.framework
+        );
+        if (semanticSlices.length > 0) {
+          for (const s of semanticSlices) {
             this.repo.upsertVerticalSlice(s);
           }
           allSlices = this.repo.getAllVerticalSlices();
+        } else {
+          const tracer = new CallGraphTracer(this.repo, this.projectRoot);
+          const traced = tracer.traceAllSlices();
+          if (traced.length > 0) {
+            for (const s of traced) {
+              this.repo.upsertVerticalSlice(s);
+            }
+            allSlices = this.repo.getAllVerticalSlices();
+          }
         }
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
