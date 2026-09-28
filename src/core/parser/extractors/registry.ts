@@ -46,4 +46,25 @@ export class SemanticSliceExtractorRegistry {
 
     return combinedSlices;
   }
+
+  /**
+   * Synchronous execution of all matched semantic extractors.
+   */
+  public static extractAllSlicesSync(
+    projectRoot: string,
+    framework?: string,
+    domainId?: number
+  ): VerticalSliceCandidate[] {
+    const matched = this.getExtractors(projectRoot, framework);
+    const combinedSlices: VerticalSliceCandidate[] = [];
+
+    for (const extractor of matched) {
+      const res = extractor.extractSlices(projectRoot, domainId);
+      if (Array.isArray(res)) {
+        combinedSlices.push(...res);
+      }
+    }
+
+    return combinedSlices;
+  }
 }

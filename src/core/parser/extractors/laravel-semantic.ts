@@ -186,33 +186,12 @@ export class LaravelSemanticExtractor implements SemanticSliceExtractor {
   public parseRoutesContent(content: string): ParsedRoute[] {
     const routes: ParsedRoute[] = [];
 
-    // Match Route::(get|post|put|patch|delete)('uri', [Controller::class, 'action'])->name('...')
-    const methodRegex = /Route::(get|post|put|patch|delete|any)\s*\(\s*['"]([^'"]+)['"]\s*,\s*(?:\[\s*([A-Za-z0-9_]+)::class\s*,\s*['"]([A-Za-z0-9_]+)['"]\s*\]|['"]([A-Za-z0-9_]+)@([A-Za-z0-9_]+)['"])\s*\)(?:\s*->\s*name\s*\(\s*['"]([^'"]+)['"]\s*\))?/gi;
-
-    let match;
-    while ((match = methodRegex.exec(content)) !== null) {
-      const httpMethod = match[1];
-      const uri = match[2];
-      const controllerClass = match[3] || match[5];
-      const actionName = match[4] || match[6];
-      const routeName = match[7];
-
-      if (controllerClass && actionName) {
-        routes.push({
-          httpMethod,
-          uri,
-          routeName,
-          controllerClass,
-          actionName,
-        });
-      }
-    }
-
-    // Match Route::resource('orders', OrderController::class)
-    const resourceRegex = /Route::resource\s*\(\s*['"]([^'"]+)['"]\s*,\s*([A-Za-z0-9_]+)::class\s*\)/gi;
-    while ((match = resourceRegex.exec(content)) !== null) {
-      const baseUri = match[1];
-      const controllerClass = match[2];
+    // 1. Process Route::resource
+    const resourceRegex = /Route::resource\s*\(\s*['"]([^'"]+)['"]\s*,\s*([\\A-Za-z0-9_]+)::class\s*\)/gi;
+    let resMatch;
+    while ((resMatch = resourceRegex.exec(content)) !== null) {
+      const baseUri = resMatch[1].replace(/^\//, "");
+      const controllerClass = resMatch[2];
       const resourceActions = [
         { method: "GET", sub: "", action: "index" },
         { method: "GET", sub: "/create", action: "create" },
@@ -234,7 +213,187 @@ export class LaravelSemanticExtractor implements SemanticSliceExtractor {
       }
     }
 
+    // 2. Parse routes with group context tracking (prefix, controller, name prefix)
+    const lines = content.split(/\r?\n/);
+    interface GroupContext {
+      prefix: string;
+      controller: string;
+      namePrefix: string;
+      braceDepth: number;
+    }
+
+    const groupStack: GroupContext[] = [];
+    let currentBraceDepth = 0;
+    let statementBuffer = "";
+    let inStatement = false;
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      const trimmed = line.trim();
+
+      // Check group opens: Route::...group(
+      if (trimmed.includes("Route::") && trimmed.includes("group(") && trimmed.includes("function")) {
+        const prefixMatch = /prefix\s*\(\s*['"]([^'"]+)['"]\s*\)/.exec(trimmed);
+        const controllerMatch = /controller\s*\(\s*([\\A-Za-z0-9_]+)::class\s*\)/.exec(trimmed);
+        const nameMatch = /name\s*\(\s*['"]([^'"]+)['"]\s*\)/.exec(trimmed);
+
+        const currentCtx = groupStack[groupStack.length - 1];
+        const newPrefix = [currentCtx?.prefix, prefixMatch ? prefixMatch[1] : ""]
+          .filter(Boolean)
+          .join("/");
+        const newController = controllerMatch ? controllerMatch[1] : (currentCtx?.controller || "");
+        const newNamePrefix = [currentCtx?.namePrefix, nameMatch ? nameMatch[1] : ""]
+          .filter(Boolean)
+          .join("");
+
+        groupStack.push({
+          prefix: newPrefix,
+          controller: newController,
+          namePrefix: newNamePrefix,
+          braceDepth: currentBraceDepth,
+        });
+      }
+
+      // Track brace depth
+      for (const char of line) {
+        if (char === "{") currentBraceDepth++;
+        if (char === "}") {
+          currentBraceDepth--;
+          if (groupStack.length > 0) {
+            const top = groupStack[groupStack.length - 1];
+            if (currentBraceDepth <= top.braceDepth) {
+              groupStack.pop();
+            }
+          }
+        }
+      }
+
+      // Route statement accumulation across lines
+      if (!inStatement && trimmed.startsWith("Route::") && !trimmed.includes("Route::resource") && !trimmed.includes("Route::group")) {
+        statementBuffer = trimmed;
+        inStatement = true;
+      } else if (inStatement) {
+        statementBuffer += " " + trimmed;
+      }
+
+      if (inStatement && statementBuffer.includes(";")) {
+        inStatement = false;
+        const stmt = statementBuffer;
+        statementBuffer = "";
+
+        const currentCtx = groupStack[groupStack.length - 1];
+        const parsed = this.parseSingleRouteStatement(stmt, currentCtx);
+        if (parsed) {
+          routes.push(parsed);
+        }
+      }
+    }
+
     return routes;
+  }
+
+  private parseSingleRouteStatement(
+    stmt: string,
+    ctx?: { prefix: string; controller: string; namePrefix: string }
+  ): ParsedRoute | null {
+    const methodMatch = /Route::(get|post|put|patch|delete|any|options)\s*\(\s*['"]([^'"]+)['"]([\s\S]*)/i.exec(stmt);
+    if (!methodMatch) {
+      const viewMatch = /Route::view\s*\(\s*['"]([^'"]+)['"]\s*,\s*['"]([^'"]+)['"]/i.exec(stmt);
+      if (viewMatch) {
+        const rawUri = viewMatch[1];
+        const viewTarget = viewMatch[2];
+        const nameMatch = /->name\s*\(\s*['"]([^'"]+)['"]\s*\)/i.exec(stmt);
+        const fullUri = ctx?.prefix ? `/${ctx.prefix.replace(/^\/|\/$/g, "")}/${rawUri.replace(/^\//, "")}` : rawUri;
+        return {
+          httpMethod: "GET",
+          uri: fullUri.startsWith("/") ? fullUri : `/${fullUri}`,
+          routeName: (ctx?.namePrefix || "") + (nameMatch ? nameMatch[1] : ""),
+          controllerClass: "View",
+          actionName: viewTarget,
+        };
+      }
+      return null;
+    }
+
+    const httpMethod = methodMatch[1].toUpperCase();
+    let uri = methodMatch[2];
+    const rest = methodMatch[3];
+
+    if (ctx?.prefix) {
+      const cleanPrefix = ctx.prefix.replace(/^\/|\/$/g, "");
+      const cleanUri = uri.replace(/^\//, "");
+      uri = cleanUri ? `/${cleanPrefix}/${cleanUri}` : `/${cleanPrefix}`;
+    }
+    if (!uri.startsWith("/")) uri = `/${uri}`;
+
+    const nameMatch = /->name\s*\(\s*['"]([^'"]+)['"]\s*\)/i.exec(stmt);
+    const rawRouteName = nameMatch ? nameMatch[1] : undefined;
+    const fullRouteName = rawRouteName
+      ? (ctx?.namePrefix || "") + rawRouteName
+      : undefined;
+
+    // [Controller::class, 'action']
+    const arrayMatch = /\[\s*([\\A-Za-z0-9_]+)::class\s*,\s*['"]([A-Za-z0-9_]+)['"]\s*\]/.exec(rest);
+    if (arrayMatch) {
+      return {
+        httpMethod,
+        uri,
+        routeName: fullRouteName,
+        controllerClass: arrayMatch[1],
+        actionName: arrayMatch[2],
+      };
+    }
+
+    // 'Controller@action'
+    const stringActionMatch = /['"]([\\A-Za-z0-9_]+)@([A-Za-z0-9_]+)['"]/.exec(rest);
+    if (stringActionMatch) {
+      return {
+        httpMethod,
+        uri,
+        routeName: fullRouteName,
+        controllerClass: stringActionMatch[1],
+        actionName: stringActionMatch[2],
+      };
+    }
+
+    // Action inside controller group
+    if (ctx?.controller) {
+      const singleActionMatch = /,\s*['"]([A-Za-z0-9_]+)['"]/.exec(rest);
+      if (singleActionMatch) {
+        return {
+          httpMethod,
+          uri,
+          routeName: fullRouteName,
+          controllerClass: ctx.controller,
+          actionName: singleActionMatch[1],
+        };
+      }
+    }
+
+    // Invokable controller
+    const invokableMatch = /,\s*([\\A-Za-z0-9_]+)::class/.exec(rest);
+    if (invokableMatch) {
+      return {
+        httpMethod,
+        uri,
+        routeName: fullRouteName,
+        controllerClass: invokableMatch[1],
+        actionName: "__invoke",
+      };
+    }
+
+    // Closure
+    if (rest.includes("function")) {
+      return {
+        httpMethod,
+        uri,
+        routeName: fullRouteName,
+        controllerClass: "Closure",
+        actionName: "handle",
+      };
+    }
+
+    return null;
   }
 
   private resolveController(controllerClass: string, actionName: string): { filePath?: string; line: number } {

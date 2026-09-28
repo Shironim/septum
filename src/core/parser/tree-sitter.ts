@@ -1,5 +1,6 @@
 import type { ParsedFileAST } from "../../types/index.ts";
 import type { CodeExtractor } from "./extractors/base.ts";
+import { BladeExtractor } from "./extractors/blade.ts";
 import { FrontendExtractor } from "./extractors/frontend.ts";
 import { GoExtractor } from "./extractors/go.ts";
 import { PHPExtractor } from "./extractors/php.ts";
@@ -11,6 +12,7 @@ export class ASTParserEngine {
 
   constructor() {
     this.extractors = [
+      new BladeExtractor(),
       new FrontendExtractor(),
       new TypeScriptExtractor(),
       new PHPExtractor(),
