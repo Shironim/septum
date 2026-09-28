@@ -6,15 +6,45 @@ import type { SeptumRepository } from "../../core/database/repository.ts";
 export interface GetDomainCatalogArgs {
   domain?: string;
   archetype_filter?: string;
+  workspace_path?: string;
 }
 
 export function handleGetDomainCatalog(
   repo: SeptumRepository,
   config: ValidatedSeptumConfig,
-  args: GetDomainCatalogArgs
+  args: GetDomainCatalogArgs,
+  workspaceRoot?: string
 ) {
   if (!args.domain) {
     const allDomains = repo.getAllDomains();
+    if (allDomains.length === 0) {
+      const root = workspaceRoot || process.cwd();
+      const diagnostic = {
+        status: "NOT_INDEXED",
+        total_domains: 0,
+        message: `Workspace '${root}' belum memiliki domain terdaftar dalam Septum catalog.`,
+        suggested_action: {
+          tool: "septum_register_domain",
+          params: {
+            name: "core",
+            root: "src",
+            ingest_now: true,
+          },
+        },
+        agent_guidance:
+          "Panggil tool 'septum_register_domain(name: \"core\", root: \"src\", ingest_now: true)' untuk mendaftarkan dan mengindeks domain utama secara otomatis, atau jalankan 'septum init' di terminal workspace.",
+      };
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify(diagnostic, null, 2),
+          },
+        ],
+        metadata: diagnostic,
+      };
+    }
+
     const projectType = repo.getMeta("project_type") || "generic";
     const framework = repo.getMeta("framework") || "unknown";
     const archStyle = repo.getMeta("architecture_style") || "modular";

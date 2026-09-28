@@ -1,23 +1,44 @@
 import type { BoundaryEvaluator } from "../../core/boundary/evaluator.ts";
 import type { ValidatedSeptumConfig } from "../../core/config/schema.ts";
+import type { SeptumRepository } from "../../core/database/repository.ts";
 
 export interface CheckBoundaryArgs {
   file_path?: string;
+  filePath?: string;
+  file?: string;
+  path?: string;
   file_paths?: string[];
+  filePaths?: string[];
+  files?: string[];
+  paths?: string[];
   proposed_imports?: string[];
+  proposedImports?: string[];
+  imports?: string[];
   feature_key?: string;
+  featureKey?: string;
+  feature?: string;
 }
 
 export function handleCheckBoundary(
   evaluator: BoundaryEvaluator,
   config: ValidatedSeptumConfig,
-  args: CheckBoundaryArgs
+  args: CheckBoundaryArgs,
+  repo?: SeptumRepository
 ) {
+  const rawFilePaths = args.file_paths ?? args.filePaths ?? args.files ?? args.paths;
+  const rawFilePath = args.file_path ?? args.filePath ?? args.file ?? args.path;
+  const proposedImports = args.proposed_imports ?? args.proposedImports ?? args.imports ?? [];
+  const featureKey = args.feature_key ?? args.featureKey ?? args.feature;
+
   const filesToCheck: string[] = [];
-  if (args.file_paths && Array.isArray(args.file_paths) && args.file_paths.length > 0) {
-    filesToCheck.push(...args.file_paths);
-  } else if (args.file_path) {
-    filesToCheck.push(args.file_path);
+  if (rawFilePaths && Array.isArray(rawFilePaths) && rawFilePaths.length > 0) {
+    filesToCheck.push(...rawFilePaths);
+  } else if (rawFilePath) {
+    if (Array.isArray(rawFilePath)) {
+      filesToCheck.push(...rawFilePath);
+    } else {
+      filesToCheck.push(rawFilePath);
+    }
   } else {
     throw new Error("Missing required argument: specify either 'file_path' or 'file_paths'");
   }
@@ -25,11 +46,20 @@ export function handleCheckBoundary(
   // Multi-file batch evaluation
   if (filesToCheck.length > 1) {
     const results = filesToCheck.map((filePath) => {
-      const violations = evaluator.evaluate(filePath, args.proposed_imports ?? [], args.feature_key, config);
+      const violations = evaluator.evaluate(filePath, proposedImports, featureKey, config);
+      const impact = repo?.getFileInboundImpact(filePath);
       return {
         file: filePath,
         status: violations.length > 0 ? "rejected" : "approved",
         violations,
+        impact_summary: impact
+          ? {
+              direct_dependents: impact.direct_dependents_count,
+              top_consumers: impact.top_consumers,
+              symbols_count: impact.symbols_count,
+              risk_level: impact.risk_level,
+            }
+          : undefined,
       };
     });
 
@@ -60,7 +90,8 @@ export function handleCheckBoundary(
 
   // Single file evaluation (backward-compatible output)
   const singleFile = filesToCheck[0];
-  const violations = evaluator.evaluate(singleFile, args.proposed_imports ?? [], args.feature_key, config);
+  const violations = evaluator.evaluate(singleFile, proposedImports, featureKey, config);
+  const impact = repo?.getFileInboundImpact(singleFile);
 
   if (violations.length > 0) {
     return {
@@ -73,6 +104,14 @@ export function handleCheckBoundary(
               file: singleFile,
               violations_count: violations.length,
               violations,
+              impact_summary: impact
+                ? {
+                    direct_dependents: impact.direct_dependents_count,
+                    top_consumers: impact.top_consumers,
+                    symbols_count: impact.symbols_count,
+                    risk_level: impact.risk_level,
+                  }
+                : undefined,
               message: "Boundary violation detected. Proposed imports violate bounded context architecture.",
             },
             null,
@@ -91,7 +130,18 @@ export function handleCheckBoundary(
           {
             status: "approved",
             file: singleFile,
-            message: "No boundary violations detected. Proposed imports are permissible.",
+            impact_summary: impact
+              ? {
+                  direct_dependents: impact.direct_dependents_count,
+                  top_consumers: impact.top_consumers,
+                  symbols_count: impact.symbols_count,
+                  risk_level: impact.risk_level,
+                }
+              : undefined,
+            message:
+              impact && impact.direct_dependents_count > 0
+                ? `No boundary violations detected. Caution: ${impact.direct_dependents_count} dependent file(s) consume this file.`
+                : "No boundary violations detected. Proposed imports are permissible.",
           },
           null,
           2

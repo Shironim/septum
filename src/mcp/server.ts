@@ -54,12 +54,51 @@ import {
   TraceVerticalSliceSchema,
 } from "./schemas.ts";
 import { SEPTUM_VERSION } from "../version.ts";
+import { resolveWorkspaceRoot } from "../core/resolver/path-resolver.ts";
+import type { ValidatedSeptumConfig } from "../core/config/schema.ts";
 
-export async function runMCPServer(): Promise<void> {
-  const config = ConfigLoader.load();
+interface WorkspaceContext {
+  root: string;
+  config: ValidatedSeptumConfig;
+  db: SeptumDatabase;
+  repo: SeptumRepository;
+  evaluator: BoundaryEvaluator;
+  pipeline: IngestionPipeline;
+}
+
+const workspaceContextCache = new Map<string, WorkspaceContext>();
+
+function extractPathHint(args: Record<string, any> | undefined): string | undefined {
+  if (!args) return undefined;
+  if (typeof args.workspace_path === "string" && args.workspace_path) return args.workspace_path;
+  if (typeof args.target_path === "string" && args.target_path) return args.target_path;
+  if (typeof args.project_root === "string" && args.project_root) return args.project_root;
+  if (typeof args.file_path === "string" && args.file_path) return args.file_path;
+  if (Array.isArray(args.file_paths) && args.file_paths[0]) return args.file_paths[0];
+  if (typeof args.root === "string" && args.root) return args.root;
+  return undefined;
+}
+
+function getWorkspaceContext(pathHint?: string): WorkspaceContext {
+  const root = resolveWorkspaceRoot(pathHint);
+  let ctx = workspaceContextCache.get(root);
+  if (ctx) {
+    return ctx;
+  }
+
+  const config = ConfigLoader.load(undefined, root);
   const db = new SeptumDatabase(config.settings.db_path);
   const repo = new SeptumRepository(db.raw);
   const evaluator = new BoundaryEvaluator(repo);
+  const pipeline = new IngestionPipeline(repo, root);
+
+  ctx = { root, config, db, repo, evaluator, pipeline };
+  workspaceContextCache.set(root, ctx);
+  return ctx;
+}
+
+export async function runMCPServer(): Promise<void> {
+  const initialCtx = getWorkspaceContext();
 
   const server = new Server(
     {
@@ -297,7 +336,10 @@ export async function runMCPServer(): Promise<void> {
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: args } = request.params;
     const startTime = performance.now();
-    const activeSession = SessionManager.getActiveSession(process.cwd());
+    const pathHint = extractPathHint(args as Record<string, any>);
+    const ctx = getWorkspaceContext(pathHint);
+
+    const activeSession = SessionManager.getActiveSession(ctx.root);
     const sessionPayload = activeSession
       ? { feature_key: activeSession.feature_key, domain: activeSession.domain }
       : null;
@@ -316,7 +358,7 @@ export async function runMCPServer(): Promise<void> {
             ],
           };
         }
-        return handleGetDomainCatalog(repo, config, parsed.data);
+        return handleGetDomainCatalog(ctx.repo, ctx.config, parsed.data, ctx.root);
       } else if (name === "septum_get_feature_context") {
         const parsed = GetFeatureContextSchema.safeParse(args ?? {});
         if (!parsed.success) {
@@ -330,7 +372,7 @@ export async function runMCPServer(): Promise<void> {
             ],
           };
         }
-        return handleGetFeatureContext(repo, config, parsed.data);
+        return handleGetFeatureContext(ctx.repo, ctx.config, parsed.data);
       } else if (name === "septum_locate_symbol") {
         const parsed = LocateSymbolSchema.safeParse(args ?? {});
         if (!parsed.success) {
@@ -344,7 +386,7 @@ export async function runMCPServer(): Promise<void> {
             ],
           };
         }
-        return handleLocateSymbol(repo, config, parsed.data);
+        return await handleLocateSymbol(ctx.repo, ctx.config, parsed.data, ctx.pipeline, ctx.root);
       } else if (name === "septum_get_symbol") {
         const parsed = GetSymbolSchema.safeParse(args ?? {});
         if (!parsed.success) {
@@ -358,7 +400,7 @@ export async function runMCPServer(): Promise<void> {
             ],
           };
         }
-        return handleGetSymbol(repo, config, parsed.data);
+        return handleGetSymbol(ctx.repo, ctx.config, parsed.data);
       } else if (name === "septum_get_symbol_impact") {
         const parsed = GetSymbolImpactSchema.safeParse(args ?? {});
         if (!parsed.success) {
@@ -372,7 +414,7 @@ export async function runMCPServer(): Promise<void> {
             ],
           };
         }
-        return handleGetSymbolImpact(repo, config, parsed.data);
+        return handleGetSymbolImpact(ctx.repo, ctx.config, parsed.data);
       } else if (name === "septum_trace_vertical_slice") {
         const parsed = TraceVerticalSliceSchema.safeParse(args ?? {});
         if (!parsed.success) {
@@ -386,7 +428,7 @@ export async function runMCPServer(): Promise<void> {
             ],
           };
         }
-        return handleTraceVerticalSlice(repo, config, parsed.data);
+        return handleTraceVerticalSlice(ctx.repo, ctx.config, parsed.data);
       } else if (name === "septum_clear_feature_context") {
         const cleared = handleClearFeatureContext();
         return {
@@ -412,7 +454,7 @@ export async function runMCPServer(): Promise<void> {
             ],
           };
         }
-        return handleCheckBoundary(evaluator, config, parsed.data);
+        return handleCheckBoundary(ctx.evaluator, ctx.config, parsed.data, ctx.repo);
       } else if (name === "septum_get_symbol_hotspots") {
         const parsed = GetSymbolHotspotsSchema.safeParse(args ?? {});
         if (!parsed.success) {
@@ -426,7 +468,7 @@ export async function runMCPServer(): Promise<void> {
             ],
           };
         }
-        return handleGetSymbolHotspots(repo, config, parsed.data);
+        return handleGetSymbolHotspots(ctx.repo, ctx.config, parsed.data);
       } else if (name === "septum_register_domain") {
         const parsed = RegisterDomainSchema.safeParse(args ?? {});
         if (!parsed.success) {
@@ -440,7 +482,7 @@ export async function runMCPServer(): Promise<void> {
             ],
           };
         }
-        return await handleRegisterDomain(repo, config, parsed.data);
+        return await handleRegisterDomain(ctx.repo, ctx.config, parsed.data);
       } else {
         throw new Error(`Unknown tool: '${name}'`);
       }
@@ -522,7 +564,7 @@ export async function runMCPServer(): Promise<void> {
   ]);
 
   try {
-    const bgPipeline = new IngestionPipeline(repo);
+    const bgPipeline = initialCtx.pipeline;
     const cwd = process.cwd();
 
     fsWatcher = watch(cwd, { recursive: true }, (_event, filename) => {
@@ -569,13 +611,14 @@ export async function runMCPServer(): Promise<void> {
         // Ignore watcher close errors during shutdown
       }
     }
-    try {
-      db.close();
-      console.error("[Septum MCP] Database connection closed cleanly.");
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      console.error(`[Septum MCP] Error closing database during cleanup: ${msg}`);
+    for (const ctx of workspaceContextCache.values()) {
+      try {
+        ctx.db.close();
+      } catch (err) {
+        // Ignore close error during shutdown
+      }
     }
+    console.error("[Septum MCP] All database connections closed cleanly.");
     process.exit(0);
   };
 
@@ -590,11 +633,12 @@ export async function runMCPServer(): Promise<void> {
         // Ignore watcher close errors
       }
     }
-    try {
-      db.close();
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      console.error(`[Septum MCP] Error closing database on beforeExit: ${msg}`);
+    for (const ctx of workspaceContextCache.values()) {
+      try {
+        ctx.db.close();
+      } catch {
+        // Ignore close error
+      }
     }
   });
 

@@ -18,7 +18,8 @@ export function handleTraceVerticalSlice(
     );
   }
 
-  const tracer = new VerticalSliceTracer(repo);
+  const workspaceRoot = (config.settings as Record<string, unknown>)?.workspace_root as string || process.cwd();
+  const tracer = new VerticalSliceTracer(repo, workspaceRoot);
   const result: VerticalSliceTraceResponse = tracer.trace(args.query);
 
   let formattedText = "";
