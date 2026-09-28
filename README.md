@@ -61,6 +61,8 @@ Add Septum to your MCP client (`mcp.json` or `claude_desktop_config.json`):
 | `septum sync` | Fast incremental delta sync (< 15ms) for modified files |
 | `septum check --strict` | CI/CD gate: verify boundary integrity & fail on violations |
 | `septum query [domain]` | Inspect domain catalog, archetypes, and public signatures |
+| `septum locate <query>` | Locate symbol, class, interface, method, or error source |
+| `septum slice <route\|intent>` | Trace end-to-end vertical execution slice for route/intent |
 | `septum feature status\|clear` | Manage active feature lease and editing scope |
 | `septum serve` | Launch stdio MCP server for AI coding agents |
 
