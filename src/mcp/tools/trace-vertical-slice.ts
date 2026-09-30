@@ -22,72 +22,17 @@ export function handleTraceVerticalSlice(
   const tracer = new VerticalSliceTracer(repo, workspaceRoot);
   const result: VerticalSliceTraceResponse = tracer.trace(args.query);
 
-  let formattedText = "";
+  let formattedText = result.message;
 
-  if (result.found && result.slice) {
-    const s = result.slice;
-    formattedText = `=== VERTICAL SLICE TRACE ===\n`;
-    formattedText += `Query: ${result.query}\n`;
-    formattedText += `Status: RESOLVED\n\n`;
-
-    formattedText += `• Route:\n`;
-    formattedText += `    Method: ${s.route.method}\n`;
-    formattedText += `    URI:    ${s.route.uri}\n`;
-    if (s.route.name) {
-      formattedText += `    Name:   ${s.route.name}\n`;
+  if (result.found && result.alternatives && result.alternatives.length > 0) {
+    formattedText += `\n\n• Other Matching Slices:\n`;
+    for (const alt of result.alternatives) {
+      formattedText += `    - ${alt.method} ${alt.uri} -> ${alt.controller}@${alt.action}\n`;
     }
-
-    if (s.request) {
-      formattedText += `\n• Request / Validation:\n`;
-      formattedText += `    Class:  ${s.request.class} (${s.request.file || "inline"})\n`;
-      const ruleKeys = Object.keys(s.request.rules);
-      if (ruleKeys.length > 0) {
-        formattedText += `    Rules:\n`;
-        for (const k of ruleKeys) {
-          formattedText += `      - ${k} => ${s.request.rules[k]}\n`;
-        }
-      }
-    }
-
-    formattedText += `\n• Controller Action:\n`;
-    formattedText += `    Class:  ${s.controller.class}@${s.controller.action}\n`;
-    formattedText += `    File:   ${s.controller.file || "unknown"}:${s.controller.line}\n`;
-
-    if (s.model) {
-      formattedText += `\n• Model:\n`;
-      formattedText += `    Class:  ${s.model.class} (${s.model.file || "unknown"})\n`;
-      if (s.model.fillable && s.model.fillable.length > 0) {
-        formattedText += `    Fillable: [${s.model.fillable.join(", ")}]\n`;
-      }
-      if (s.model.casts && Object.keys(s.model.casts).length > 0) {
-        formattedText += `    Casts:    ${JSON.stringify(s.model.casts)}\n`;
-      }
-    }
-
-    if (s.frontend) {
-      formattedText += `\n• Frontend Target:\n`;
-      formattedText += `    Page:   ${s.frontend.target}\n`;
-      if (s.frontend.props.length > 0) {
-        formattedText += `    Props:  [${s.frontend.props.join(", ")}]\n`;
-      }
-    }
-
-    if (result.alternatives && result.alternatives.length > 0) {
-      formattedText += `\n• Other Matching Slices:\n`;
-      for (const alt of result.alternatives) {
-        formattedText += `    - ${alt.method} ${alt.uri} -> ${alt.controller}@${alt.action}\n`;
-      }
-    }
-  } else {
-    formattedText = `=== VERTICAL SLICE NOT FOUND ===\n`;
-    formattedText += `Query: ${result.query}\n`;
-    formattedText += `Message: ${result.message}\n`;
-
-    if (result.alternatives && result.alternatives.length > 0) {
-      formattedText += `\nAvailable Slices:\n`;
-      for (const alt of result.alternatives) {
-        formattedText += `    - ${alt.method} ${alt.uri} -> ${alt.controller}@${alt.action}\n`;
-      }
+  } else if (!result.found && result.alternatives && result.alternatives.length > 0) {
+    formattedText += `\n\nAvailable Slices:\n`;
+    for (const alt of result.alternatives) {
+      formattedText += `    - ${alt.method} ${alt.uri} -> ${alt.controller}@${alt.action}\n`;
     }
   }
 

@@ -98,6 +98,23 @@ export class VerticalSliceTracer {
       return this.formatSuccessResponse(trimmed, nameMatch, "exact");
     }
 
+    // 3b. Omni-Trigger Match: "JOB ProcessOrderJob", "job:ProcessOrderJob", "CLI order:cleanup", "EVENT OrderPlacedListener"
+    const omniTriggerMatch = trimmed.match(/^(JOB|CLI|EVENT)\s+([A-Za-z0-9_:\-]+)$/i);
+    if (omniTriggerMatch) {
+      const triggerKind = omniTriggerMatch[1].toUpperCase();
+      const targetName = omniTriggerMatch[2].toLowerCase();
+      const exact = allSlices.find(
+        (s) =>
+          s.http_method.toUpperCase() === triggerKind &&
+          (s.controller_class.toLowerCase() === targetName ||
+            s.route_uri.toLowerCase() === targetName ||
+            s.route_uri.toLowerCase() === `${triggerKind.toLowerCase()}:${targetName}`)
+      );
+      if (exact) {
+        return this.formatSuccessResponse(trimmed, exact, "exact");
+      }
+    }
+
     // 4. Controller@Action match: "OrderController@updateStatus" or "OrderController"
     const controllerActionMatch = trimmed.match(/^([A-Za-z0-9_]+)(?:@([A-Za-z0-9_]+))?$/);
     if (controllerActionMatch) {
@@ -219,7 +236,23 @@ export class VerticalSliceTracer {
       const stageLines = chain.map((node) => {
         const stageLabel = `[${node.stage.toUpperCase()}]`.padEnd(14, " ");
         const loc = node.file ? ` (${node.file}${node.line ? `:${node.line}` : ""})` : "";
-        return `${stageLabel} ${node.symbol}${loc}`;
+        let extra = "";
+        if (node.table) {
+          extra += ` [table: ${node.table}]`;
+        }
+        if (node.columns_summary) {
+          extra += ` {${node.columns_summary}}`;
+        }
+        if (node.guards && node.guards.length > 0 && node.stage !== "guard") {
+          extra += ` [guards: ${node.guards.join(", ")}]`;
+        }
+        if (node.mutations && node.mutations.length > 0 && node.stage !== "side_effect") {
+          extra += ` [mutates: ${node.mutations.join(", ")}]`;
+        }
+        if (node.transactions && node.stage !== "transaction") {
+          extra += ` [tx: active]`;
+        }
+        return `${stageLabel} ${node.symbol}${loc}${extra}`;
       });
       message = `=== VERTICAL SLICE TRACE (${confidence.toUpperCase()}) ===\n` + stageLines.join("\n");
     }
