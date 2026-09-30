@@ -1,5 +1,5 @@
 import type { ExtractedDependency, ExtractedSymbol, ParsedFileAST, Visibility } from "../../../types/index.ts";
-import { findPythonBlockEnd } from "../boundary-tracker.ts";
+import { findPythonBlockEnd, calculatePythonNesting } from "../boundary-tracker.ts";
 import type { CodeExtractor } from "./base.ts";
 
 const PYTHON_STDLIB_AND_EXTERNALS = new Set([
@@ -206,6 +206,7 @@ export class PythonExtractor implements CodeExtractor {
           : "public";
 
         const endLine = findPythonBlockEnd(lines, i);
+        const nestingDepth = calculatePythonNesting(lines, i, endLine - 1);
         symbols.push({
           name: isMethod ? `${currentClass}::${funcName}` : funcName,
           kind: isMethod ? "method" : "function",
@@ -214,6 +215,7 @@ export class PythonExtractor implements CodeExtractor {
           line_start: lineNum,
           line_end: endLine,
           line_count: Math.max(1, endLine - lineNum + 1),
+          nesting_depth: nestingDepth,
         });
       }
     }

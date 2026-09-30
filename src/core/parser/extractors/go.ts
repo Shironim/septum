@@ -1,5 +1,5 @@
 import type { ExtractedDependency, ExtractedSymbol, ParsedFileAST, Visibility } from "../../../types/index.ts";
-import { findBraceBlockEnd } from "../boundary-tracker.ts";
+import { findBraceBlockEnd, calculateControlFlowNesting } from "../boundary-tracker.ts";
 import type { CodeExtractor } from "./base.ts";
 
 const GO_STDLIB_PREFIXES = new Set([
@@ -131,6 +131,7 @@ export class GoExtractor implements CodeExtractor {
         const methodName = methodMatch[1];
         const visibility: Visibility = /^[A-Z]/.test(methodName) ? "public" : "private";
         const endLine = findBraceBlockEnd(lines, i);
+        const nestingDepth = calculateControlFlowNesting(lines, i, endLine - 1);
 
         symbols.push({
           name: methodName,
@@ -140,6 +141,7 @@ export class GoExtractor implements CodeExtractor {
           line_start: lineNum,
           line_end: endLine,
           line_count: Math.max(1, endLine - lineNum + 1),
+          nesting_depth: nestingDepth,
         });
         continue;
       }
@@ -150,6 +152,7 @@ export class GoExtractor implements CodeExtractor {
         const funcName = funcMatch[1];
         const visibility: Visibility = /^[A-Z]/.test(funcName) ? "public" : "private";
         const endLine = findBraceBlockEnd(lines, i);
+        const nestingDepth = calculateControlFlowNesting(lines, i, endLine - 1);
 
         symbols.push({
           name: funcName,
@@ -159,6 +162,7 @@ export class GoExtractor implements CodeExtractor {
           line_start: lineNum,
           line_end: endLine,
           line_count: Math.max(1, endLine - lineNum + 1),
+          nesting_depth: nestingDepth,
         });
       }
     }

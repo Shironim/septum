@@ -17,12 +17,13 @@ export class SymbolRepository {
     if (symbols.length === 0) return;
 
     const stmt = this.db.query(
-      `INSERT INTO symbols (file_id, name, kind, signature, visibility, line_start, line_end, line_count) 
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO symbols (file_id, name, kind, signature, visibility, line_start, line_end, line_count, nesting_depth) 
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
     );
 
     for (const sym of symbols) {
       const lineCount = sym.line_count ?? Math.max(1, sym.line_end - sym.line_start + 1);
+      const nestingDepth = sym.nesting_depth ?? 1;
       stmt.run(
         fileId,
         sym.name,
@@ -31,7 +32,8 @@ export class SymbolRepository {
         sym.visibility,
         sym.line_start,
         sym.line_end,
-        lineCount
+        lineCount,
+        nestingDepth
       );
     }
   }
@@ -98,6 +100,7 @@ export class SymbolRepository {
           line_start: r.line_start,
           line_end: r.line_end,
           line_count: r.line_count ?? (r.line_end - r.line_start + 1),
+          nesting_depth: r.nesting_depth ?? 1,
         },
       }));
     }
@@ -225,12 +228,16 @@ export class SymbolRepository {
 
   public getHotspotSymbols(options: {
     minLines?: number;
+    minNesting?: number;
     kind?: SymbolKind;
     domain?: string;
     limit?: number;
-  } = {}): Array<SymbolRecord & { file_path: string; domain_name: string }> {
-    const minLines = options.minLines ?? 30;
+    sortBy?: "lines" | "nesting" | "risk_score";
+  } = {}): Array<SymbolRecord & { file_path: string; domain_name: string; risk_score: number }> {
+    const minLines = options.minLines ?? 0;
+    const minNesting = options.minNesting ?? 1;
     const limit = options.limit ?? 50;
+    const sortBy = options.sortBy ?? "risk_score";
 
     let sql = `
       SELECT 
@@ -243,15 +250,16 @@ export class SymbolRepository {
         s.line_start,
         s.line_end,
         s.line_count,
+        s.nesting_depth,
         f.path AS file_path,
         d.name AS domain_name
       FROM symbols s
       JOIN files f ON s.file_id = f.id
       JOIN domains d ON f.domain_id = d.id
-      WHERE s.line_count >= ?
+      WHERE s.line_count >= ? AND s.nesting_depth >= ?
     `;
 
-    const params: any[] = [minLines];
+    const params: any[] = [minLines, minNesting];
 
     if (options.kind) {
       sql += " AND s.kind = ?";
@@ -263,10 +271,21 @@ export class SymbolRepository {
       params.push(options.domain);
     }
 
-    sql += " ORDER BY s.line_count DESC, s.name ASC LIMIT ?";
+    if (sortBy === "nesting") {
+      sql += " ORDER BY s.nesting_depth DESC, s.line_count DESC, s.name ASC LIMIT ?";
+    } else if (sortBy === "lines") {
+      sql += " ORDER BY s.line_count DESC, s.nesting_depth DESC, s.name ASC LIMIT ?";
+    } else {
+      sql += " ORDER BY (s.line_count * (1.0 + s.nesting_depth * 0.3)) DESC, s.nesting_depth DESC, s.name ASC LIMIT ?";
+    }
     params.push(limit);
 
-    return this.db.query<any, any[]>(sql).all(...params);
+    const rows = this.db.query<any, any[]>(sql).all(...params);
+    return rows.map((r) => ({
+      ...r,
+      nesting_depth: r.nesting_depth ?? 1,
+      risk_score: Math.round((r.line_count ?? 1) * (1.0 + (r.nesting_depth ?? 1) * 0.3)),
+    }));
   }
 
   public getSymbolDetails(

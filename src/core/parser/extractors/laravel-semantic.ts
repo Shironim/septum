@@ -1,6 +1,8 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import type { VerticalSliceRecord } from "../../../types/index.ts";
+import type { ExecutionChainNode, VerticalSliceRecord } from "../../../types/index.ts";
+import { BehavioralAnalyzer } from "../behavioral-analyzer.ts";
+import { SchemaProviderRegistry } from "../schema/schema-provider-registry.ts";
 import type {
   SemanticSliceExtractor,
   VerticalSliceCandidate,
@@ -12,6 +14,7 @@ export interface ParsedRoute {
   routeName?: string;
   controllerClass: string;
   actionName: string;
+  file?: string;
 }
 
 export type LaravelSemanticExtractionResult = VerticalSliceCandidate[] & {
@@ -85,9 +88,11 @@ export class LaravelSemanticExtractor implements SemanticSliceExtractor {
         props: string[];
       } | null = null;
 
+      let behavioralInfo: import("../behavioral-analyzer.ts").MethodBehavioralSummary | null = null;
       if (controllerInfo.filePath && fs.existsSync(controllerInfo.filePath)) {
         const controllerCode = fs.readFileSync(controllerInfo.filePath, "utf-8");
         const actionBody = this.extractActionBody(controllerCode, route.actionName);
+        behavioralInfo = BehavioralAnalyzer.analyzeMethod(actionBody);
 
         // 1. Detect FormRequest in method signature
         const requestClassName = this.detectFormRequestClass(controllerCode, route.actionName);
@@ -118,7 +123,7 @@ export class LaravelSemanticExtractor implements SemanticSliceExtractor {
         frontendInfo = this.detectFrontendTarget(actionBody);
       }
 
-      const chain: Array<{ stage: string; symbol: string; file?: string; line?: number; description?: string }> = [
+      const chain: ExecutionChainNode[] = [
         {
           stage: "ingress",
           symbol: `${route.httpMethod.toUpperCase()} ${route.uri.startsWith("/") ? route.uri : `/${route.uri}`}`,
@@ -126,6 +131,15 @@ export class LaravelSemanticExtractor implements SemanticSliceExtractor {
           description: `HTTP Route: ${route.routeName || route.uri}`,
         },
       ];
+
+      if (behavioralInfo && behavioralInfo.guards.length > 0) {
+        chain.push({
+          stage: "guard",
+          symbol: behavioralInfo.guards.join(", "),
+          description: "Authorization / Security Guard",
+          guards: behavioralInfo.guards,
+        });
+      }
 
       if (formRequestInfo) {
         chain.push({
@@ -142,15 +156,68 @@ export class LaravelSemanticExtractor implements SemanticSliceExtractor {
         file: controllerInfo.filePath ? path.relative(this.projectRoot, controllerInfo.filePath) : undefined,
         line: controllerInfo.line,
         description: `Controller Action`,
+        guards: behavioralInfo && behavioralInfo.guards.length > 0 ? behavioralInfo.guards : undefined,
+        mutations: behavioralInfo && behavioralInfo.mutations.length > 0 ? behavioralInfo.mutations : undefined,
+        transactions: behavioralInfo?.hasTransaction,
       });
 
+      if (behavioralInfo && behavioralInfo.hasTransaction) {
+        chain.push({
+          stage: "transaction",
+          symbol: "DB::transaction",
+          description: "Database Transaction Scope",
+          transactions: true,
+        });
+      }
+
       if (modelInfo) {
+        const schema = SchemaProviderRegistry.resolveSchema(
+          root,
+          modelInfo.className,
+          modelInfo.filePath
+        );
+
+        const columnsSummary =
+          schema && schema.fields.length > 0
+            ? schema.fields.map((f) => `${f.name}:${f.type}${f.nullable ? "?" : ""}`).join(", ")
+            : undefined;
+
         chain.push({
           stage: "entity",
           symbol: modelInfo.className,
           file: modelInfo.filePath,
-          description: "Eloquent Model",
+          description: schema?.tableName ? `Eloquent Model (${schema.tableName})` : "Eloquent Model",
+          table: schema?.tableName,
+          schema_file: schema?.schemaSourceFile,
+          columns_summary: columnsSummary,
+          mutations: behavioralInfo && behavioralInfo.mutations.length > 0 ? behavioralInfo.mutations : undefined,
         });
+      }
+
+      if (behavioralInfo && behavioralInfo.dispatchedJobs.length > 0) {
+        for (const job of behavioralInfo.dispatchedJobs) {
+          const jobFile = this.findClassFile("Jobs", job);
+          chain.push({
+            stage: "job",
+            symbol: job,
+            file: jobFile ? path.relative(this.projectRoot, jobFile) : undefined,
+            description: "Background Queue Job Dispatched",
+            dispatches: [job],
+          });
+        }
+      }
+
+      if (behavioralInfo && behavioralInfo.emittedEvents.length > 0) {
+        for (const evt of behavioralInfo.emittedEvents) {
+          const evtFile = this.findClassFile("Events", evt);
+          chain.push({
+            stage: "event",
+            symbol: evt,
+            file: evtFile ? path.relative(this.projectRoot, evtFile) : undefined,
+            description: "Domain Event Emitted",
+            emits: [evt],
+          });
+        }
       }
 
       if (frontendInfo) {
@@ -176,6 +243,11 @@ export class LaravelSemanticExtractor implements SemanticSliceExtractor {
         execution_chain_json: JSON.stringify(chain),
       });
     }
+
+    // Also discover Omni-Trigger slices (Jobs, Console Commands, Event Listeners)
+    slices.push(...this.extractJobSlices(root, domainId));
+    slices.push(...this.extractCommandSlices(root, domainId));
+    slices.push(...this.extractListenerSlices(root, domainId));
 
     return Object.assign(slices, { slices });
   }
@@ -524,7 +596,10 @@ export class LaravelSemanticExtractor implements SemanticSliceExtractor {
     return null;
   }
 
-  private findClassFile(subDir: "Requests" | "Models", className: string): string | null {
+  private findClassFile(
+    subDir: "Requests" | "Models" | "Jobs" | "Events" | "Listeners" | "Console/Commands",
+    className: string
+  ): string | null {
     const directPath = path.join(this.projectRoot, `app/${subDir}/${className}.php`);
     if (fs.existsSync(directPath)) return directPath;
 
@@ -581,5 +656,246 @@ export class LaravelSemanticExtractor implements SemanticSliceExtractor {
     }
 
     return { fillable, casts };
+  }
+
+  private extractJobSlices(
+    root: string,
+    domainId?: number
+  ): Array<Omit<VerticalSliceRecord, "id" | "created_at">> {
+    const jobsDir = path.join(root, "app/Jobs");
+    if (!fs.existsSync(jobsDir)) return [];
+
+    const jobFiles = fs.readdirSync(jobsDir).filter((f) => f.endsWith(".php"));
+    const slices: Array<Omit<VerticalSliceRecord, "id" | "created_at">> = [];
+
+    for (const file of jobFiles) {
+      const fullPath = path.join(jobsDir, file);
+      const content = fs.readFileSync(fullPath, "utf-8");
+      const classMatch = content.match(/class\s+([A-Za-z0-9_]+)/);
+      if (!classMatch) continue;
+
+      const className = classMatch[1];
+      const actionBody = this.extractActionBody(content, "handle");
+      const behavior = BehavioralAnalyzer.analyzeMethod(actionBody);
+
+      const chain: ExecutionChainNode[] = [
+        {
+          stage: "ingress",
+          symbol: `JOB ${className}`,
+          file: path.relative(this.projectRoot, fullPath),
+          description: `Queue Worker Trigger: ${className}`,
+        },
+        {
+          stage: "controller",
+          symbol: `${className}::handle`,
+          file: path.relative(this.projectRoot, fullPath),
+          description: "Queue Job Handler",
+          mutations: behavior.mutations.length ? behavior.mutations : undefined,
+          transactions: behavior.hasTransaction,
+        },
+      ];
+
+      if (behavior.hasTransaction) {
+        chain.push({
+          stage: "transaction",
+          symbol: "DB::transaction",
+          description: "Database Transaction Scope",
+          transactions: true,
+        });
+      }
+
+      for (const evt of behavior.emittedEvents) {
+        const evtFile = this.findClassFile("Events", evt);
+        chain.push({
+          stage: "event",
+          symbol: evt,
+          file: evtFile ? path.relative(this.projectRoot, evtFile) : undefined,
+          description: "Domain Event Emitted",
+          emits: [evt],
+        });
+      }
+
+      slices.push({
+        domain_id: domainId ?? null,
+        feature_key: `job:${className}`,
+        http_method: "JOB",
+        route_uri: `job:${className}`,
+        route_name: `queue.${this.toSnakeCase(className)}`,
+        controller_class: className,
+        action_name: "handle",
+        controller_file: path.relative(this.projectRoot, fullPath),
+        controller_line: 1,
+        architecture_style: "clean",
+        entry_kind: "queue_job",
+        execution_chain_json: JSON.stringify(chain),
+      });
+    }
+
+    return slices;
+  }
+
+  private extractCommandSlices(
+    root: string,
+    domainId?: number
+  ): Array<Omit<VerticalSliceRecord, "id" | "created_at">> {
+    const commandsDir = path.join(root, "app/Console/Commands");
+    if (!fs.existsSync(commandsDir)) return [];
+
+    const files = fs.readdirSync(commandsDir).filter((f) => f.endsWith(".php"));
+    const slices: Array<Omit<VerticalSliceRecord, "id" | "created_at">> = [];
+
+    for (const file of files) {
+      const fullPath = path.join(commandsDir, file);
+      const content = fs.readFileSync(fullPath, "utf-8");
+      const classMatch = content.match(/class\s+([A-Za-z0-9_]+)/);
+      if (!classMatch) continue;
+
+      const className = classMatch[1];
+      const sigMatch = content.match(/protected\s+\$signature\s*=\s*['"]([^'"]+)['"]/);
+      const commandSignature = sigMatch ? sigMatch[1].split(/\s+/)[0] : this.toSnakeCase(className);
+
+      const actionBody = this.extractActionBody(content, "handle");
+      const behavior = BehavioralAnalyzer.analyzeMethod(actionBody);
+
+      const chain: ExecutionChainNode[] = [
+        {
+          stage: "ingress",
+          symbol: `CLI ${commandSignature}`,
+          file: path.relative(this.projectRoot, fullPath),
+          description: `Console Command: ${commandSignature}`,
+        },
+        {
+          stage: "controller",
+          symbol: `${className}::handle`,
+          file: path.relative(this.projectRoot, fullPath),
+          description: "Command Execution Handler",
+          mutations: behavior.mutations.length ? behavior.mutations : undefined,
+          transactions: behavior.hasTransaction,
+        },
+      ];
+
+      if (behavior.hasTransaction) {
+        chain.push({
+          stage: "transaction",
+          symbol: "DB::transaction",
+          description: "Database Transaction Scope",
+          transactions: true,
+        });
+      }
+
+      for (const job of behavior.dispatchedJobs) {
+        const jobFile = this.findClassFile("Jobs", job);
+        chain.push({
+          stage: "job",
+          symbol: job,
+          file: jobFile ? path.relative(this.projectRoot, jobFile) : undefined,
+          description: "Dispatched Background Worker",
+          dispatches: [job],
+        });
+      }
+
+      slices.push({
+        domain_id: domainId ?? null,
+        feature_key: `command:${commandSignature}`,
+        http_method: "CLI",
+        route_uri: `command:${commandSignature}`,
+        route_name: `cli.${commandSignature}`,
+        controller_class: className,
+        action_name: "handle",
+        controller_file: path.relative(this.projectRoot, fullPath),
+        controller_line: 1,
+        architecture_style: "clean",
+        entry_kind: "scheduled_command",
+        execution_chain_json: JSON.stringify(chain),
+      });
+    }
+
+    return slices;
+  }
+
+  private extractListenerSlices(
+    root: string,
+    domainId?: number
+  ): Array<Omit<VerticalSliceRecord, "id" | "created_at">> {
+    const listenersDir = path.join(root, "app/Listeners");
+    if (!fs.existsSync(listenersDir)) return [];
+
+    const files = fs.readdirSync(listenersDir).filter((f) => f.endsWith(".php"));
+    const slices: Array<Omit<VerticalSliceRecord, "id" | "created_at">> = [];
+
+    for (const file of files) {
+      const fullPath = path.join(listenersDir, file);
+      const content = fs.readFileSync(fullPath, "utf-8");
+      const classMatch = content.match(/class\s+([A-Za-z0-9_]+)/);
+      if (!classMatch) continue;
+
+      const className = classMatch[1];
+      const actionBody = this.extractActionBody(content, "handle");
+      const behavior = BehavioralAnalyzer.analyzeMethod(actionBody);
+
+      const eventParamMatch = content.match(/public\s+function\s+handle\s*\(\s*([A-Za-z0-9_]+)\s+\$event\s*\)/i);
+      const listenedEvent = eventParamMatch ? eventParamMatch[1] : undefined;
+
+      const chain: ExecutionChainNode[] = [
+        {
+          stage: "ingress",
+          symbol: `EVENT ${listenedEvent || className}`,
+          file: path.relative(this.projectRoot, fullPath),
+          description: `Event Listener Trigger${listenedEvent ? ` for [${listenedEvent}]` : ""}`,
+        },
+        {
+          stage: "controller",
+          symbol: `${className}::handle`,
+          file: path.relative(this.projectRoot, fullPath),
+          description: "Event Listener Handler",
+          mutations: behavior.mutations.length ? behavior.mutations : undefined,
+          transactions: behavior.hasTransaction,
+        },
+      ];
+
+      if (behavior.hasTransaction) {
+        chain.push({
+          stage: "transaction",
+          symbol: "DB::transaction",
+          description: "Database Transaction Scope",
+          transactions: true,
+        });
+      }
+
+      for (const job of behavior.dispatchedJobs) {
+        const jobFile = this.findClassFile("Jobs", job);
+        chain.push({
+          stage: "job",
+          symbol: job,
+          file: jobFile ? path.relative(this.projectRoot, jobFile) : undefined,
+          description: "Dispatched Background Worker",
+          dispatches: [job],
+        });
+      }
+
+      slices.push({
+        domain_id: domainId ?? null,
+        feature_key: `listener:${className}`,
+        http_method: "EVENT",
+        route_uri: `event:${className}`,
+        route_name: `event.${this.toSnakeCase(className)}`,
+        controller_class: className,
+        action_name: "handle",
+        controller_file: path.relative(this.projectRoot, fullPath),
+        controller_line: 1,
+        architecture_style: "clean",
+        entry_kind: "event_listener",
+        execution_chain_json: JSON.stringify(chain),
+      });
+    }
+
+    return slices;
+  }
+
+  private toSnakeCase(str: string): string {
+    return str
+      .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
+      .replace(/([A-Z]+)([A-Z][a-z])/g, "$1_$2")
+      .toLowerCase();
   }
 }

@@ -1,5 +1,5 @@
 import type { ExtractedDependency, ExtractedSymbol, ParsedFileAST, Visibility } from "../../../types/index.ts";
-import { findBraceBlockEnd } from "../boundary-tracker.ts";
+import { findBraceBlockEnd, calculateControlFlowNesting } from "../boundary-tracker.ts";
 import type { CodeExtractor } from "./base.ts";
 
 export class PHPExtractor implements CodeExtractor {
@@ -112,6 +112,7 @@ export class PHPExtractor implements CodeExtractor {
           const params = methodMatch[3].trim();
           const retType = methodMatch[4] ? `: ${methodMatch[4].trim()}` : "";
           const endLine = findBraceBlockEnd(lines, i);
+          const nestingDepth = calculateControlFlowNesting(lines, i, endLine - 1);
           symbols.push({
             name: `${currentContainer}::${name}`,
             kind: "method",
@@ -120,6 +121,7 @@ export class PHPExtractor implements CodeExtractor {
             line_start: lineNum,
             line_end: endLine,
             line_count: Math.max(1, endLine - lineNum + 1),
+            nesting_depth: nestingDepth,
           });
           continue;
         }
@@ -132,6 +134,7 @@ export class PHPExtractor implements CodeExtractor {
         const params = funcMatch[2].trim();
         const retType = funcMatch[3] ? `: ${funcMatch[3].trim()}` : "";
         const endLine = findBraceBlockEnd(lines, i);
+        const nestingDepth = calculateControlFlowNesting(lines, i, endLine - 1);
         symbols.push({
           name,
           kind: "function",
@@ -140,6 +143,7 @@ export class PHPExtractor implements CodeExtractor {
           line_start: lineNum,
           line_end: endLine,
           line_count: Math.max(1, endLine - lineNum + 1),
+          nesting_depth: nestingDepth,
         });
       }
     }

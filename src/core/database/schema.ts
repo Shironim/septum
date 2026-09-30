@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 
-export const CURRENT_SCHEMA_VERSION = 2;
+export const CURRENT_SCHEMA_VERSION = 4;
 
 export const TABLE_STATEMENTS = [
   `CREATE TABLE IF NOT EXISTS domains (
@@ -37,6 +37,7 @@ export const TABLE_STATEMENTS = [
     line_start INTEGER NOT NULL DEFAULT 0,
     line_end INTEGER NOT NULL DEFAULT 0,
     line_count INTEGER NOT NULL DEFAULT 1,
+    nesting_depth INTEGER NOT NULL DEFAULT 1,
     FOREIGN KEY (file_id) REFERENCES files(id) ON DELETE CASCADE
   );`,
 
@@ -73,6 +74,32 @@ export const TABLE_STATEMENTS = [
     value TEXT NOT NULL,
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
   );`,
+
+  `CREATE TABLE IF NOT EXISTS environment_topology (
+    layer TEXT PRIMARY KEY,
+    platform TEXT,
+    status TEXT NOT NULL,
+    detected_from_json TEXT NOT NULL DEFAULT '[]',
+    constraints_json TEXT NOT NULL DEFAULT '[]',
+    unresolved_inquiry TEXT,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );`,
+
+  `CREATE TABLE IF NOT EXISTS environment_nodes (
+    id TEXT PRIMARY KEY,
+    layer TEXT NOT NULL,
+    name TEXT NOT NULL,
+    platform TEXT NOT NULL,
+    canonical_tag TEXT NOT NULL DEFAULT 'unspecified',
+    domain_or_ip TEXT,
+    role TEXT,
+    status TEXT NOT NULL,
+    detected_from_json TEXT NOT NULL DEFAULT '[]',
+    constraints_json TEXT NOT NULL DEFAULT '[]',
+    connected_to_json TEXT NOT NULL DEFAULT '[]',
+    unresolved_inquiry TEXT,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );`,
 ];
 
 export const INDEX_STATEMENTS = [
@@ -83,14 +110,20 @@ export const INDEX_STATEMENTS = [
   "CREATE INDEX IF NOT EXISTS idx_symbols_name ON symbols(name);",
   "CREATE INDEX IF NOT EXISTS idx_symbols_kind ON symbols(kind);",
   "CREATE INDEX IF NOT EXISTS idx_symbols_line_count ON symbols(kind, line_count DESC);",
+  "CREATE INDEX IF NOT EXISTS idx_symbols_nesting_depth ON symbols(nesting_depth DESC);",
   "CREATE INDEX IF NOT EXISTS idx_dependencies_source ON dependencies(source_file_id);",
   "CREATE INDEX IF NOT EXISTS idx_dependencies_target ON dependencies(target_symbol_or_path);",
   "CREATE INDEX IF NOT EXISTS idx_slices_route_uri ON vertical_slices(route_uri);",
   "CREATE INDEX IF NOT EXISTS idx_slices_route_name ON vertical_slices(route_name);",
   "CREATE INDEX IF NOT EXISTS idx_slices_controller ON vertical_slices(controller_class, action_name);",
+  "CREATE INDEX IF NOT EXISTS idx_env_topology_status ON environment_topology(status);",
+  "CREATE INDEX IF NOT EXISTS idx_env_nodes_layer ON environment_nodes(layer);",
+  "CREATE INDEX IF NOT EXISTS idx_env_nodes_status ON environment_nodes(status);",
 ];
 
 const DROP_ALL_TABLES = `
+  DROP TABLE IF EXISTS environment_nodes;
+  DROP TABLE IF EXISTS environment_topology;
   DROP TABLE IF EXISTS repo_meta;
   DROP TABLE IF EXISTS vertical_slices;
   DROP TABLE IF EXISTS dependencies;

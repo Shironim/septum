@@ -29,6 +29,7 @@ export function detectArchetype(filePath: string, archetypesMap: Record<string, 
   if (lower.includes("request")) return "request";
   if (lower.includes("resource")) return "resource";
   if (lower.includes(".blade.php") || lower.includes("views/") || lower.includes("templates/")) return "view";
+  if (lower.includes("route") || lower.includes("router")) return "route";
   if (lower.includes("util") || lower.includes("helper")) return "util";
 
   return "unknown";
