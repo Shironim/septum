@@ -9,6 +9,9 @@ export * from "./core/ingestion/pipeline.ts";
 export * from "./core/boundary/evaluator.ts";
 export * from "./core/resolver/call-graph-tracer.ts";
 export * from "./core/resolver/vertical-slice-tracer.ts";
+export * from "./core/topology/types.ts";
+export * from "./core/topology/environment-detector.ts";
+export * from "./mcp/tools/get-environment-topology.ts";
 export * from "./mcp/server.ts";
 export * from "./cli/index.ts";
 

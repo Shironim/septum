@@ -22,7 +22,7 @@ export async function handleRegisterDomain(
     throw new Error("Missing required arguments: 'name' and 'root' are required.");
   }
 
-  const domainConfig: DomainConfig = {
+  const domainConfig = {
     root: args.root,
     description: args.description || `Domain: ${args.name}`,
     allowed_dependencies: args.allowed_dependencies || [],

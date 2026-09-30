@@ -5,6 +5,7 @@ import { handleCheckCommand } from "./commands/check.ts";
 import { handleHookCommand } from "./commands/hook.ts";
 import { handleIngestCommand } from "./commands/ingest.ts";
 import { handleInitCommand } from "./commands/init.ts";
+import { handleTopologyCommand } from "./commands/topology.ts";
 import { handleLocateCommand } from "./commands/locate.ts";
 import { handleQueryCommand } from "./commands/query.ts";
 import { handleServeCommand } from "./commands/serve.ts";
@@ -112,6 +113,12 @@ export async function runCLI(argv: string[]): Promise<void> {
         break;
       }
 
+      case "topology":
+      case "env": {
+        await handleTopologyCommand(positionals[1], positionals[2], positionals[3], positionals[4], positionals[5]);
+        break;
+      }
+
       case "feature": {
         const sub = positionals[1];
         if (sub === "clear") {
@@ -187,6 +194,10 @@ COMMANDS:
                           Flags: --strict, --staged, --feature <name>
     feature [status|clear] View or release active feature context session lock
     hook [subhook]        Internal pre-tool guardrail hook (e.g. pre-write)
+
+  Environment & Topology:
+    topology [action]     Inspect 6-layer environment topology & distributed nodes
+                          Subcommands: resolve <layer> <platform>, add-node, remove-node, clear
 
   Daemon & Protocol:
     serve                 Start Model Context Protocol (MCP) server over stdio

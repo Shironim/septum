@@ -12,6 +12,7 @@ export type ArchetypeKind =
   | "middleware"
   | "request"
   | "resource"
+  | "route"
   | "util"
   | "view"
   | "unknown";
@@ -123,6 +124,7 @@ export interface SymbolRecord {
   line_start: number;
   line_end: number;
   line_count: number;
+  nesting_depth: number;
 }
 
 export interface DependencyRecord {
@@ -142,6 +144,7 @@ export interface ExtractedSymbol {
   line_start: number;
   line_end: number;
   line_count: number;
+  nesting_depth?: number;
 }
 
 export interface ExtractedDependency {
@@ -193,12 +196,17 @@ export interface DomainCatalogResponse {
 export interface ExecutionChainNode {
   stage:
     | "ingress"
+    | "guard"
     | "validation"
     | "controller"
     | "orchestrator"
     | "use_case"
     | "domain"
     | "entity"
+    | "side_effect"
+    | "job"
+    | "event"
+    | "transaction"
     | "egress"
     | "repository"
     | string;
@@ -206,6 +214,14 @@ export interface ExecutionChainNode {
   file?: string;
   line?: number;
   description?: string;
+  table?: string;
+  schema_file?: string;
+  columns_summary?: string;
+  guards?: string[];
+  mutations?: string[];
+  emits?: string[];
+  dispatches?: string[];
+  transactions?: boolean;
 }
 
 export interface VerticalSliceRecord {

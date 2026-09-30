@@ -189,10 +189,19 @@ export const GetSymbolHotspotsSchema = z.preprocess(
       domain_name: "domain",
       domainName: "domain",
       max: "limit",
+      nesting: "min_nesting",
+      minNesting: "min_nesting",
+      lines: "min_lines",
+      minLines: "min_lines",
+      sortBy: "sort_by",
     }),
   z.object({
+    min_lines: z.number().int().nonnegative().optional(),
+    min_nesting: z.number().int().positive().optional(),
+    kind: z.string().optional(),
     domain: z.string().optional(),
     limit: z.number().int().positive().optional().default(10),
+    sort_by: z.enum(["lines", "nesting", "risk_score"]).optional(),
   })
 );
 export type GetSymbolHotspotsArgs = z.infer<typeof GetSymbolHotspotsSchema>;
@@ -235,4 +244,43 @@ export const AutoDiscoverDomainsSchema = z.preprocess(
   })
 );
 export type AutoDiscoverDomainsArgs = z.infer<typeof AutoDiscoverDomainsSchema>;
+
+export const GetEnvironmentTopologySchema = z.object({
+  resolve: z
+    .object({
+      layer: z.enum(["edge", "gateway", "host", "runtime", "storage", "telemetry"]),
+      platform: z.string().min(1, "platform name cannot be empty"),
+      constraints: z.array(z.string()).optional(),
+    })
+    .optional(),
+  resolveNode: z
+    .object({
+      id: z.string().min(1, "Node id cannot be empty"),
+      layer: z.enum(["edge", "gateway", "host", "runtime", "storage", "telemetry"]),
+      name: z.string().min(1, "Node name cannot be empty"),
+      platform: z.string().min(1, "Platform cannot be empty"),
+      canonical_tag: z
+        .enum([
+          "shared_hosting",
+          "vps",
+          "docker",
+          "serverless",
+          "kubernetes",
+          "managed_db",
+          "cdn_edge",
+          "paas",
+          "static_cdn",
+          "unspecified",
+        ])
+        .optional(),
+      domain_or_ip: z.string().optional(),
+      role: z.string().optional(),
+      constraints: z.array(z.string()).optional(),
+      connected_to: z.array(z.string()).optional(),
+    })
+    .optional(),
+  refresh: z.boolean().optional().default(false),
+});
+export type GetEnvironmentTopologyArgs = z.infer<typeof GetEnvironmentTopologySchema>;
+
 

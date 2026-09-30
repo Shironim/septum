@@ -41,10 +41,12 @@ import {
 import { handleGetSymbol } from "./tools/get-symbol.ts";
 import { handleGetSymbolImpact } from "./tools/get-symbol-impact.ts";
 import { handleRegisterDomain } from "./tools/register-domain.ts";
+import { handleGetEnvironmentTopology } from "./tools/get-environment-topology.ts";
 import type { GetSymbolArgs, GetSymbolImpactArgs } from "../types/index.ts";
 import {
   CheckBoundarySchema,
   GetDomainCatalogSchema,
+  GetEnvironmentTopologySchema,
   GetFeatureContextSchema,
   GetSymbolHotspotsSchema,
   GetSymbolImpactSchema,
@@ -180,13 +182,17 @@ export async function runMCPServer(): Promise<void> {
         {
           name: "septum_get_symbol_hotspots",
           description:
-            "Discovers oversized functions, methods, and classes exceeding a specified line count threshold (default: 30 lines). Essential for Single Responsibility Principle (SRP) enforcement, finding God Functions, and isolating refactoring targets deterministically without reading raw files.",
+            "Discovers oversized functions, methods, and classes exceeding a specified line count threshold or cyclomatic control flow nesting depth (> 4). Essential for Single Responsibility Principle (SRP) enforcement, finding God Functions / bug magnets, and isolating refactoring targets deterministically without reading raw files.",
           inputSchema: {
             type: "object",
             properties: {
               min_lines: {
                 type: "number",
                 description: "Minimum physical lines of code (LoC) threshold (default: 30).",
+              },
+              min_nesting: {
+                type: "number",
+                description: "Minimum control-flow nesting depth (e.g. nested if/for/while/try > 4).",
               },
               kind: {
                 type: "string",
@@ -199,6 +205,11 @@ export async function runMCPServer(): Promise<void> {
               limit: {
                 type: "number",
                 description: "Maximum results to return (default: 30).",
+              },
+              sort_by: {
+                type: "string",
+                enum: ["lines", "nesting", "risk_score"],
+                description: "Sorting criteria: 'risk_score' (combines lines & nesting depth), 'nesting', or 'lines'. Default: 'risk_score'.",
               },
             },
           },
@@ -327,6 +338,41 @@ export async function runMCPServer(): Promise<void> {
               },
             },
             required: ["name", "root"],
+          },
+        },
+        {
+          name: "septum_get_environment_topology",
+          description:
+            "Self-Aware Production Topology Engine: Maps and verifies the 6-layer environment topology (Edge/WAF, Gateway/Web Server, Host Platform, Runtime, Storage/Cache, Telemetry). Identifies cross-layer constraints (e.g. Cloudflare + LiteSpeed + Laravel throttle), surfaces pending architectural inquiries if layers are ambiguous, and allows recording verified environment answers to SQLite SSOT.",
+          inputSchema: {
+            type: "object",
+            properties: {
+              resolve: {
+                type: "object",
+                properties: {
+                  layer: {
+                    type: "string",
+                    enum: ["edge", "gateway", "host", "runtime", "storage", "telemetry"],
+                    description: "Target layer to manually resolve/verify",
+                  },
+                  platform: {
+                    type: "string",
+                    description: "Confirmed platform name (e.g. 'Hostinger Shared Hosting', 'Cloudflare WAF', 'LiteSpeed')",
+                  },
+                  constraints: {
+                    type: "array",
+                    items: { type: "string" },
+                    description: "Optional list of architectural constraints for this layer",
+                  },
+                },
+                required: ["layer", "platform"],
+                description: "Optional argument to record and verify a specific layer into SQLite SSOT",
+              },
+              refresh: {
+                type: "boolean",
+                description: "Force re-detection from codebase files, ignoring cached status",
+              },
+            },
           },
         },
       ],
@@ -483,6 +529,20 @@ export async function runMCPServer(): Promise<void> {
           };
         }
         return await handleRegisterDomain(ctx.repo, ctx.config, parsed.data);
+      } else if (name === "septum_get_environment_topology") {
+        const parsed = GetEnvironmentTopologySchema.safeParse(args ?? {});
+        if (!parsed.success) {
+          return {
+            isError: true,
+            content: [
+              {
+                type: "text",
+                text: `[Septum Validation Error] Invalid arguments for ${name}: ${parsed.error.message}`,
+              },
+            ],
+          };
+        }
+        return handleGetEnvironmentTopology(ctx.repo, ctx.config, parsed.data, ctx.root);
       } else {
         throw new Error(`Unknown tool: '${name}'`);
       }
@@ -510,7 +570,7 @@ export async function runMCPServer(): Promise<void> {
         input: (args as Record<string, any>) ?? {},
         metrics: { bytes_out: bytesOut, lines_out: linesOut },
         session: sessionPayload,
-        status: response?.isError ? "error" : "success",
+        status: (response as { isError?: boolean } | undefined)?.isError ? "error" : "success",
       });
 
       return response;
