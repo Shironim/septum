@@ -2,6 +2,7 @@
 
 > **Deterministic Bounded-Context & Anti-Poisoning Architecture Guard for AI Coding Agents.**
 
+[![Version: 0.1.4](https://img.shields.io/badge/Version-0.1.4-blue)](package.json)
 [![Runtime: Bun](https://img.shields.io/badge/Runtime-Bun-black?logo=bun)](https://bun.sh)
 [![Protocol: Model Context Protocol](https://img.shields.io/badge/Protocol-MCP-green)](https://modelcontextprotocol.io/)
 [![Database: SQLite WAL](https://img.shields.io/badge/Database-SQLite%20(bun:sqlite)-003B57?logo=sqlite)](https://sqlite.org/)
@@ -63,6 +64,7 @@ Add Septum to your MCP client (`mcp.json` or `claude_desktop_config.json`):
 | `septum query [domain]` | Inspect domain catalog, archetypes, and public signatures |
 | `septum locate <query>` | Locate symbol, class, interface, method, or error source |
 | `septum slice <route\|intent>` | Trace end-to-end vertical execution slice for route/intent |
+| `septum topology [action]` | Inspect 6-layer environment topology plane & distributed nodes |
 | `septum feature status\|clear` | Manage active feature lease and editing scope |
 | `septum serve` | Launch stdio MCP server for AI coding agents |
 
@@ -72,12 +74,13 @@ Add Septum to your MCP client (`mcp.json` or `claude_desktop_config.json`):
 
 All tools expose typed schemas automatically via the Model Context Protocol:
 
+- **Self-Aware Environment Topology (`septum_get_environment_topology`):** Maps and verifies the 6-layer production architecture (Edge/WAF, Gateway/Web Server, Host, Runtime, Storage/Cache, Telemetry) and distributed entities with cross-layer invariants.
 - **Whole-Project Telescope (`septum_get_domain_catalog`):** Returns macro architecture maps in < 400 tokens.
-- **Vertical Slice Tracer (`septum_trace_vertical_slice`):** Traces execution chains (*Ingress ➔ Validation ➔ Orchestration ➔ Domain ➔ Egress*) across frameworks.
+- **Omni-Trigger Vertical Slice Tracer (`septum_trace_vertical_slice`):** Traces execution chains across HTTP routes, queue jobs, console commands, and event listeners (*Ingress ➔ Validation ➔ Orchestration ➔ Domain ➔ Egress*).
 - **Pre-Flight Boundary Guard (`septum_check_boundary`):** Validates proposed edits and imports against bounded-context rules.
 - **Scope Locking (`septum_get_feature_context` / `septum_clear_feature_context`):** Locks active feature scope to eliminate context drift.
 - **Symbol & Blast Radius (`septum_locate_symbol`, `septum_get_symbol`, `septum_get_symbol_impact`):** Resolves call chains, signatures, and refactoring impact.
-- **God Function Detector (`septum_get_symbol_hotspots`):** Surfaces oversized functions/methods by physical lines-of-code.
+- **God Function & Nesting Detector (`septum_get_symbol_hotspots`):** Surfaces oversized functions/methods ranked by physical lines, cyclomatic nesting depth, and composite risk score.
 - **Dynamic Topology (`septum_register_domain`):** Registers or updates domains and boundary rules on-the-fly.
 
 ---
