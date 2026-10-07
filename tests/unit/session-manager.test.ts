@@ -78,8 +78,9 @@ describe("Active Feature Session Manager", () => {
     process.cwd = () => testDir;
 
     try {
-      const res = handleGetFeatureContext(repo, mockConfig, { feature: "login_flow" });
+      const res = handleGetFeatureContext(repo, mockConfig, { feature_key: "login_flow" });
       const payload = JSON.parse(res.content[0].text);
+      expect(payload.feature_key).toBe("login_flow");
       expect(payload.feature).toBe("login_flow");
 
       const session = SessionManager.getActiveSession(testDir);

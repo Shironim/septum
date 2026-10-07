@@ -60,7 +60,8 @@ export interface FeatureConfig {
 }
 
 export interface FeatureContextResponse {
-  feature: string;
+  feature_key: string;
+  feature?: string;
   domain: string;
   description?: string;
   allowed_touchpoints: string[];

@@ -39,23 +39,23 @@ export function extractSingleStringFallback(
 }
 
 export function normalizeFeatureContextArgs(raw: unknown): unknown {
-  const coerced = extractSingleStringFallback(raw, "feature");
+  const coerced = extractSingleStringFallback(raw, "feature_key");
   if (typeof coerced !== "object" || coerced === null || Array.isArray(coerced)) return coerced;
   const obj = { ...(coerced as Record<string, unknown>) };
 
   const aliases: Record<string, string> = {
-    feature_key: "feature",
-    featureKey: "feature",
-    feature_name: "feature",
-    featureName: "feature",
-    feat: "feature",
-    name: "feature",
-    key: "feature",
-    task: "feature",
-    task_name: "feature",
-    target: "feature",
-    context: "feature",
-    slug: "feature",
+    feature: "feature_key",
+    featureKey: "feature_key",
+    feature_name: "feature_key",
+    featureName: "feature_key",
+    feat: "feature_key",
+    name: "feature_key",
+    key: "feature_key",
+    task: "feature_key",
+    task_name: "feature_key",
+    target: "feature_key",
+    context: "feature_key",
+    slug: "feature_key",
     workspace: "workspace_path",
     workspacePath: "workspace_path",
     project_root: "workspace_path",
@@ -68,11 +68,11 @@ export function normalizeFeatureContextArgs(raw: unknown): unknown {
     }
   }
 
-  // Symmetrical contract: populate both feature and feature_key
-  if (obj.feature !== undefined && obj.feature_key === undefined) {
-    obj.feature_key = obj.feature;
-  } else if (obj.feature_key !== undefined && obj.feature === undefined) {
+  // Populate feature as backward-compatible alias
+  if (obj.feature_key !== undefined && obj.feature === undefined) {
     obj.feature = obj.feature_key;
+  } else if (obj.feature !== undefined && obj.feature_key === undefined) {
+    obj.feature_key = obj.feature;
   }
 
   return obj;
@@ -159,8 +159,8 @@ export type GetDomainCatalogArgs = z.infer<typeof GetDomainCatalogSchema>;
 export const GetFeatureContextSchema = z.preprocess(
   normalizeFeatureContextArgs,
   z.object({
-    feature: z.string().optional(),
     feature_key: z.string().optional(),
+    feature: z.string().optional(),
     workspace_path: z.string().optional(),
   })
 );

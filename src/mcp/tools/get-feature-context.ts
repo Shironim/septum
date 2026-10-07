@@ -6,8 +6,8 @@ import { SessionManager } from "../../core/session/session-manager.ts";
 import type { FeatureContextResponse } from "../../types/index.ts";
 
 export interface GetFeatureContextArgs {
-  feature?: string;
   feature_key?: string;
+  feature?: string;
   workspace_path?: string;
 }
 
@@ -21,11 +21,11 @@ export function handleGetFeatureContext(
   args: GetFeatureContextArgs,
   workspaceRoot: string = process.cwd()
 ) {
-  const featureName = (args.feature || args.feature_key || "").trim();
+  const featureKey = (args.feature_key || args.feature || "").trim();
   const features = config.features ?? {};
 
   // ZERO-ARGUMENT GRACEFUL FALLBACK: Guide the agent instead of throwing validation errors
-  if (!featureName) {
+  if (!featureKey) {
     const available = Object.keys(features);
     return {
       content: [
@@ -34,7 +34,7 @@ export function handleGetFeatureContext(
           text: JSON.stringify(
             {
               status: "prompt",
-              message: "No feature specified. Please specify a 'feature_key' (or 'feature') from the registered features below or trace routes.",
+              message: "No feature specified. Please specify 'feature_key' from the registered features below or trace routes.",
               available_features: available.length > 0 ? available : [],
               instructions: "Call 'septum_get_feature_context({ feature_key: \"<name>\" })' or register a new feature with 'septum_register_feature'.",
             },
@@ -46,12 +46,12 @@ export function handleGetFeatureContext(
     };
   }
 
-  let featureConfig = features[featureName];
+  let featureConfig = features[featureKey];
   let isInferred = false;
 
   if (!featureConfig) {
     // Attempt auto-derive from vertical slices or domain symbols
-    const searchTerm = featureName.toLowerCase();
+    const searchTerm = featureKey.toLowerCase();
     const allSlices = typeof repo.getAllVerticalSlices === "function" ? repo.getAllVerticalSlices() : [];
     const fromRepoSearch = typeof repo.findVerticalSlices === "function" ? repo.findVerticalSlices(searchTerm) : [];
     const matchingSlices = [
@@ -75,8 +75,8 @@ export function handleGetFeatureContext(
       const candidateSymbols = new Set<string>();
       let detectedDomain = "app";
 
-      if (config.domains && config.domains[featureName]) {
-        detectedDomain = featureName;
+      if (config.domains && config.domains[featureKey]) {
+        detectedDomain = featureKey;
       }
 
       for (const slice of uniqueSlices) {
@@ -103,7 +103,7 @@ export function handleGetFeatureContext(
 
       featureConfig = {
         domain: detectedDomain,
-        description: `[Auto-Derived] Feature context inferred from ${uniqueSlices.length} vertical slices matching '${featureName}'`,
+        description: `[Auto-Derived] Feature context inferred from ${uniqueSlices.length} vertical slices matching '${featureKey}'`,
         allowed_touchpoints: Array.from(candidateTouchpoints),
         reuse_symbols: Array.from(candidateSymbols).slice(0, 10),
         input_contract: {},
@@ -113,12 +113,12 @@ export function handleGetFeatureContext(
       const available = Object.keys(features);
       const availableStr = available.length > 0 ? available.join(", ") : "none";
       const recoveryMessage = [
-        `Feature '${featureName}' not found in configuration. Available features: [${availableStr}].`,
+        `Feature '${featureKey}' not found in configuration. Available features: [${availableStr}].`,
         `No matching vertical slices found for auto-derivation.`,
         ``,
         `▶ RECOVERY OPTIONS:`,
         `1. Register this feature on-the-fly:`,
-        `   septum_register_feature({ feature_key: "${featureName}", domain: "<domain_name>", allowed_touchpoints: ["path/to/file"] })`,
+        `   septum_register_feature({ feature_key: "${featureKey}", domain: "<domain_name>", allowed_touchpoints: ["path/to/file"] })`,
         `2. Or discover available routes / vertical slices first:`,
         `   septum_trace_vertical_slice({ entry_file: "routes/web.php" })`,
       ].join("\n");
@@ -128,7 +128,7 @@ export function handleGetFeatureContext(
 
   // Record Active Feature Session Lease (.septum/session.json)
   SessionManager.saveActiveSession(workspaceRoot, {
-    feature_key: featureName,
+    feature_key: featureKey,
     domain: featureConfig.domain,
     touchpoints: featureConfig.allowed_touchpoints ?? [],
     locked_at: new Date().toISOString(),
@@ -160,7 +160,8 @@ export function handleGetFeatureContext(
   }
 
   const response: FeatureContextResponse = {
-    feature: featureName,
+    feature_key: featureKey,
+    feature: featureKey,
     domain: featureConfig.domain,
     description: featureConfig.description,
     allowed_touchpoints: featureConfig.allowed_touchpoints,
@@ -176,7 +177,7 @@ export function handleGetFeatureContext(
     ...(isInferred ? { is_inferred: true } : {}),
   };
 
-  recordFeatureAccess(featureConfig.domain, featureName);
+  recordFeatureAccess(featureConfig.domain, featureKey);
 
   return {
     content: [

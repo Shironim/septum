@@ -120,8 +120,9 @@ describe("Dynamic Feature Registration & Auto-Derive Fallback", () => {
         reuse_symbols: [],
       };
 
-      const res = handleGetFeatureContext(repo, mockConfig, { feature: "penjualan" }, tempDir);
+      const res = handleGetFeatureContext(repo, mockConfig, { feature_key: "penjualan" }, tempDir);
       const data = JSON.parse(res.content[0].text);
+      expect(data.feature_key).toBe("penjualan");
       expect(data.feature).toBe("penjualan");
       expect(data.domain).toBe("penjualan");
       expect(data.is_inferred).toBeFalsy();
@@ -149,9 +150,10 @@ describe("Dynamic Feature Registration & Auto-Derive Fallback", () => {
       // Feature 'penjualan' is not in mockConfig.features!
       expect(mockConfig.features["penjualan"]).toBeUndefined();
 
-      const res = handleGetFeatureContext(repo, mockConfig, { feature: "penjualan" }, tempDir);
+      const res = handleGetFeatureContext(repo, mockConfig, { feature_key: "penjualan" }, tempDir);
       const data = JSON.parse(res.content[0].text);
 
+      expect(data.feature_key).toBe("penjualan");
       expect(data.feature).toBe("penjualan");
       expect(data.is_inferred).toBe(true);
       expect(data.allowed_touchpoints).toContain("app/Http/Controllers/PenjualanController.php");

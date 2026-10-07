@@ -145,14 +145,14 @@ export async function runMCPServer(): Promise<void> {
           inputSchema: {
             type: "object",
             properties: {
-              feature: {
-                type: "string",
-                description:
-                  "Key/name of the feature to inspect (e.g. 'checkout_flow'). Symmetrically accepts 'feature_key'.",
-              },
               feature_key: {
                 type: "string",
-                description: "Canonical alias for 'feature' (e.g. 'checkout_flow').",
+                description:
+                  "Unique identifier for the feature to inspect (e.g. 'checkout_flow'). Symmetrically accepts 'feature'.",
+              },
+              feature: {
+                type: "string",
+                description: "Alias for 'feature_key'.",
               },
             },
             required: [],
