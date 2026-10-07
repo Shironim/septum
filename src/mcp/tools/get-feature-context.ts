@@ -6,7 +6,9 @@ import { SessionManager } from "../../core/session/session-manager.ts";
 import type { FeatureContextResponse } from "../../types/index.ts";
 
 export interface GetFeatureContextArgs {
-  feature: string;
+  feature?: string;
+  feature_key?: string;
+  workspace_path?: string;
 }
 
 export function handleClearFeatureContext(workspaceRoot: string = process.cwd()): boolean {
@@ -16,25 +18,117 @@ export function handleClearFeatureContext(workspaceRoot: string = process.cwd())
 export function handleGetFeatureContext(
   repo: SeptumRepository,
   config: ValidatedSeptumConfig,
-  args: GetFeatureContextArgs
+  args: GetFeatureContextArgs,
+  workspaceRoot: string = process.cwd()
 ) {
-  if (!args.feature) {
-    throw new Error("Missing required argument: 'feature'");
+  const featureName = (args.feature || args.feature_key || "").trim();
+  const features = config.features ?? {};
+
+  // ZERO-ARGUMENT GRACEFUL FALLBACK: Guide the agent instead of throwing validation errors
+  if (!featureName) {
+    const available = Object.keys(features);
+    return {
+      content: [
+        {
+          type: "text" as const,
+          text: JSON.stringify(
+            {
+              status: "prompt",
+              message: "No feature specified. Please specify a 'feature_key' (or 'feature') from the registered features below or trace routes.",
+              available_features: available.length > 0 ? available : [],
+              instructions: "Call 'septum_get_feature_context({ feature_key: \"<name>\" })' or register a new feature with 'septum_register_feature'.",
+            },
+            null,
+            2
+          ),
+        },
+      ],
+    };
   }
 
-  const features = config.features ?? {};
-  const featureConfig = features[args.feature];
+  let featureConfig = features[featureName];
+  let isInferred = false;
 
   if (!featureConfig) {
-    const available = Object.keys(features).join(", ") || "none";
-    throw new Error(
-      `Feature '${args.feature}' not found in configuration. Available features: [${available}]`
+    // Attempt auto-derive from vertical slices or domain symbols
+    const searchTerm = featureName.toLowerCase();
+    const allSlices = typeof repo.getAllVerticalSlices === "function" ? repo.getAllVerticalSlices() : [];
+    const fromRepoSearch = typeof repo.findVerticalSlices === "function" ? repo.findVerticalSlices(searchTerm) : [];
+    const matchingSlices = [
+      ...fromRepoSearch,
+      ...allSlices.filter(
+        (s) =>
+          s.route_uri.toLowerCase().includes(searchTerm) ||
+          (s.route_name && s.route_name.toLowerCase().includes(searchTerm)) ||
+          s.controller_class.toLowerCase().includes(searchTerm) ||
+          (s.feature_key && s.feature_key.toLowerCase().includes(searchTerm))
+      ),
+    ];
+
+    const uniqueSlices = Array.from(
+      new Map(matchingSlices.map((s) => [`${s.http_method}:${s.route_uri}`, s])).values()
     );
+
+    if (uniqueSlices.length > 0) {
+      isInferred = true;
+      const candidateTouchpoints = new Set<string>();
+      const candidateSymbols = new Set<string>();
+      let detectedDomain = "app";
+
+      if (config.domains && config.domains[featureName]) {
+        detectedDomain = featureName;
+      }
+
+      for (const slice of uniqueSlices) {
+        if (slice.controller_file) {
+          candidateTouchpoints.add(slice.controller_file);
+        }
+        candidateSymbols.add(slice.controller_class);
+        if (slice.action_name) {
+          candidateSymbols.add(`${slice.controller_class}@${slice.action_name}`);
+        }
+
+        if (slice.execution_chain_json) {
+          try {
+            const chain = JSON.parse(slice.execution_chain_json);
+            if (Array.isArray(chain)) {
+              for (const node of chain) {
+                if (node.file) candidateTouchpoints.add(node.file);
+                if (node.symbol) candidateSymbols.add(node.symbol);
+              }
+            }
+          } catch {}
+        }
+      }
+
+      featureConfig = {
+        domain: detectedDomain,
+        description: `[Auto-Derived] Feature context inferred from ${uniqueSlices.length} vertical slices matching '${featureName}'`,
+        allowed_touchpoints: Array.from(candidateTouchpoints),
+        reuse_symbols: Array.from(candidateSymbols).slice(0, 10),
+        input_contract: {},
+        output_contract: {},
+      };
+    } else {
+      const available = Object.keys(features);
+      const availableStr = available.length > 0 ? available.join(", ") : "none";
+      const recoveryMessage = [
+        `Feature '${featureName}' not found in configuration. Available features: [${availableStr}].`,
+        `No matching vertical slices found for auto-derivation.`,
+        ``,
+        `▶ RECOVERY OPTIONS:`,
+        `1. Register this feature on-the-fly:`,
+        `   septum_register_feature({ feature_key: "${featureName}", domain: "<domain_name>", allowed_touchpoints: ["path/to/file"] })`,
+        `2. Or discover available routes / vertical slices first:`,
+        `   septum_trace_vertical_slice({ entry_file: "routes/web.php" })`,
+      ].join("\n");
+      throw new Error(recoveryMessage);
+    }
   }
 
   // Record Active Feature Session Lease (.septum/session.json)
-  SessionManager.saveActiveSession(process.cwd(), {
-    feature_key: args.feature,
+  SessionManager.saveActiveSession(workspaceRoot, {
+    feature_key: featureName,
     domain: featureConfig.domain,
     touchpoints: featureConfig.allowed_touchpoints ?? [],
     locked_at: new Date().toISOString(),
@@ -66,7 +160,7 @@ export function handleGetFeatureContext(
   }
 
   const response: FeatureContextResponse = {
-    feature: args.feature,
+    feature: featureName,
     domain: featureConfig.domain,
     description: featureConfig.description,
     allowed_touchpoints: featureConfig.allowed_touchpoints,
@@ -79,9 +173,10 @@ export function handleGetFeatureContext(
       "DO NOT emit or expect phantom payload fields outside input_contract and output_contract.",
       "DO NOT import cross-domain modules without declared allowed_dependencies in Septum domain boundaries.",
     ],
+    ...(isInferred ? { is_inferred: true } : {}),
   };
 
-  recordFeatureAccess(featureConfig.domain, args.feature);
+  recordFeatureAccess(featureConfig.domain, featureName);
 
   return {
     content: [

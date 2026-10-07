@@ -1,5 +1,5 @@
 import { watch, type FSWatcher } from "node:fs";
-import { extname } from "node:path";
+import { extname, resolve } from "node:path";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
@@ -41,6 +41,7 @@ import {
 import { handleGetSymbol } from "./tools/get-symbol.ts";
 import { handleGetSymbolImpact } from "./tools/get-symbol-impact.ts";
 import { handleRegisterDomain } from "./tools/register-domain.ts";
+import { handleRegisterFeature } from "./tools/register-feature.ts";
 import { handleGetEnvironmentTopology } from "./tools/get-environment-topology.ts";
 import type { GetSymbolArgs, GetSymbolImpactArgs } from "../types/index.ts";
 import {
@@ -53,6 +54,7 @@ import {
   GetSymbolSchema,
   LocateSymbolSchema,
   RegisterDomainSchema,
+  RegisterFeatureSchema,
   TraceVerticalSliceSchema,
 } from "./schemas.ts";
 import { SEPTUM_VERSION } from "../version.ts";
@@ -145,10 +147,15 @@ export async function runMCPServer(): Promise<void> {
             properties: {
               feature: {
                 type: "string",
-                description: "Key/name of the feature to inspect (e.g. 'checkout_flow')",
+                description:
+                  "Key/name of the feature to inspect (e.g. 'checkout_flow'). Symmetrically accepts 'feature_key'.",
+              },
+              feature_key: {
+                type: "string",
+                description: "Canonical alias for 'feature' (e.g. 'checkout_flow').",
               },
             },
-            required: ["feature"],
+            required: [],
           },
         },
         {
@@ -341,6 +348,57 @@ export async function runMCPServer(): Promise<void> {
           },
         },
         {
+          name: "septum_register_feature",
+          description:
+            "Directly registers or updates an ephemeral or persistent feature/task context in Septum. Establishes an active session lease (.septum/session.json) with allowed_touchpoints and reuse_symbols to enforce surgical blast-radius boundaries during code modifications.",
+          inputSchema: {
+            type: "object",
+            properties: {
+              feature_key: {
+                type: "string",
+                description:
+                  "Unique identifier for the feature/task (e.g. 'penjualan', 'checkout-pos'). Symmetrically accepts 'feature'.",
+              },
+              feature: {
+                type: "string",
+                description: "Alias for 'feature_key'.",
+              },
+              domain: {
+                type: "string",
+                description: "Bounded-context domain to which this feature belongs",
+              },
+              description: {
+                type: "string",
+                description: "Scope and rationale for the feature",
+              },
+              allowed_touchpoints: {
+                type: "array",
+                items: { type: "string" },
+                description: "List of file paths or glob patterns permitted to be edited for this feature",
+              },
+              reuse_symbols: {
+                type: "array",
+                items: { type: "string" },
+                description: "Symbols/services/methods that must be reused rather than duplicated",
+              },
+              input_contract: {
+                type: "object",
+                description: "Expected input payload / DTO schema",
+              },
+              output_contract: {
+                type: "object",
+                description: "Expected output response / return contract",
+              },
+              persist_to_config: {
+                type: "boolean",
+                description: "If true, persists this feature specification to septum.config.json",
+                default: false,
+              },
+            },
+            required: ["feature_key", "domain"],
+          },
+        },
+        {
           name: "septum_get_environment_topology",
           description:
             "Self-Aware Production Topology Engine: Maps and verifies the 6-layer environment topology (Edge/WAF, Gateway/Web Server, Host Platform, Runtime, Storage/Cache, Telemetry). Identifies cross-layer constraints (e.g. Cloudflare + LiteSpeed + Laravel throttle), surfaces pending architectural inquiries if layers are ambiguous, and allows recording verified environment answers to SQLite SSOT.",
@@ -418,7 +476,7 @@ export async function runMCPServer(): Promise<void> {
             ],
           };
         }
-        return handleGetFeatureContext(ctx.repo, ctx.config, parsed.data);
+        return handleGetFeatureContext(ctx.repo, ctx.config, parsed.data, ctx.root);
       } else if (name === "septum_locate_symbol") {
         const parsed = LocateSymbolSchema.safeParse(args ?? {});
         if (!parsed.success) {
@@ -476,7 +534,7 @@ export async function runMCPServer(): Promise<void> {
         }
         return handleTraceVerticalSlice(ctx.repo, ctx.config, parsed.data);
       } else if (name === "septum_clear_feature_context") {
-        const cleared = handleClearFeatureContext();
+        const cleared = handleClearFeatureContext(ctx.root);
         return {
           content: [
             {
@@ -529,6 +587,20 @@ export async function runMCPServer(): Promise<void> {
           };
         }
         return await handleRegisterDomain(ctx.repo, ctx.config, parsed.data);
+      } else if (name === "septum_register_feature") {
+        const parsed = RegisterFeatureSchema.safeParse(args ?? {});
+        if (!parsed.success) {
+          return {
+            isError: true,
+            content: [
+              {
+                type: "text",
+                text: `[Septum Validation Error] Invalid arguments for ${name}: ${parsed.error.message}`,
+              },
+            ],
+          };
+        }
+        return await handleRegisterFeature(ctx.repo, ctx.config, parsed.data);
       } else if (name === "septum_get_environment_topology") {
         const parsed = GetEnvironmentTopologySchema.safeParse(args ?? {});
         if (!parsed.success) {
@@ -641,10 +713,11 @@ export async function runMCPServer(): Promise<void> {
       debounceTimer = setTimeout(async () => {
         try {
           const freshConfig = ConfigLoader.load();
-          const metrics = await bgPipeline.run(freshConfig);
-          if (metrics.files_updated > 0) {
+          const targetPath = resolve(cwd, filename);
+          const updated = await bgPipeline.ingestFile(targetPath, freshConfig);
+          if (updated) {
             console.error(
-              `[Septum Watcher] Auto-synced ${metrics.files_updated} modified file(s) in ${metrics.duration_ms.toFixed(0)}ms.`
+              `[Septum Watcher] Auto-synced modified file '${filename}' via incremental delta sync.`
             );
           }
         } catch (err: unknown) {

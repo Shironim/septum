@@ -76,6 +76,18 @@ export interface FeatureContextResponse {
   input_contract: Record<string, unknown>;
   output_contract: Record<string, unknown>;
   governance_directives?: string[];
+  is_inferred?: boolean;
+}
+
+export interface RegisterFeatureArgs {
+  feature_key: string;
+  domain: string;
+  description?: string;
+  allowed_touchpoints: string[];
+  reuse_symbols?: string[];
+  input_contract?: Record<string, unknown>;
+  output_contract?: Record<string, unknown>;
+  persist_to_config?: boolean;
 }
 
 export interface CheckBoundaryArgs {
@@ -163,7 +175,8 @@ export type BoundaryViolationRule =
   | "forbidden_dependency"
   | "disallowed_dependency"
   | "touchpoint_violation"
-  | "unknown_feature";
+  | "unknown_feature"
+  | "unmapped_domain";
 
 export interface BoundaryViolation {
   file: string;
@@ -199,6 +212,8 @@ export interface ExecutionChainNode {
     | "guard"
     | "validation"
     | "controller"
+    | "action"
+    | "service"
     | "orchestrator"
     | "use_case"
     | "domain"
@@ -222,6 +237,7 @@ export interface ExecutionChainNode {
   emits?: string[];
   dispatches?: string[];
   transactions?: boolean;
+  payload_props?: string[];
 }
 
 export interface VerticalSliceRecord {
@@ -257,6 +273,7 @@ export interface VerticalSliceTraceResponse {
     line?: number;
   };
   chain?: ExecutionChainNode[];
+  slice?: ExecutionChainNode[];
   alternatives?: Array<{
     method: string;
     uri: string;
@@ -305,6 +322,8 @@ export interface InboundCaller {
 
 export interface GetSymbolImpactResponse {
   target_symbol: string;
+  found_in_index: boolean;
+  warning?: string;
   impact_summary: {
     total_dependents: number;
     risk_level: "low" | "medium" | "high";
