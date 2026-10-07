@@ -88,6 +88,12 @@ export class LaravelSemanticExtractor implements SemanticSliceExtractor {
         props: string[];
       } | null = null;
 
+      let actionServices: Array<{
+        className: string;
+        filePath?: string;
+        isService: boolean;
+      }> = [];
+
       let behavioralInfo: import("../behavioral-analyzer.ts").MethodBehavioralSummary | null = null;
       if (controllerInfo.filePath && fs.existsSync(controllerInfo.filePath)) {
         const controllerCode = fs.readFileSync(controllerInfo.filePath, "utf-8");
@@ -121,6 +127,13 @@ export class LaravelSemanticExtractor implements SemanticSliceExtractor {
 
         // 3. Detect Inertia Render / View Target
         frontendInfo = this.detectFrontendTarget(actionBody);
+
+        // 4. Detect Action & Service invocations
+        actionServices = this.detectActionAndServiceInvocations(
+          controllerCode,
+          route.actionName,
+          actionBody
+        );
       }
 
       const chain: ExecutionChainNode[] = [
@@ -160,6 +173,17 @@ export class LaravelSemanticExtractor implements SemanticSliceExtractor {
         mutations: behavioralInfo && behavioralInfo.mutations.length > 0 ? behavioralInfo.mutations : undefined,
         transactions: behavioralInfo?.hasTransaction,
       });
+
+      if (actionServices && actionServices.length > 0) {
+        for (const asItem of actionServices) {
+          chain.push({
+            stage: asItem.isService ? "service" : "action",
+            symbol: asItem.className,
+            file: asItem.filePath,
+            description: asItem.isService ? "Domain Service Invocation" : "Action Invocation",
+          });
+        }
+      }
 
       if (behavioralInfo && behavioralInfo.hasTransaction) {
         chain.push({
@@ -225,6 +249,7 @@ export class LaravelSemanticExtractor implements SemanticSliceExtractor {
           stage: "egress",
           symbol: frontendInfo.target,
           description: "Inertia / Frontend Target",
+          payload_props: frontendInfo.props.length > 0 ? frontendInfo.props : undefined,
         });
       }
 
@@ -534,7 +559,12 @@ export class LaravelSemanticExtractor implements SemanticSliceExtractor {
       const parts = match[1].split(",");
       for (const p of parts) {
         const pMatch = p.trim().match(/^([A-Z][A-Za-z0-9_]+)\s+\$/);
-        if (pMatch && !pMatch[1].endsWith("Request") && pMatch[1] !== "Request") {
+        if (
+          pMatch &&
+          !pMatch[1].endsWith("Request") &&
+          pMatch[1] !== "Request" &&
+          !/(Action|Service|UseCase)$/i.test(pMatch[1])
+        ) {
           return pMatch[1];
         }
       }
@@ -551,16 +581,18 @@ export class LaravelSemanticExtractor implements SemanticSliceExtractor {
 
   private detectFrontendTarget(actionBody: string): { target: string; props: string[] } | null {
     // 1. Inertia::render('Orders/Show', ['order' => $order])
-    const inertiaMatch = actionBody.match(/Inertia::render\s*\(\s*['"]([^'"]+)['"](?:\s*,\s*\[([^\]]*)\])?\s*\)/);
+    const inertiaMatch = actionBody.match(/Inertia::render\s*\(\s*['"]([^'"]+)['"](?:\s*,\s*\[([\s\S]*?)\])?\s*\)/);
     if (inertiaMatch) {
       const pageComponent = inertiaMatch[1]; // e.g. "Orders/Show"
       const rawProps = inertiaMatch[2] || "";
 
-      // Extract prop keys: 'order' => ...
-      const propMatches = rawProps.matchAll(/['"]([A-Za-z0-9_]+)['"]\s*=>/g);
+      // Extract prop keys: 'order' => ... or "order" => ... or order => ...
+      const propMatches = rawProps.matchAll(/['"]?([A-Za-z0-9_]+)['"]?\s*=>/g);
       const props: string[] = [];
       for (const pm of propMatches) {
-        props.push(pm[1]);
+        if (!props.includes(pm[1])) {
+          props.push(pm[1]);
+        }
       }
 
       // Check for Vue, TSX, JSX files in resources/js/Pages
@@ -596,8 +628,114 @@ export class LaravelSemanticExtractor implements SemanticSliceExtractor {
     return null;
   }
 
+  private detectActionAndServiceInvocations(
+    controllerCode: string,
+    actionName: string,
+    actionBody: string
+  ): Array<{
+    className: string;
+    filePath?: string;
+    isService: boolean;
+  }> {
+    const detected = new Map<string, { className: string; filePath?: string; isService: boolean }>();
+
+    // 1. Check method parameters of actionName
+    const methodRegex = new RegExp(
+      `(?:public|protected|private)?\\s*function\\s+${actionName}\\s*\\(([^)]*)\\)`,
+      "i"
+    );
+    const methodMatch = controllerCode.match(methodRegex);
+    if (methodMatch && methodMatch[1]) {
+      const params = methodMatch[1].split(",");
+      for (const param of params) {
+        const cleanParam = param.trim().replace(/^(?:public|protected|private)?\s*(?:readonly)?\s*/i, "").trim();
+        const parts = cleanParam.split(/\s+/);
+        if (parts.length >= 2) {
+          const typehint = parts[0].replace(/^\\/, "").trim();
+          if (/(Action|Service|UseCase)$/i.test(typehint)) {
+            const shortName = typehint.split("\\").pop() || typehint;
+            const isService = /Service$/i.test(shortName);
+            const folder = isService ? "Services" : "Actions";
+            const file = this.findClassFile(folder, shortName);
+            detected.set(shortName, {
+              className: shortName,
+              filePath: file ? path.relative(this.projectRoot, file) : undefined,
+              isService,
+            });
+          }
+        }
+      }
+    }
+
+    // 2. Check constructor injection
+    const ctorMatch = controllerCode.match(/function\s+__construct\s*\(([^)]*)\)/i);
+    if (ctorMatch && ctorMatch[1]) {
+      const params = ctorMatch[1].split(",");
+      for (const param of params) {
+        const cleanParam = param.trim().replace(/^(?:public|protected|private)?\s*(?:readonly)?\s*/i, "").trim();
+        const parts = cleanParam.split(/\s+/);
+        if (parts.length >= 2) {
+          const typehint = parts[0].replace(/^\\/, "").trim();
+          if (/(Action|Service|UseCase)$/i.test(typehint)) {
+            const shortName = typehint.split("\\").pop() || typehint;
+            const isService = /Service$/i.test(shortName);
+            const propName = shortName.charAt(0).toLowerCase() + shortName.slice(1);
+            if (
+              actionBody.includes(shortName) ||
+              actionBody.includes(`$this->${propName}`) ||
+              actionBody.toLowerCase().includes(propName.toLowerCase())
+            ) {
+              const folder = isService ? "Services" : "Actions";
+              const file = this.findClassFile(folder, shortName);
+              detected.set(shortName, {
+                className: shortName,
+                filePath: file ? path.relative(this.projectRoot, file) : undefined,
+                isService,
+              });
+            }
+          }
+        }
+      }
+    }
+
+    // 3. Check static calls or class instantiations inside actionBody
+    const actionServicePattern = /\b([A-Z][a-zA-Z0-9_]*(?:Action|Service|UseCase))\b(?:::|::class|\s*\(|\s*;)/g;
+    let match: RegExpExecArray | null;
+    while ((match = actionServicePattern.exec(actionBody)) !== null) {
+      const cls = match[1];
+      if (!detected.has(cls)) {
+        const isService = /Service$/i.test(cls);
+        const folder = isService ? "Services" : "Actions";
+        const file = this.findClassFile(folder, cls);
+        detected.set(cls, {
+          className: cls,
+          filePath: file ? path.relative(this.projectRoot, file) : undefined,
+          isService,
+        });
+      }
+    }
+
+    // 4. Also scan 'use' imports in controller for App\Actions\... or App\Services\...
+    const usePattern = /use\s+App\\(Actions|Services)\\(?:[a-zA-Z0-9_\\]+\\)?([A-Z][a-zA-Z0-9_]*);/g;
+    while ((match = usePattern.exec(controllerCode)) !== null) {
+      const folder = match[1];
+      const cls = match[2];
+      if (actionBody.includes(cls) && !detected.has(cls)) {
+        const isService = folder === "Services" || /Service$/i.test(cls);
+        const file = this.findClassFile(folder, cls);
+        detected.set(cls, {
+          className: cls,
+          filePath: file ? path.relative(this.projectRoot, file) : undefined,
+          isService,
+        });
+      }
+    }
+
+    return Array.from(detected.values());
+  }
+
   private findClassFile(
-    subDir: "Requests" | "Models" | "Jobs" | "Events" | "Listeners" | "Console/Commands",
+    subDir: "Requests" | "Models" | "Jobs" | "Events" | "Listeners" | "Console/Commands" | "Actions" | "Services" | string,
     className: string
   ): string | null {
     const directPath = path.join(this.projectRoot, `app/${subDir}/${className}.php`);

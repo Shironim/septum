@@ -28,10 +28,11 @@ export class VerticalSliceTracer {
     let allSlices = this.repo.getAllVerticalSlices();
 
     // Lazy on-demand fallback: If no slices cataloged, extract framework routes or trace call-graph
+    const topology = TopologyDetector.detect(this.projectRoot);
+    const isSupportedFramework = ["laravel", "express", "nestjs", "fastify"].includes(topology.framework);
     const hasCatalogData = typeof (this.repo as any).getAllDomains === "function" && this.repo.getAllDomains().length > 0;
-    if (allSlices.length === 0 && hasCatalogData) {
+    if (allSlices.length === 0 && (hasCatalogData || isSupportedFramework)) {
       try {
-        const topology = TopologyDetector.detect(this.projectRoot);
         const semanticSlices = SemanticSliceExtractorRegistry.extractAllSlicesSync(
           this.projectRoot,
           topology.framework
@@ -116,16 +117,24 @@ export class VerticalSliceTracer {
     }
 
     // 4. Controller@Action match: "OrderController@updateStatus" or "OrderController"
-    const controllerActionMatch = trimmed.match(/^([A-Za-z0-9_]+)(?:@([A-Za-z0-9_]+))?$/);
+    const controllerActionMatch = trimmed.match(/^([A-Za-z0-9_\\/.]+?)(?:(?:@|::)([A-Za-z0-9_]+))?$/);
     if (controllerActionMatch) {
-      const [, ctrl, act] = controllerActionMatch;
+      const [, rawCtrl, act] = controllerActionMatch;
+      const ctrl = rawCtrl.split(/[\\/]/).pop()?.replace(/\.(php|ts|js)$/i, "") || rawCtrl;
       const lowerCtrl = ctrl.toLowerCase();
       const lowerAct = act ? act.toLowerCase() : undefined;
 
       const exact = allSlices.find((s) => {
-        const ctrlMatch = s.controller_class.toLowerCase() === lowerCtrl || s.controller_class.toLowerCase().endsWith(lowerCtrl);
+        const sCtrlLower = s.controller_class.toLowerCase();
+        const ctrlMatch =
+          sCtrlLower === lowerCtrl ||
+          sCtrlLower.endsWith(`\\${lowerCtrl}`) ||
+          sCtrlLower.endsWith(`/${lowerCtrl}`);
         if (!ctrlMatch) return false;
         if (lowerAct) return s.action_name.toLowerCase() === lowerAct;
+        if (!act && !lowerCtrl.endsWith("controller") && sCtrlLower !== lowerCtrl) {
+          return false;
+        }
         return true;
       });
       if (exact) {
@@ -201,8 +210,14 @@ export class VerticalSliceTracer {
   }
 
   private urisMatch(uriA: string, uriB: string): boolean {
-    const normA = uriA.toLowerCase().replace(/\{[^}]+\}/g, ":param");
-    const normB = uriB.toLowerCase().replace(/\{[^}]+\}/g, ":param").replace(/:[a-zA-Z0-9_]+/g, ":param");
+    const normA = uriA
+      .toLowerCase()
+      .replace(/\{[^}]+\}/g, ":param")
+      .replace(/:[a-zA-Z0-9_]+/g, ":param");
+    const normB = uriB
+      .toLowerCase()
+      .replace(/\{[^}]+\}/g, ":param")
+      .replace(/:[a-zA-Z0-9_]+/g, ":param");
     return normA === normB;
   }
 
@@ -273,6 +288,7 @@ export class VerticalSliceTracer {
         line: record.controller_line,
       },
       chain,
+      slice: chain,
       alternatives: alternatives?.map((a) => ({
         method: a.http_method,
         uri: a.route_uri,

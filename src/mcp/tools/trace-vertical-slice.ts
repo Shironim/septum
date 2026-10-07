@@ -21,6 +21,9 @@ export function handleTraceVerticalSlice(
   const workspaceRoot = (config.settings as Record<string, unknown>)?.workspace_root as string || process.cwd();
   const tracer = new VerticalSliceTracer(repo, workspaceRoot);
   const result: VerticalSliceTraceResponse = tracer.trace(args.query);
+  if (result.chain && !result.slice) {
+    result.slice = result.chain;
+  }
 
   let formattedText = result.message;
 
@@ -34,6 +37,10 @@ export function handleTraceVerticalSlice(
     for (const alt of result.alternatives) {
       formattedText += `    - ${alt.method} ${alt.uri} -> ${alt.controller}@${alt.action}\n`;
     }
+  }
+
+  if (!formattedText || !formattedText.trim()) {
+    formattedText = `[Septum Status: Unindexed/Not Found]\nNo vertical slice or matching route/controller found for query '${args.query}'.\nIf this project/domain is not yet registered in Septum, run 'septum_register_domain' to initialize the domain catalog, or verify domain boundaries in .septum.`;
   }
 
   return {
