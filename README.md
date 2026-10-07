@@ -2,7 +2,7 @@
 
 > **Deterministic Bounded-Context & Anti-Poisoning Architecture Guard for AI Coding Agents.**
 
-[![Version: 0.1.4](https://img.shields.io/badge/Version-0.1.4-blue)](package.json)
+[![Version: 0.1.5](https://img.shields.io/badge/Version-0.1.5-blue)](package.json)
 [![Runtime: Bun](https://img.shields.io/badge/Runtime-Bun-black?logo=bun)](https://bun.sh)
 [![Protocol: Model Context Protocol](https://img.shields.io/badge/Protocol-MCP-green)](https://modelcontextprotocol.io/)
 [![Database: SQLite WAL](https://img.shields.io/badge/Database-SQLite%20(bun:sqlite)-003B57?logo=sqlite)](https://sqlite.org/)
