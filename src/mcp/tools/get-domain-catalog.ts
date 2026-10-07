@@ -15,10 +15,12 @@ export function handleGetDomainCatalog(
   args: GetDomainCatalogArgs,
   workspaceRoot?: string
 ) {
+  const targetRoot = args.workspace_path || workspaceRoot || (repo as any)?.projectRoot || process.cwd();
+
   if (!args.domain) {
     const allDomains = repo.getAllDomains();
     if (allDomains.length === 0) {
-      const root = workspaceRoot || process.cwd();
+      const root = targetRoot;
       const diagnostic = {
         status: "NOT_INDEXED",
         total_domains: 0,
@@ -88,7 +90,7 @@ export function handleGetDomainCatalog(
   }
 
   // Record access log for Gate 3 (Mandatory Catalog Consultation)
-  recordCatalogAccess(args.domain);
+  recordCatalogAccess(args.domain, targetRoot);
 
   // Token-efficient serialization: keep payload dense and under 500 tokens
   return {
@@ -101,9 +103,9 @@ export function handleGetDomainCatalog(
   };
 }
 
-function recordCatalogAccess(domain: string): void {
+function recordCatalogAccess(domain: string, projectRoot: string = process.cwd()): void {
   try {
-    const septumDir = path.resolve(process.cwd(), ".septum");
+    const septumDir = path.resolve(projectRoot, ".septum");
     if (!fs.existsSync(septumDir)) {
       fs.mkdirSync(septumDir, { recursive: true });
     }

@@ -140,6 +140,8 @@ export class DependencyRepository {
     if (!trimmed) {
       return {
         target_symbol: symbolQuery,
+        found_in_index: false,
+        warning: "Empty symbol query provided.",
         impact_summary: {
           total_dependents: 0,
           risk_level: "low",
@@ -265,8 +267,23 @@ export class DependencyRepository {
       riskLevel = "medium";
     }
 
+    // 3. Determine if symbol exists in index
+    const symbolInDb = this.db
+      .query<{ count: number }, [string, string, string]>(
+        `SELECT COUNT(*) as count FROM symbols 
+         WHERE name = ? OR name = ? OR name = ? LIMIT 1`
+      )
+      .get(trimmed, targetContainer, targetMethod || trimmed)?.count ?? 0;
+
+    const foundInIndex = symbolInDb > 0 || depRows.length > 0;
+    const warning = foundInIndex
+      ? undefined
+      : `Symbol '${trimmed}' was not found in Septum index (neither in declared symbols nor tracked dependencies). Risk assessment defaults to low (0 callers) due to unindexed status.`;
+
     return {
       target_symbol: trimmed,
+      found_in_index: foundInIndex,
+      warning,
       impact_summary: {
         total_dependents: inboundCallers.length,
         risk_level: riskLevel,

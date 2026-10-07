@@ -1,3 +1,5 @@
+import * as fs from "node:fs";
+import * as path from "node:path";
 import type { ExtractedDependency, ExtractedSymbol, ParsedFileAST, Visibility } from "../../../types/index.ts";
 import { findBraceBlockEnd, calculateControlFlowNesting } from "../boundary-tracker.ts";
 import type { CodeExtractor } from "./base.ts";
@@ -72,7 +74,7 @@ export class GoExtractor implements CodeExtractor {
         const blockMatch = /^(?:[\w.]+\s+)?["']([^"']+)["']/.exec(trimmed);
         if (blockMatch) {
           const importPath = blockMatch[1];
-          const isExternal = this.isGoStdlib(importPath);
+          const isExternal = this.isExternalImport(importPath, filePath);
           dependencies.push({
             target: importPath,
             statement: trimmed,
@@ -87,7 +89,7 @@ export class GoExtractor implements CodeExtractor {
       const singleMatch = /^import\s+(?:[\w.]+\s+)?["']([^"']+)["']/.exec(trimmed);
       if (singleMatch) {
         const importPath = singleMatch[1];
-        const isExternal = this.isGoStdlib(importPath);
+        const isExternal = this.isExternalImport(importPath, filePath);
         dependencies.push({
           target: importPath,
           statement: trimmed,
@@ -171,6 +173,53 @@ export class GoExtractor implements CodeExtractor {
       symbols,
       dependencies,
     };
+  }
+
+  private isExternalImport(importPath: string, filePath?: string): boolean {
+    if (this.isGoStdlib(importPath)) {
+      return true;
+    }
+    if (importPath.startsWith(".") || importPath.startsWith("/")) {
+      return false;
+    }
+    const modName = this.findGoModuleName(filePath);
+    if (modName) {
+      if (importPath === modName || importPath.startsWith(`${modName}/`)) {
+        return false;
+      }
+      return true;
+    }
+
+    if (
+      importPath.includes("/domains/") ||
+      importPath.includes("/internal/") ||
+      importPath.includes("/pkg/")
+    ) {
+      return false;
+    }
+
+    if (importPath.includes(".")) {
+      return true;
+    }
+
+    return false;
+  }
+
+  private findGoModuleName(filePath?: string): string | null {
+    if (!filePath) return null;
+    try {
+      let currentDir = path.dirname(path.resolve(filePath));
+      while (currentDir && currentDir !== path.dirname(currentDir)) {
+        const goModPath = path.join(currentDir, "go.mod");
+        if (fs.existsSync(goModPath)) {
+          const content = fs.readFileSync(goModPath, "utf-8");
+          const match = /^module\s+([^\s\r\n]+)/m.exec(content);
+          if (match) return match[1];
+        }
+        currentDir = path.dirname(currentDir);
+      }
+    } catch {}
+    return null;
   }
 
   private isGoStdlib(importPath: string): boolean {

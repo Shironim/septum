@@ -86,6 +86,10 @@ export class SeptumRepository {
     return this.files.getFilesByDomain(domainId);
   }
 
+  public getAllFiles(): FileRecord[] {
+    return this.files.getAllFiles();
+  }
+
   public upsertFile(
     domainId: number,
     path: string,

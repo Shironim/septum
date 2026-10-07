@@ -91,12 +91,32 @@ export class DomainRepository {
 
     const catalogFiles: DomainCatalogResponse["files"] = [];
 
-    for (const file of files) {
-      const symbols = this.db
+    // Batch retrieve symbols for all files in one query to eliminate N+1 roundtrips
+    const symbolsByFileId = new Map<number, SymbolRecord[]>();
+    for (const f of files) {
+      symbolsByFileId.set(f.id, []);
+    }
+
+    if (files.length > 0) {
+      const allDomainSymbols = this.db
         .query<SymbolRecord, [number]>(
-          "SELECT * FROM symbols WHERE file_id = ? ORDER BY line_start ASC"
+          `SELECT s.* FROM symbols s
+           JOIN files f ON s.file_id = f.id
+           WHERE f.domain_id = ?
+           ORDER BY s.file_id ASC, s.line_start ASC`
         )
-        .all(file.id);
+        .all(domain.id);
+
+      for (const sym of allDomainSymbols) {
+        const list = symbolsByFileId.get(sym.file_id);
+        if (list) {
+          list.push(sym);
+        }
+      }
+    }
+
+    for (const file of files) {
+      const symbols = symbolsByFileId.get(file.id) ?? [];
 
       const symbolMap = new Map<
         string,

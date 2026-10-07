@@ -21,6 +21,7 @@ export interface DiscoveredRoute {
 
 export class CallGraphTracer {
   private fileMapByNormPath: Map<string, FileRecord> = new Map();
+  private fileMapById: Map<number, FileRecord> = new Map();
   private symbolsByFileId: Map<number, SymbolRecord[]> = new Map();
   private dependenciesByFileId: Map<
     number,
@@ -37,13 +38,11 @@ export class CallGraphTracer {
     const allDeps = this.repo.getAllDependenciesWithDomains();
 
     // Map files
-    const allDomains = this.repo.getAllDomains();
-    for (const domain of allDomains) {
-      const files = this.repo.getFilesByDomain(domain.id);
-      for (const f of files) {
-        const norm = this.normalizeFilePath(f.path);
-        this.fileMapByNormPath.set(norm, f);
-      }
+    const allFiles = this.repo.getAllFiles();
+    for (const f of allFiles) {
+      const norm = this.normalizeFilePath(f.path);
+      this.fileMapByNormPath.set(norm, f);
+      this.fileMapById.set(f.id, f);
     }
 
     // Map symbols
@@ -563,10 +562,9 @@ export class CallGraphTracer {
     for (const [fileId, syms] of this.symbolsByFileId.entries()) {
       const match = syms.find((s) => s.name === cleanSymbol);
       if (match) {
-        for (const file of this.fileMapByNormPath.values()) {
-          if (file.id === fileId) {
-            return { file: file.path, line: match.line_start };
-          }
+        const file = this.fileMapById.get(fileId);
+        if (file) {
+          return { file: file.path, line: match.line_start };
         }
       }
     }

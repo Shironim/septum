@@ -22,6 +22,12 @@ export class FileRepository {
       .all(domainId);
   }
 
+  public getAllFiles(): FileRecord[] {
+    return this.db
+      .query<FileRecord, []>("SELECT * FROM files ORDER BY path ASC")
+      .all();
+  }
+
   public countFiles(): number {
     const row = this.db
       .query<{ count: number }, []>("SELECT COUNT(*) as count FROM files")
@@ -76,14 +82,18 @@ export class FileRepository {
     }
     const existingFiles = this.getFilesByDomain(domainId);
     const validSet = new Set(validPaths);
-    let deletedCount = 0;
-    for (const f of existingFiles) {
-      if (!validSet.has(f.path)) {
-        this.db.query("DELETE FROM files WHERE id = ?").run(f.id);
-        deletedCount++;
-      }
+    const idsToDelete = existingFiles.filter((f) => !validSet.has(f.path)).map((f) => f.id);
+    if (idsToDelete.length === 0) return 0;
+
+    const chunkSize = 200;
+    let totalDeleted = 0;
+    for (let i = 0; i < idsToDelete.length; i += chunkSize) {
+      const chunk = idsToDelete.slice(i, i + chunkSize);
+      const placeholders = chunk.map(() => "?").join(",");
+      const res = this.db.query(`DELETE FROM files WHERE id IN (${placeholders})`).run(...chunk);
+      totalDeleted += Number(res.changes);
     }
-    return deletedCount;
+    return totalDeleted;
   }
 
   public deleteFile(path: string): void {

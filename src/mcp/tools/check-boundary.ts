@@ -7,6 +7,10 @@ export interface CheckBoundaryArgs {
   filePath?: string;
   file?: string;
   path?: string;
+  from_file?: string;
+  fromFile?: string;
+  to_file?: string | string[];
+  toFile?: string | string[];
   file_paths?: string[];
   filePaths?: string[];
   files?: string[];
@@ -25,9 +29,14 @@ export function handleCheckBoundary(
   args: CheckBoundaryArgs,
   repo?: SeptumRepository
 ) {
+  const rawToFile = args.to_file ?? args.toFile;
+  const toFileImports = rawToFile ? (Array.isArray(rawToFile) ? rawToFile.map(String) : [String(rawToFile)]) : [];
   const rawFilePaths = args.file_paths ?? args.filePaths ?? args.files ?? args.paths;
-  const rawFilePath = args.file_path ?? args.filePath ?? args.file ?? args.path;
-  const proposedImports = args.proposed_imports ?? args.proposedImports ?? args.imports ?? [];
+  const rawFilePath = args.file_path ?? args.filePath ?? args.file ?? args.path ?? args.from_file ?? args.fromFile;
+  const proposedImports = [
+    ...(args.proposed_imports ?? args.proposedImports ?? args.imports ?? []),
+    ...toFileImports,
+  ];
   const featureKey = args.feature_key ?? args.featureKey ?? args.feature;
 
   const filesToCheck: string[] = [];
@@ -78,6 +87,8 @@ export function handleCheckBoundary(
               results,
               message: hasViolations
                 ? `${totalViolations} boundary violation(s) detected across ${filesToCheck.length} file(s).`
+                : Object.keys(config?.domains || {}).length === 0
+                ? `All ${filesToCheck.length} file(s) approved. [Septum Notice: Domain catalog is currently unindexed. Run 'septum_register_domain' to initialize bounded contexts.]`
                 : `All ${filesToCheck.length} file(s) approved. No boundary violations detected.`,
             },
             null,
@@ -112,7 +123,12 @@ export function handleCheckBoundary(
                     risk_level: impact.risk_level,
                   }
                 : undefined,
-              message: "Boundary violation detected. Proposed imports violate bounded context architecture.",
+              message:
+                Object.keys(config?.domains || {}).length === 0
+                  ? "Boundary integrity check failed: Domain catalog is currently unindexed. Run 'septum_register_domain' to initialize bounded contexts."
+                  : violations.some((v) => v.rule === "unmapped_domain")
+                  ? "Boundary integrity check failed: File does not belong to any declared bounded context."
+                  : "Boundary violation detected. Proposed imports violate bounded context architecture.",
             },
             null,
             2
@@ -139,7 +155,9 @@ export function handleCheckBoundary(
                 }
               : undefined,
             message:
-              impact && impact.direct_dependents_count > 0
+              Object.keys(config?.domains || {}).length === 0
+                ? "No boundary violations detected. [Septum Notice: Domain catalog is currently unindexed. Run 'septum_register_domain' to initialize bounded contexts.]"
+                : impact && impact.direct_dependents_count > 0
                 ? `No boundary violations detected. Caution: ${impact.direct_dependents_count} dependent file(s) consume this file.`
                 : "No boundary violations detected. Proposed imports are permissible.",
           },

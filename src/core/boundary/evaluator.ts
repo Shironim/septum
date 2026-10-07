@@ -95,6 +95,15 @@ export class BoundaryEvaluator {
     const sourceDomain = this.resolveSourceDomain(sourceFilePath, config);
 
     if (!sourceDomain) {
+      violations.push({
+        file: sourceFilePath,
+        line: 1,
+        source_domain: "unmapped",
+        target_domain: "unknown",
+        imported_target: "",
+        rule: "unmapped_domain",
+        message: `File '${sourceFilePath}' does not belong to any declared bounded context. Boundary integrity cannot be enforced.`,
+      });
       return violations;
     }
 
@@ -177,6 +186,9 @@ export class BoundaryEvaluator {
       tp.replace(/\\/g, "/").replace(/^\.\//, "")
     );
 
+    const domainCfg = config.domains[featureConfig.domain];
+    const domainRoot = domainCfg?.root ? domainCfg.root.replace(/\\/g, "/").replace(/^\.\//, "") : "";
+
     const isAllowed = allowedTouchpoints.some((pattern) => {
       if (pattern.endsWith("/**")) {
         const prefix = pattern.slice(0, -3);
@@ -186,11 +198,21 @@ export class BoundaryEvaluator {
         const prefix = pattern.slice(0, -2);
         return normalizedTarget.startsWith(prefix);
       }
-      return (
-        normalizedTarget === pattern ||
-        normalizedTarget.endsWith("/" + pattern) ||
-        pattern.endsWith("/" + normalizedTarget)
-      );
+      if (normalizedTarget === pattern) return true;
+
+      if (
+        domainRoot &&
+        (normalizedTarget === `${domainRoot}/${pattern}` ||
+          normalizedTarget.startsWith(`${domainRoot}/${pattern}`))
+      ) {
+        return true;
+      }
+
+      if (pattern.includes("/") && normalizedTarget.endsWith("/" + pattern)) {
+        return true;
+      }
+
+      return false;
     });
 
     if (!isAllowed) {

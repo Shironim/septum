@@ -62,12 +62,13 @@ export class IngestionPipeline {
     for (const domainName of domainNames) {
       const domainCfg = config.domains[domainName];
       const domainId = this.repo.upsertDomain(domainName, domainCfg);
+      const workspaceRoot = this.resolveWorkspaceRoot(config, domainCfg.root);
+      const absDomainRoot = resolve(workspaceRoot, domainCfg.root);
 
-      if (!existsSync(domainCfg.root)) {
+      if (!existsSync(absDomainRoot)) {
         continue;
       }
 
-      const workspaceRoot = this.resolveWorkspaceRoot(config, domainCfg.root);
       const normCurrentRoot = domainCfg.root.replace(/\\/g, "/").replace(/^\.\/?/, "");
       const childDomainRoots = domainNames
         .filter((d) => d !== domainName)
@@ -79,7 +80,7 @@ export class IngestionPipeline {
         });
 
       const collectedFiles = this.collectFiles(
-        domainCfg.root,
+        absDomainRoot,
         workspaceRoot,
         config.settings.ignore_patterns,
         childDomainRoots
@@ -304,6 +305,30 @@ export class IngestionPipeline {
         };
       }
 
+      if (existsSync(join(projectRoot, "routes"))) {
+        domains["routes"] = {
+          root: "routes",
+          description: "Laravel HTTP Route Definitions (auto-discovered)",
+          allowed_dependencies: [],
+          forbidden_dependencies: [],
+          archetypes: {
+            route: "routes/**/*.php",
+          },
+        };
+      }
+
+      if (existsSync(join(projectRoot, "database"))) {
+        domains["database"] = {
+          root: "database",
+          description: "Laravel Migrations and Database Schemas (auto-discovered)",
+          allowed_dependencies: [],
+          forbidden_dependencies: [],
+          archetypes: {
+            migration: "database/migrations/**/*.php",
+          },
+        };
+      }
+
       return domains;
     }
 
@@ -435,10 +460,34 @@ export class IngestionPipeline {
     return process.cwd();
   }
 
-  private shouldIgnore(path: string, ignorePatterns: string[]): boolean {
+  private shouldIgnore(filePath: string, ignorePatterns: string[]): boolean {
+    const normPath = filePath.replace(/\\/g, "/").replace(/^\.\//, "");
     for (const pattern of ignorePatterns) {
-      const cleanPattern = pattern.replace(/\/\*\*|\*|\*\*/g, "");
-      if (path.includes(cleanPattern)) {
+      const normPattern = pattern.replace(/\\/g, "/").replace(/^\.\//, "").trim();
+      if (!normPattern) continue;
+
+      if (normPattern === "*" || normPattern === "**") {
+        return true;
+      }
+
+      if (normPath === normPattern) return true;
+
+      if (normPattern.endsWith("/**")) {
+        const prefix = normPattern.slice(0, -3);
+        if (normPath === prefix || normPath.startsWith(prefix + "/")) return true;
+      } else if (normPattern.endsWith("/*")) {
+        const prefix = normPattern.slice(0, -2);
+        if (normPath === prefix || normPath.startsWith(prefix + "/")) return true;
+      } else if (normPath.startsWith(normPattern + "/")) {
+        return true;
+      }
+
+      if (normPattern.startsWith("*.") && normPath.endsWith(normPattern.slice(1))) {
+        return true;
+      }
+
+      const segments = normPath.split("/");
+      if (segments.includes(normPattern)) {
         return true;
       }
     }

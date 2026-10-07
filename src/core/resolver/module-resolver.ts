@@ -142,19 +142,31 @@ export class ModuleResolver {
     }
 
     // 6. Root path segment matching (fallback for explicit domain root references)
+    // Only apply if the target explicitly references a domain root or is a path within the workspace
     const normalizedSlash = normalizedTarget.replace(/\\/g, "/").toLowerCase();
-    for (const [domainName, domainCfg] of Object.entries(config.domains)) {
-      const domainRootSlash = domainCfg.root.replace(/\\/g, "/").replace(/^\.\//, "").toLowerCase();
-      const lowerDomain = domainName.toLowerCase();
+    const isBarePackage =
+      !normalizedTarget.startsWith(".") &&
+      !normalizedTarget.startsWith("/") &&
+      !normalizedTarget.includes(path.sep) &&
+      !normalizedTarget.includes("/");
 
-      if (
-        normalizedSlash.includes(`/${domainRootSlash}/`) ||
-        normalizedSlash.startsWith(`${domainRootSlash}/`) ||
-        normalizedSlash === domainRootSlash ||
-        normalizedSlash.includes(`/${lowerDomain}/`) ||
-        normalizedSlash.endsWith(`/${lowerDomain}`)
-      ) {
-        return domainName;
+    if (!isBarePackage) {
+      for (const [domainName, domainCfg] of Object.entries(config.domains)) {
+        const domainRootSlash = domainCfg.root.replace(/\\/g, "/").replace(/^\.\//, "").toLowerCase();
+
+        if (
+          normalizedSlash === domainRootSlash ||
+          normalizedSlash.startsWith(`${domainRootSlash}/`) ||
+          normalizedSlash.includes(`/${domainRootSlash}/`)
+        ) {
+          return domainName;
+        }
+
+        const candidateAbs = path.resolve(this.projectRoot, normalizedTarget);
+        const domainAbsRoot = this.toAbsolutePath(domainCfg.root);
+        if (this.isSubPathOrSame(candidateAbs, domainAbsRoot) && fs.existsSync(candidateAbs)) {
+          return domainName;
+        }
       }
     }
 
@@ -250,6 +262,41 @@ export class ModuleResolver {
     return null;
   }
 
+  public fileExistsOnDisk(targetPath: string): boolean {
+    if (fs.existsSync(targetPath)) {
+      try {
+        const stat = fs.statSync(targetPath);
+        if (stat.isFile()) return true;
+        if (stat.isDirectory()) {
+          const indexExtensions = [".ts", ".tsx", ".js", ".jsx", ".d.ts"];
+          for (const ext of indexExtensions) {
+            if (fs.existsSync(path.join(targetPath, `index${ext}`))) {
+              return true;
+            }
+          }
+        }
+      } catch {
+        return false;
+      }
+    }
+
+    const extensions = [".ts", ".tsx", ".js", ".jsx", ".d.ts", ".json"];
+    for (const ext of extensions) {
+      if (fs.existsSync(targetPath + ext)) {
+        return true;
+      }
+    }
+
+    const indexExtensions = [".ts", ".tsx", ".js", ".jsx", ".d.ts"];
+    for (const ext of indexExtensions) {
+      if (fs.existsSync(path.join(targetPath, `index${ext}`))) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
   private resolveTsPathAlias(target: string): string | null {
     for (const rule of this.tsPaths) {
       if (rule.prefix.endsWith("*")) {
@@ -259,13 +306,19 @@ export class ModuleResolver {
           for (const targetPattern of rule.targets) {
             const candidate = targetPattern.replace("*", suffix);
             const baseDir = path.resolve(this.projectRoot, this.tsBaseUrl);
-            return path.resolve(baseDir, candidate);
+            const resolved = path.resolve(baseDir, candidate);
+            if (this.fileExistsOnDisk(resolved)) {
+              return resolved;
+            }
           }
         }
       } else if (target === rule.prefix) {
         for (const targetPattern of rule.targets) {
           const baseDir = path.resolve(this.projectRoot, this.tsBaseUrl);
-          return path.resolve(baseDir, targetPattern);
+          const resolved = path.resolve(baseDir, targetPattern);
+          if (this.fileExistsOnDisk(resolved)) {
+            return resolved;
+          }
         }
       }
     }
@@ -281,6 +334,12 @@ export class ModuleResolver {
         const subNamespace = normalizedTarget.slice(rule.prefix.length);
         const subPath = subNamespace.replace(/\\/g, path.sep);
         const resolved = path.resolve(this.projectRoot, rule.baseDir, subPath);
+        if (!resolved.endsWith(".php") && !resolved.endsWith(".inc")) {
+          const withPhp = `${resolved}.php`;
+          if (fs.existsSync(withPhp)) {
+            return withPhp;
+          }
+        }
         return resolved;
       }
     }
@@ -335,6 +394,9 @@ export class ModuleResolver {
 
       extractPsr4(parsed.autoload);
       extractPsr4(parsed["autoload-dev"]);
+
+      // Sort longest-prefix-first to prevent short prefixes from shadowing specific ones
+      this.psr4Rules.sort((a, b) => b.prefix.length - a.prefix.length);
     } catch {
       // Graceful fallback if composer.json is malformed
     }
