@@ -9,7 +9,8 @@ import {
 } from "../../core/resolver/symbol-locator.ts";
 
 export interface LocateSymbolArgs {
-  query: string;
+  query?: string;
+  symbol?: string;
   domain?: string;
   workspace_path?: string;
 }
@@ -21,7 +22,8 @@ export async function handleLocateSymbol(
   pipeline?: IngestionPipeline,
   workspaceRoot?: string
 ) {
-  if (!args.query) {
+  const query = (args.query || args.symbol || "").toString().trim();
+  if (!query) {
     throw new Error(
       "Missing required argument: 'query' (e.g. 'OrderController::calculateTotal' or error log snippet)"
     );
@@ -41,7 +43,7 @@ export async function handleLocateSymbol(
       const diagnostic = {
         status: "NOT_INDEXED",
         found: false,
-        query: args.query,
+        query,
         message: `Workspace '${root}' belum terindeks dalam Septum catalog.`,
         suggested_action: {
           tool: "septum_register_domain",
@@ -64,7 +66,7 @@ export async function handleLocateSymbol(
   }
 
   const locator = new SymbolLocator(repo);
-  let result: SymbolLocationResult = locator.locate(args.query, args.domain);
+  let result: SymbolLocationResult = locator.locate(query, args.domain);
 
   // 2. JIT Delta Sync: Check if located file has changed on disk since last ingest
   if (result.found && result.file_path && pipeline) {
@@ -74,7 +76,7 @@ export async function handleLocateSymbol(
     try {
       const reindexed = await pipeline.ingestFile(fullPath, config);
       if (reindexed) {
-        result = locator.locate(args.query, args.domain);
+        result = locator.locate(query, args.domain);
       }
     } catch {
       // Silently fall back to existing result
@@ -84,7 +86,7 @@ export async function handleLocateSymbol(
   // 3. Fallback on Cache Miss: Search for candidate source files matching the query terms
   if (!result.found && pipeline) {
     try {
-      const cleanTerm = args.query.replace(/[^a-zA-Z0-9_]/g, " ").trim().split(/\s+/)[0] || "";
+      const cleanTerm = query.replace(/[^a-zA-Z0-9_]/g, " ").trim().split(/\s+/)[0] || "";
       if (cleanTerm.length >= 3) {
         const candidateFiles = findCandidateFiles(root, cleanTerm);
         let anyReindexed = false;
@@ -93,7 +95,7 @@ export async function handleLocateSymbol(
           if (reindexed) anyReindexed = true;
         }
         if (anyReindexed) {
-          result = locator.locate(args.query, args.domain);
+          result = locator.locate(query, args.domain);
         }
       }
     } catch {
@@ -101,52 +103,31 @@ export async function handleLocateSymbol(
     }
   }
 
-  let formattedText = "";
+  const summary = result.found
+    ? `[FOUND] ${result.exact_symbol?.name || query} in ${result.file_path} (lines ${result.exact_symbol?.line_start}-${result.exact_symbol?.line_end})`
+    : `[NOT FOUND] Symbol '${query}' not found. ${result.suggestions.length > 0 ? `Top suggestions: ${result.suggestions.map((s) => s.name).slice(0, 3).join(", ")}` : "No close suggestions."}`;
 
-  if (result.found) {
-    formattedText = `=== SYMBOL LOCATED ===\n`;
-    formattedText += `Status: FOUND (Exact Match)\n`;
-    formattedText += `File: ${result.file_path}\n`;
-    if (result.exact_symbol) {
-      formattedText += `Symbol: ${result.exact_symbol.name} [${result.exact_symbol.kind.toUpperCase()}]\n`;
-      formattedText += `Signature: ${result.exact_symbol.signature}\n`;
-      formattedText += `Lines: ${result.exact_symbol.line_start} - ${result.exact_symbol.line_end}\n`;
-    }
-    if (result.sibling_methods && result.sibling_methods.length > 0) {
-      formattedText += `\nSibling Methods in ${result.container_name || "Container"} (${result.sibling_methods.length}):\n`;
-      formattedText += `  ${result.sibling_methods.join(", ")}\n`;
-    }
-  } else {
-    formattedText = `=== SYMBOL NOT FOUND / DIAGNOSTIC RESOLUTION ===\n`;
-    formattedText += `Status: NOT FOUND\n`;
-    if (result.file_path) {
-      formattedText += `Target File: ${result.file_path}\n`;
-      formattedText += `Target Container: ${result.container_name || "Unknown"}\n`;
-    }
-    formattedText += `Message: ${result.message}\n`;
-
-    if (result.sibling_methods && result.sibling_methods.length > 0) {
-      formattedText += `\nExisting Methods in ${result.container_name || "Container"} (${result.sibling_methods.length}):\n`;
-      formattedText += `  ${result.sibling_methods.join(", ")}\n`;
-    }
-
-    if (result.suggestions.length > 0) {
-      formattedText += `\nTop Suggestions (Ranked by Similarity):\n`;
-      for (const sug of result.suggestions) {
-        const percent = Math.round(sug.similarity_score * 100);
-        formattedText += `  • ${sug.name} [${percent}% match] -> lines ${sug.line_start}-${sug.line_end} (${sug.signature})\n`;
-      }
-    }
-  }
+  const payload = {
+    status: result.found ? "success" : "not_found",
+    found: result.found,
+    query,
+    file_path: result.file_path || null,
+    container_name: result.container_name || null,
+    exact_symbol: result.exact_symbol || null,
+    sibling_methods: result.sibling_methods || [],
+    suggestions: result.suggestions || [],
+    summary,
+    message: result.message || summary,
+  };
 
   return {
     content: [
       {
-        type: "text",
-        text: formattedText.trim(),
+        type: "text" as const,
+        text: JSON.stringify(payload, null, 2),
       },
     ],
-    metadata: result,
+    metadata: payload,
   };
 }
 

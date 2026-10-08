@@ -30,6 +30,10 @@ export class ModuleResolver {
     this.repo = repo;
   }
 
+  public getProjectRoot(): string {
+    return this.projectRoot;
+  }
+
   /**
    * Lazily loads project configuration files (tsconfig.json, composer.json)
    */

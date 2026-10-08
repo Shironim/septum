@@ -6,15 +6,17 @@ import type { GetSymbolArgs } from "../../types/index.ts";
 export function handleGetSymbol(
   repo: SeptumRepository,
   _config: ValidatedSeptumConfig,
-  args: GetSymbolArgs
+  args: GetSymbolArgs,
+  _workspaceRoot?: string
 ) {
-  if (!args.symbol) {
+  const symbol = (args.symbol || (args as unknown as Record<string, unknown>).query || "").toString().trim();
+  if (!symbol) {
     throw new Error(
       "Missing required argument: 'symbol' (e.g. 'OrderController::cancelOrder', 'OrderService', or 'cancelOrder')"
     );
   }
 
-  const details = repo.getSymbolDetails(args.symbol, {
+  const details = repo.getSymbolDetails(symbol, {
     domain: args.domain,
     includeDependencies: args.include_dependencies,
   });
@@ -32,12 +34,12 @@ export function handleGetSymbol(
 
   // Fallback to fuzzy SymbolLocator to provide actionable hints
   const locator = new SymbolLocator(repo);
-  const fallback = locator.locate(args.symbol, args.domain);
+  const fallback = locator.locate(symbol, args.domain);
 
   const payload = {
-    symbol: args.symbol,
+    symbol,
     found: false,
-    message: `Symbol '${args.symbol}' was not found in the deterministic catalog.`,
+    message: `Symbol '${symbol}' was not found in the deterministic catalog.`,
     suggestions: fallback.suggestions.map((s) => ({
       name: s.name,
       similarity_score: Math.round(s.similarity_score * 100) / 100,

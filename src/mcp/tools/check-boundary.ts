@@ -27,7 +27,8 @@ export function handleCheckBoundary(
   evaluator: BoundaryEvaluator,
   config: ValidatedSeptumConfig,
   args: CheckBoundaryArgs,
-  repo?: SeptumRepository
+  repo?: SeptumRepository,
+  _workspaceRoot?: string
 ) {
   const rawToFile = args.to_file ?? args.toFile;
   const toFileImports = rawToFile ? (Array.isArray(rawToFile) ? rawToFile.map(String) : [String(rawToFile)]) : [];

@@ -14,7 +14,8 @@ export interface GetSymbolHotspotsArgs {
 export function handleGetSymbolHotspots(
   repo: DatabaseRepository,
   _config: ValidatedSeptumConfig,
-  args: GetSymbolHotspotsArgs
+  args: GetSymbolHotspotsArgs,
+  _workspaceRoot?: string
 ) {
   const minLines = args.min_lines ?? (args.min_nesting ? 0 : 30);
   const minNesting = args.min_nesting ?? 1;

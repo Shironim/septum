@@ -83,10 +83,32 @@ export function handleGetDomainCatalog(
 
   const catalog = repo.getDomainCatalog(args.domain, args.archetype_filter);
   if (!catalog) {
-    const available = Object.keys(config.domains).join(", ");
-    throw new Error(
-      `Domain '${args.domain}' not found. Available domains in Septum catalog: [${available}]. Run 'septum ingest' or 'septum_register_domain' if recently added.`
+    const available = Object.keys(config.domains || {});
+    const suggestions = available.filter((d) =>
+      d.toLowerCase().includes(args.domain!.toLowerCase()) ||
+      args.domain!.toLowerCase().includes(d.toLowerCase())
     );
+    const notFoundPayload = {
+      status: "not_found",
+      found: false,
+      domain: args.domain,
+      message: `Domain '${args.domain}' not found in Septum catalog.`,
+      available_domains: available,
+      suggestions: suggestions.length > 0 ? suggestions : available,
+      suggested_action: {
+        tool: "septum_register_domain",
+        params: { domain: args.domain, root: `src/domains/${args.domain}` },
+      },
+    };
+    return {
+      content: [
+        {
+          type: "text" as const,
+          text: JSON.stringify(notFoundPayload, null, 2),
+        },
+      ],
+      metadata: notFoundPayload,
+    };
   }
 
   // Record access log for Gate 3 (Mandatory Catalog Consultation)

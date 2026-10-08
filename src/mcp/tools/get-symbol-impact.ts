@@ -5,15 +5,17 @@ import type { GetSymbolImpactArgs } from "../../types/index.ts";
 export function handleGetSymbolImpact(
   repo: SeptumRepository,
   _config: ValidatedSeptumConfig,
-  args: GetSymbolImpactArgs
+  args: GetSymbolImpactArgs,
+  _workspaceRoot?: string
 ) {
-  if (!args.symbol) {
+  const symbol = (args.symbol || (args as unknown as Record<string, unknown>).query || "").toString().trim();
+  if (!symbol) {
     throw new Error(
       "Missing required argument: 'symbol' (e.g. 'OrderService::cancelOrder', 'OrderService', or 'cancelOrder')"
     );
   }
 
-  const impact = repo.getSymbolImpact(args.symbol);
+  const impact = repo.getSymbolImpact(symbol);
 
   return {
     content: [

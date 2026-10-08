@@ -4,7 +4,8 @@ import { IngestionPipeline, type IngestionMetrics } from "../../core/ingestion/p
 import type { DomainConfig } from "../../types/index.ts";
 
 export interface RegisterDomainArgs {
-  name: string;
+  domain?: string;
+  name?: string;
   root: string;
   description?: string;
   allowed_dependencies?: string[];
@@ -16,27 +17,29 @@ export interface RegisterDomainArgs {
 export async function handleRegisterDomain(
   repo: SeptumRepository,
   config: ValidatedSeptumConfig,
-  args: RegisterDomainArgs
+  args: RegisterDomainArgs,
+  workspaceRoot: string = process.cwd()
 ) {
-  if (!args.name || !args.root) {
-    throw new Error("Missing required arguments: 'name' and 'root' are required.");
+  const domainName = (args.domain || args.name || "").trim();
+  if (!domainName || !args.root) {
+    throw new Error("Missing required arguments: 'domain' (or 'name') and 'root' are required.");
   }
 
   const domainConfig = {
     root: args.root,
-    description: args.description || `Domain: ${args.name}`,
+    description: args.description || `Domain: ${domainName}`,
     allowed_dependencies: args.allowed_dependencies || [],
     forbidden_dependencies: args.forbidden_dependencies || [],
     archetypes: args.archetypes || {},
   };
 
-  const domainId = repo.domains.upsertDomain(args.name, domainConfig);
+  const domainId = repo.domains.upsertDomain(domainName, domainConfig);
 
-  config.domains[args.name] = domainConfig;
+  config.domains[domainName] = domainConfig;
 
   let ingestionMetrics: IngestionMetrics | null = null;
   if (args.ingest_now) {
-    const pipeline = new IngestionPipeline(repo);
+    const pipeline = new IngestionPipeline(repo, workspaceRoot);
     ingestionMetrics = await pipeline.run(config);
   }
 
@@ -47,11 +50,12 @@ export async function handleRegisterDomain(
         text: JSON.stringify(
           {
             status: "success",
-            message: `Domain '${args.name}' successfully registered in SQLite SSOT.${
+            message: `Domain '${domainName}' successfully registered in SQLite SSOT.${
               args.ingest_now ? " Initial ingestion completed." : ""
             }`,
             domain_id: domainId,
-            domain: args.name,
+            domain: domainName,
+            name: domainName,
             config: domainConfig,
             ...(ingestionMetrics ? { ingestion_metrics: ingestionMetrics } : {}),
           },

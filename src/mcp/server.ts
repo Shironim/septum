@@ -7,6 +7,7 @@ import {
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import { BoundaryEvaluator } from "../core/boundary/evaluator.ts";
+import { ModuleResolver } from "../core/resolver/module-resolver.ts";
 import { ConfigLoader } from "../core/config/loader.ts";
 import { SeptumDatabase } from "../core/database/client.ts";
 import { SeptumRepository } from "../core/database/repository.ts";
@@ -72,14 +73,74 @@ interface WorkspaceContext {
 
 const workspaceContextCache = new Map<string, WorkspaceContext>();
 
-function extractPathHint(args: Record<string, any> | undefined): string | undefined {
+export function extractPathHint(args: unknown): string | undefined {
   if (!args) return undefined;
-  if (typeof args.workspace_path === "string" && args.workspace_path) return args.workspace_path;
-  if (typeof args.target_path === "string" && args.target_path) return args.target_path;
-  if (typeof args.project_root === "string" && args.project_root) return args.project_root;
-  if (typeof args.file_path === "string" && args.file_path) return args.file_path;
-  if (Array.isArray(args.file_paths) && args.file_paths[0]) return args.file_paths[0];
-  if (typeof args.root === "string" && args.root) return args.root;
+
+  if (typeof args === "string") {
+    const trimmed = args.trim();
+    if (trimmed.length > 0) return trimmed;
+    return undefined;
+  }
+
+  if (Array.isArray(args)) {
+    if (typeof args[0] === "string" && args[0].trim()) {
+      return args[0].trim();
+    }
+    return undefined;
+  }
+
+  if (typeof args === "object" && args !== null) {
+    const record = args as Record<string, any>;
+
+    const explicitWorkspace =
+      record.workspace_path ??
+      record.workspacePath ??
+      record.workspace ??
+      record.project_root ??
+      record.projectRoot ??
+      record.target_path ??
+      record.targetPath;
+    if (typeof explicitWorkspace === "string" && explicitWorkspace.trim()) {
+      return explicitWorkspace.trim();
+    }
+
+    const filePath =
+      record.file_path ??
+      record.filePath ??
+      record.from_file ??
+      record.fromFile ??
+      record.source_file ??
+      record.sourceFile ??
+      record.entry_file ??
+      record.entryFile;
+    if (typeof filePath === "string" && filePath.trim()) {
+      return filePath.trim();
+    }
+
+    const filePaths =
+      record.file_paths ??
+      record.filePaths ??
+      record.files ??
+      record.paths;
+    if (Array.isArray(filePaths) && typeof filePaths[0] === "string" && filePaths[0].trim()) {
+      return filePaths[0].trim();
+    }
+    if (typeof filePaths === "string" && filePaths.trim()) {
+      return filePaths.trim();
+    }
+
+    if (
+      !record.domain &&
+      !record.name &&
+      !record.domain_name &&
+      !record.domainName &&
+      typeof record.root === "string" &&
+      record.root.trim()
+    ) {
+      return record.root.trim();
+    }
+  }
+
   return undefined;
 }
 
@@ -93,7 +154,7 @@ function getWorkspaceContext(pathHint?: string): WorkspaceContext {
   const config = ConfigLoader.load(undefined, root);
   const db = new SeptumDatabase(config.settings.db_path);
   const repo = new SeptumRepository(db.raw);
-  const evaluator = new BoundaryEvaluator(repo);
+  const evaluator = new BoundaryEvaluator(repo, new ModuleResolver(root, repo));
   const pipeline = new IngestionPipeline(repo, root);
 
   ctx = { root, config, db, repo, evaluator, pipeline };
@@ -240,14 +301,18 @@ export async function runMCPServer(): Promise<void> {
               query: {
                 type: "string",
                 description:
-                  "Symbol name, call syntax (e.g. 'OrderController::calculateTotal'), or error log snippet (e.g. 'Method OrderController::calculateTotal() does not exist')",
+                  "Symbol name, call syntax (e.g. 'OrderController::calculateTotal'), or error log snippet. Symmetrically accepts 'symbol'.",
+              },
+              symbol: {
+                type: "string",
+                description: "Alias for 'query'.",
               },
               domain: {
                 type: "string",
                 description: "Optional domain filter (e.g. 'orders')",
               },
             },
-            required: ["query"],
+            required: [],
           },
         },
         {
@@ -260,10 +325,18 @@ export async function runMCPServer(): Promise<void> {
               query: {
                 type: "string",
                 description:
-                  "Route URI (e.g. 'POST /orders/{id}/status'), action (e.g. 'OrderController@updateStatus'), or intent (e.g. 'Ubah status order di dashboard')",
+                  "Route URI (e.g. 'POST /orders/{id}/status'), action (e.g. 'OrderController@updateStatus'), or intent (e.g. 'Ubah status order di dashboard'). Symmetrically accepts 'symbol'.",
+              },
+              symbol: {
+                type: "string",
+                description: "Alias for 'query'.",
+              },
+              max_depth: {
+                type: "number",
+                description: "Maximum depth to trace (default: 5).",
               },
             },
-            required: ["query"],
+            required: [],
           },
         },
         {
@@ -276,7 +349,11 @@ export async function runMCPServer(): Promise<void> {
               symbol: {
                 type: "string",
                 description:
-                  "Symbol name, e.g. 'OrderController::cancelOrder', 'OrderController', or 'cancelOrder'",
+                  "Symbol name, e.g. 'OrderController::cancelOrder', 'OrderController', or 'cancelOrder'. Symmetrically accepts 'query'.",
+              },
+              query: {
+                type: "string",
+                description: "Alias for 'symbol'.",
               },
               domain: {
                 type: "string",
@@ -287,7 +364,7 @@ export async function runMCPServer(): Promise<void> {
                 description: "Whether to include injected dependencies and outbound calls (default: true)",
               },
             },
-            required: ["symbol"],
+            required: [],
           },
         },
         {
@@ -300,10 +377,14 @@ export async function runMCPServer(): Promise<void> {
               symbol: {
                 type: "string",
                 description:
-                  "Target symbol to inspect, e.g. 'OrderService::cancelOrder' or 'OrderService'",
+                  "Target symbol to inspect, e.g. 'OrderService::cancelOrder' or 'OrderService'. Symmetrically accepts 'query'.",
+              },
+              query: {
+                type: "string",
+                description: "Alias for 'symbol'.",
               },
             },
-            required: ["symbol"],
+            required: [],
           },
         },
         {
@@ -313,9 +394,14 @@ export async function runMCPServer(): Promise<void> {
           inputSchema: {
             type: "object",
             properties: {
+              domain: {
+                type: "string",
+                description:
+                  "Unique domain name/identifier (e.g. 'orders', 'checkout', 'billing'). Symmetrically accepts 'name'.",
+              },
               name: {
                 type: "string",
-                description: "Unique domain name (e.g. 'orders', 'checkout', 'billing')",
+                description: "Alias for 'domain'.",
               },
               root: {
                 type: "string",
@@ -344,7 +430,7 @@ export async function runMCPServer(): Promise<void> {
                 description: "Whether to immediately run AST ingestion on this domain's files (default: false)",
               },
             },
-            required: ["name", "root"],
+            required: ["domain", "root"],
           },
         },
         {
@@ -504,7 +590,7 @@ export async function runMCPServer(): Promise<void> {
             ],
           };
         }
-        return handleGetSymbol(ctx.repo, ctx.config, parsed.data);
+        return handleGetSymbol(ctx.repo, ctx.config, parsed.data, ctx.root);
       } else if (name === "septum_get_symbol_impact") {
         const parsed = GetSymbolImpactSchema.safeParse(args ?? {});
         if (!parsed.success) {
@@ -518,7 +604,7 @@ export async function runMCPServer(): Promise<void> {
             ],
           };
         }
-        return handleGetSymbolImpact(ctx.repo, ctx.config, parsed.data);
+        return handleGetSymbolImpact(ctx.repo, ctx.config, parsed.data, ctx.root);
       } else if (name === "septum_trace_vertical_slice") {
         const parsed = TraceVerticalSliceSchema.safeParse(args ?? {});
         if (!parsed.success) {
@@ -532,7 +618,7 @@ export async function runMCPServer(): Promise<void> {
             ],
           };
         }
-        return handleTraceVerticalSlice(ctx.repo, ctx.config, parsed.data);
+        return handleTraceVerticalSlice(ctx.repo, ctx.config, parsed.data, ctx.root);
       } else if (name === "septum_clear_feature_context") {
         const cleared = handleClearFeatureContext(ctx.root);
         return {
@@ -558,7 +644,7 @@ export async function runMCPServer(): Promise<void> {
             ],
           };
         }
-        return handleCheckBoundary(ctx.evaluator, ctx.config, parsed.data, ctx.repo);
+        return handleCheckBoundary(ctx.evaluator, ctx.config, parsed.data, ctx.repo, ctx.root);
       } else if (name === "septum_get_symbol_hotspots") {
         const parsed = GetSymbolHotspotsSchema.safeParse(args ?? {});
         if (!parsed.success) {
@@ -572,7 +658,7 @@ export async function runMCPServer(): Promise<void> {
             ],
           };
         }
-        return handleGetSymbolHotspots(ctx.repo, ctx.config, parsed.data);
+        return handleGetSymbolHotspots(ctx.repo, ctx.config, parsed.data, ctx.root);
       } else if (name === "septum_register_domain") {
         const parsed = RegisterDomainSchema.safeParse(args ?? {});
         if (!parsed.success) {
@@ -586,7 +672,7 @@ export async function runMCPServer(): Promise<void> {
             ],
           };
         }
-        return await handleRegisterDomain(ctx.repo, ctx.config, parsed.data);
+        return await handleRegisterDomain(ctx.repo, ctx.config, parsed.data, ctx.root);
       } else if (name === "septum_register_feature") {
         const parsed = RegisterFeatureSchema.safeParse(args ?? {});
         if (!parsed.success) {
@@ -600,7 +686,7 @@ export async function runMCPServer(): Promise<void> {
             ],
           };
         }
-        return await handleRegisterFeature(ctx.repo, ctx.config, parsed.data);
+        return await handleRegisterFeature(ctx.repo, ctx.config, parsed.data, ctx.root);
       } else if (name === "septum_get_environment_topology") {
         const parsed = GetEnvironmentTopologySchema.safeParse(args ?? {});
         if (!parsed.success) {
