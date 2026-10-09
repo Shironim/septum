@@ -521,6 +521,10 @@ export class IngestionPipeline {
     const projectRoot = this.customWorkspaceRoot || process.cwd();
     const relPath = relative(projectRoot, fullPath).replace(/\\/g, "/");
 
+    if (this.isIgnored(relPath, config.settings.ignore_patterns ?? [])) {
+      return false;
+    }
+
     let targetDomainName: string | null = null;
     let targetDomainCfg = null;
 
@@ -535,8 +539,7 @@ export class IngestionPipeline {
     }
 
     if (!targetDomainName || !targetDomainCfg) {
-      targetDomainName = "core";
-      targetDomainCfg = { root: ".", allowed_dependencies: [], forbidden_dependencies: [], archetypes: {} };
+      return false;
     }
 
     const domainId = this.repo.upsertDomain(targetDomainName, targetDomainCfg);
