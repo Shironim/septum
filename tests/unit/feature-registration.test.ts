@@ -166,18 +166,19 @@ describe("Dynamic Feature Registration & Auto-Derive Fallback", () => {
       expect(session?.feature_key).toBe("penjualan");
     });
 
-    it("should throw actionable error if feature not found and cannot be auto-derived", () => {
-      expect(() => {
-        handleGetFeatureContext(repo, mockConfig, { feature: "nonexistent-feature" }, tempDir);
-      }).toThrow(/Feature 'nonexistent-feature' not found in configuration/);
+    it("should return actionable not_found guidance if feature not found and cannot be auto-derived", () => {
+      const response = handleGetFeatureContext(repo, mockConfig, { feature: "nonexistent-feature" }, tempDir);
+      expect(response).toBeDefined();
+      expect(response.content).toBeArray();
+      expect(response.content[0].type).toBe("text");
 
-      try {
-        handleGetFeatureContext(repo, mockConfig, { feature: "nonexistent-feature" }, tempDir);
-      } catch (err: any) {
-        expect(err.message).toContain("▶ RECOVERY OPTIONS:");
-        expect(err.message).toContain("septum_register_feature");
-        expect(err.message).toContain("septum_trace_vertical_slice");
-      }
+      const payload = JSON.parse(response.content[0].text);
+      expect(payload.status).toBe("not_found");
+      expect(payload.feature_key).toBe("nonexistent-feature");
+      expect(payload.message).toContain("Feature 'nonexistent-feature' not found");
+      expect(payload.recovery_options).toBeArray();
+      expect(payload.recovery_options.some((opt: string) => opt.includes("septum_register_feature"))).toBe(true);
+      expect(payload.recovery_options.some((opt: string) => opt.includes("septum_trace_vertical_slice"))).toBe(true);
     });
 
     it("should gracefully handle zero-argument calls by returning catalog guidance instead of throwing", () => {

@@ -112,17 +112,26 @@ export function handleGetFeatureContext(
     } else {
       const available = Object.keys(features);
       const availableStr = available.length > 0 ? available.join(", ") : "none";
-      const recoveryMessage = [
-        `Feature '${featureKey}' not found in configuration. Available features: [${availableStr}].`,
-        `No matching vertical slices found for auto-derivation.`,
-        ``,
-        `▶ RECOVERY OPTIONS:`,
-        `1. Register this feature on-the-fly:`,
-        `   septum_register_feature({ feature_key: "${featureKey}", domain: "<domain_name>", allowed_touchpoints: ["path/to/file"] })`,
-        `2. Or discover available routes / vertical slices first:`,
-        `   septum_trace_vertical_slice({ entry_file: "routes/web.php" })`,
-      ].join("\n");
-      throw new Error(recoveryMessage);
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify(
+              {
+                status: "not_found",
+                feature_key: featureKey,
+                message: `Feature '${featureKey}' not found in configuration or vertical slices. Available features: [${availableStr}].`,
+                recovery_options: [
+                  `septum_register_feature({ feature_key: "${featureKey}", domain: "<domain_name>", allowed_touchpoints: ["path/to/file"] })`,
+                  `septum_trace_vertical_slice({ entry_file: "routes/web.php" })`,
+                ],
+              },
+              null,
+              2
+            ),
+          },
+        ],
+      };
     }
   }
 
