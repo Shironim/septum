@@ -1,3 +1,23 @@
+---
+verity:
+  anchors:
+    - path: src/core/resolver/vertical-slice-tracer.ts
+      provenance:
+        commitSha: c135da5c6c95b15332447c686f43d004c1f1f4c8
+        fingerprint: cbeaf161d74ff5434cdc9685cb9c2dfbaa96db88a6f6d4e35a4882ebab01da75
+        timestamp: 2026-10-09T16:43:19.484Z
+    - path: src/core/resolver/call-graph-tracer.ts
+      provenance:
+        commitSha: c135da5c6c95b15332447c686f43d004c1f1f4c8
+        fingerprint: f8df3768ed6e16800b5048a44232f916ab40d69f9d8155e5dcf46d69f1be5891
+        timestamp: 2026-10-09T16:43:19.508Z
+    - path: src/core/discovery/topology-detector.ts
+      provenance:
+        commitSha: c135da5c6c95b15332447c686f43d004c1f1f4c8
+        fingerprint: 6a1c5bab65b7a3643718537b144ac85964d0e8c98cc802986c964681f00cdaed
+        timestamp: 2026-10-09T16:43:19.520Z
+---
+
 # Brief: Septum Error Flow Hardening & Deterministic Slice Tracing
 
 > **Kategori**: refactor  

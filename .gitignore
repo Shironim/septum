@@ -66,3 +66,4 @@ report*.txt
 
 # Septum local database and cache
 .septum/*.db*
+.verity/
