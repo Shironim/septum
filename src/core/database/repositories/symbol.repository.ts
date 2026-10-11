@@ -8,6 +8,26 @@ import type {
   SymbolKind,
   SymbolRecord,
 } from "../../../types/index.ts";
+import { DependencyRepository } from "./dependency.repository.ts";
+
+const SQL_KEYWORD_BLACKLIST = new Set([
+  "VALUES",
+  "WHERE",
+  "SELECT",
+  "FROM",
+  "JOIN",
+  "LIKE",
+  "INSERT",
+  "UPDATE",
+  "DELETE",
+]);
+
+function stripCommentsAndStrings(source: string): string {
+  return source
+    .replace(/\/\*[\s\S]*?\*\//g, " ")
+    .replace(/\/\/.*$/gm, " ")
+    .replace(/'(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*"|`(?:\\.|[^`\\])*`/g, '""');
+}
 
 export class SymbolRepository {
   constructor(private db: Database) {}
@@ -354,6 +374,10 @@ export class SymbolRepository {
       siblingMethods = classMethods.map((s) => s.name.replace(`${row.name}::`, ""));
     }
 
+    siblingMethods = Array.from(new Set(siblingMethods)).filter(
+      (m) => !SQL_KEYWORD_BLACKLIST.has(m.toUpperCase())
+    );
+
     // 2. Dependencies Injected (from signature type-hints and constructor)
     const dependenciesInjected = new Set<string>();
     const extractTypeHints = (sig: string) => {
@@ -398,29 +422,43 @@ export class SymbolRepository {
         const lines = fileContent.split(/\r?\n/);
         const start = Math.max(0, row.line_start - 1);
         const end = Math.min(lines.length, row.line_end);
-        const sliceLines = lines.slice(start, end).join("\n");
+        const rawSlice = lines.slice(start, end).join("\n");
+        const sanitizedSlice = stripCommentsAndStrings(rawSlice);
 
         // Match Static invocations: ClassName::methodName(
-        const staticCalls = sliceLines.matchAll(/([A-Z][a-zA-Z0-9_]+)::([a-zA-Z0-9_]+)\s*\(/g);
+        const staticCalls = sanitizedSlice.matchAll(/([A-Z][a-zA-Z0-9_]+)::([a-zA-Z0-9_]+)\s*\(/g);
         for (const m of staticCalls) {
           if (m[1] !== "self" && m[1] !== "parent" && m[1] !== "static") {
             outboundCalls.add(`${m[1]}::${m[2]}`);
           }
         }
 
-        // Match property calls: $this->property->method(
-        const propCalls = sliceLines.matchAll(/\$this->([a-zA-Z0-9_]+)->([a-zA-Z0-9_]+)\s*\(/g);
+        // Match PHP property calls: $this->property->method(
+        const propCalls = sanitizedSlice.matchAll(/\$this->([a-zA-Z0-9_]+)->([a-zA-Z0-9_]+)\s*\(/g);
         for (const m of propCalls) {
-          // Capitalize property name for clean domain inference (e.g. orderService -> OrderService::cancelOrder)
           const propName = m[1];
           const methodName = m[2];
           const inferredClass = propName.charAt(0).toUpperCase() + propName.slice(1);
           outboundCalls.add(`${inferredClass}::${methodName}`);
         }
+
+        // Match TS/JS property calls: this.property.method(
+        const tsPropCalls = sanitizedSlice.matchAll(/\bthis\.([a-zA-Z0-9_]+)\.([a-zA-Z0-9_]+)\s*\(/g);
+        for (const m of tsPropCalls) {
+          const propName = m[1];
+          const methodName = m[2];
+          if (propName !== "db") {
+            const inferredClass = propName.charAt(0).toUpperCase() + propName.slice(1);
+            outboundCalls.add(`${inferredClass}::${methodName}`);
+          }
+        }
       }
     } catch {
       // Graceful fallback if file not physically accessible
     }
+
+    const depRepo = new DependencyRepository(this.db);
+    const connectedFiles = depRepo.getFileConnections(row.file_path);
 
     return {
       symbol: row.name,
@@ -437,6 +475,7 @@ export class SymbolRepository {
       dependencies_injected: Array.from(dependenciesInjected),
       outbound_calls: Array.from(outboundCalls),
       sibling_methods: siblingMethods.length > 0 ? siblingMethods : undefined,
+      connected_files: connectedFiles,
     };
   }
 

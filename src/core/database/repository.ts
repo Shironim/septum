@@ -122,11 +122,16 @@ export class SeptumRepository {
     this.files.deleteFile(path);
   }
 
+  public deleteFileByPath(path: string): void {
+    this.files.deleteFileByPath(path);
+  }
+
   public getDomainCatalog(
     domainName: string,
-    archetypeFilter?: string
+    archetypeFilter?: string,
+    options?: { detailLevel?: "compact" | "full"; fileFilter?: string }
   ): DomainCatalogResponse | null {
-    return this.domains.getDomainCatalog(domainName, archetypeFilter);
+    return this.domains.getDomainCatalog(domainName, archetypeFilter, options);
   }
 
   // --- Symbol Methods ---
@@ -171,8 +176,20 @@ export class SeptumRepository {
     return this.dependencies.getAllVerticalSlices();
   }
 
+  public countVerticalSlices(): number {
+    return this.dependencies.countVerticalSlices();
+  }
+
   public clearVerticalSlices(domainId?: number): void {
     this.dependencies.clearVerticalSlices(domainId);
+  }
+
+  public getDomainFileConnections(domainId?: number) {
+    return this.dependencies.getDomainFileConnections(domainId);
+  }
+
+  public getFileConnections(filePath: string) {
+    return this.dependencies.getFileConnections(filePath);
   }
 
   public getAllDependenciesWithDomains(): Array<{

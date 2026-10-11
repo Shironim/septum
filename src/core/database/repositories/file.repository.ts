@@ -44,25 +44,22 @@ export class FileRepository {
     mtimeMs: number = 0,
     sizeBytes: number = 0
   ): number {
-    const existing = this.getFileByPath(path);
-    if (existing) {
-      this.db
-        .query(
-          `UPDATE files 
-           SET domain_id = ?, archetype = ?, content_hash = ?, line_count = ?, mtime_ms = ?, size_bytes = ?, last_scanned_at = CURRENT_TIMESTAMP 
-           WHERE id = ?`
-        )
-        .run(domainId, archetype, contentHash, lineCount, mtimeMs, sizeBytes, existing.id);
-      return existing.id;
-    } else {
-      const result = this.db
-        .query(
-          `INSERT INTO files (domain_id, path, archetype, content_hash, line_count, mtime_ms, size_bytes) 
-           VALUES (?, ?, ?, ?, ?, ?, ?)`
-        )
-        .run(domainId, path, archetype, contentHash, lineCount, mtimeMs, sizeBytes);
-      return Number(result.lastInsertRowid);
-    }
+    const row = this.db
+      .query<{ id: number }, [number, string, string, string, number, number, number]>(
+        `INSERT INTO files (domain_id, path, archetype, content_hash, line_count, mtime_ms, size_bytes)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(path) DO UPDATE SET
+           domain_id = excluded.domain_id,
+           archetype = excluded.archetype,
+           content_hash = excluded.content_hash,
+           line_count = excluded.line_count,
+           mtime_ms = excluded.mtime_ms,
+           size_bytes = excluded.size_bytes,
+           last_scanned_at = CURRENT_TIMESTAMP
+         RETURNING id`
+      )
+      .get(domainId, path, archetype, contentHash, lineCount, mtimeMs, sizeBytes);
+    return row ? Number(row.id) : 0;
   }
 
   public updateFileMetadataOnly(id: number, mtimeMs: number, sizeBytes: number): void {
@@ -98,6 +95,10 @@ export class FileRepository {
 
   public deleteFile(path: string): void {
     this.db.query("DELETE FROM files WHERE path = ?").run(path);
+  }
+
+  public deleteFileByPath(path: string): void {
+    this.deleteFile(path);
   }
 
   public getFileWithDomain(

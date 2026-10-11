@@ -22,10 +22,13 @@ export type SymbolKind =
   | "interface"
   | "trait"
   | "enum"
+  | "struct"
   | "method"
   | "function"
   | "type"
   | "property"
+  | "constant"
+  | "variable"
   | "component"
   | "view";
 
@@ -82,19 +85,24 @@ export interface FeatureContextResponse {
 
 export interface RegisterFeatureArgs {
   feature_key: string;
+  feature?: string;
   domain: string;
   description?: string;
-  allowed_touchpoints: string[];
+  allowed_touchpoints?: string[];
   reuse_symbols?: string[];
   input_contract?: Record<string, unknown>;
   output_contract?: Record<string, unknown>;
-  persist_to_config?: boolean;
+  workspace_path?: string;
 }
 
 export interface CheckBoundaryArgs {
-  file_path: string;
-  proposed_imports: string[];
+  file_path?: string;
+  file_paths?: string[];
+  proposed_imports?: string[];
   feature_key?: string;
+  scope?: "file" | "all" | "staged" | "domain";
+  domain?: string;
+  workspace_path?: string;
 }
 
 export interface DomainRecord {
@@ -165,6 +173,7 @@ export interface ExtractedDependency {
   statement: string;
   line_number: number;
   is_external: boolean;
+  imported_symbols?: string[];
 }
 
 export interface ParsedFileAST {
@@ -177,7 +186,8 @@ export type BoundaryViolationRule =
   | "disallowed_dependency"
   | "touchpoint_violation"
   | "unknown_feature"
-  | "unmapped_domain";
+  | "unmapped_domain"
+  | "circular_dependency";
 
 export interface BoundaryViolation {
   file: string;
@@ -189,22 +199,37 @@ export interface BoundaryViolation {
   message: string;
 }
 
+export interface FileConnectionsSummary {
+  imports_from: string[];
+  imported_by_count: number;
+  imported_by?: string[];
+}
+
 export interface DomainCatalogResponse {
   domain: string;
   root: string;
+  detail_level?: "compact" | "full";
+  total_files?: number;
+  showing_files?: number;
   allowed_dependencies: string[];
   forbidden_dependencies: string[];
   files: Array<{
     path: string;
     archetype: ArchetypeKind;
+    line_count?: number;
+    connections?: FileConnectionsSummary;
     symbols: Array<{
       name: string;
       kind: SymbolKind;
+      line_span?: string;
+      methods_count?: number;
+      properties_count?: number;
       properties?: string[];
       methods?: string[];
       signatures?: string[];
     }>;
   }>;
+  agent_hint?: string;
 }
 
 export interface ExecutionChainNode {
@@ -264,6 +289,7 @@ export interface VerticalSliceTraceResponse {
   confidence?: "exact" | "inferred";
   is_exact_match?: boolean;
   architecture_style?: string;
+  max_depth_applied?: number;
   entrypoint?: {
     method: string;
     uri: string;
@@ -286,8 +312,10 @@ export interface VerticalSliceTraceResponse {
 
 export interface GetSymbolArgs {
   symbol: string;
+  query?: string;
   domain?: string;
   include_dependencies?: boolean;
+  workspace_path?: string;
 }
 
 export interface SymbolExactRange {
@@ -307,10 +335,13 @@ export interface GetSymbolDetailsResponse {
   dependencies_injected: string[];
   outbound_calls: string[];
   sibling_methods?: string[];
+  connected_files?: FileConnectionsSummary;
 }
 
 export interface GetSymbolImpactArgs {
   symbol: string;
+  query?: string;
+  workspace_path?: string;
 }
 
 export interface InboundCaller {

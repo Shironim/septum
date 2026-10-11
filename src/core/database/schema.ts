@@ -104,9 +104,10 @@ export const TABLE_STATEMENTS = [
 
 export const INDEX_STATEMENTS = [
   "CREATE INDEX IF NOT EXISTS idx_domains_name ON domains(name);",
-  "CREATE INDEX IF NOT EXISTS idx_files_domain_id ON files(domain_id);",
+  "CREATE INDEX IF NOT EXISTS idx_files_domain_id ON files(domain_id, id);",
   "CREATE INDEX IF NOT EXISTS idx_files_path ON files(path);",
   "CREATE INDEX IF NOT EXISTS idx_symbols_file_id ON symbols(file_id);",
+  "CREATE INDEX IF NOT EXISTS idx_symbols_file_lines ON symbols(file_id, line_start, line_end);",
   "CREATE INDEX IF NOT EXISTS idx_symbols_name ON symbols(name);",
   "CREATE INDEX IF NOT EXISTS idx_symbols_kind ON symbols(kind);",
   "CREATE INDEX IF NOT EXISTS idx_symbols_line_count ON symbols(kind, line_count DESC);",
@@ -117,7 +118,7 @@ export const INDEX_STATEMENTS = [
   "CREATE INDEX IF NOT EXISTS idx_slices_route_name ON vertical_slices(route_name);",
   "CREATE INDEX IF NOT EXISTS idx_slices_controller ON vertical_slices(controller_class, action_name);",
   "CREATE INDEX IF NOT EXISTS idx_env_topology_status ON environment_topology(status);",
-  "CREATE INDEX IF NOT EXISTS idx_env_nodes_layer ON environment_nodes(layer);",
+  "CREATE INDEX IF NOT EXISTS idx_env_nodes_layer ON environment_nodes(layer, id);",
   "CREATE INDEX IF NOT EXISTS idx_env_nodes_status ON environment_nodes(status);",
 ];
 

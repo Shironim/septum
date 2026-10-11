@@ -7,6 +7,15 @@ import type {
   SymbolKind,
   SymbolRecord,
 } from "../../../types/index.ts";
+import { DependencyRepository } from "./dependency.repository.ts";
+
+const CONTAINER_KINDS = new Set<SymbolKind>([
+  "class",
+  "interface",
+  "trait",
+  "struct",
+  "enum",
+]);
 
 export class DomainRepository {
   constructor(private db: Database) {}
@@ -70,10 +79,14 @@ export class DomainRepository {
 
   public getDomainCatalog(
     domainName: string,
-    archetypeFilter?: string
+    archetypeFilter?: string,
+    options?: { detailLevel?: "compact" | "full"; fileFilter?: string }
   ): DomainCatalogResponse | null {
     const domain = this.getDomainByName(domainName);
     if (!domain) return null;
+
+    const detailLevel = options?.detailLevel ?? "compact";
+    const fileFilter = options?.fileFilter?.trim();
 
     const allowedDeps: string[] = JSON.parse(domain.allowed_deps_json || "[]");
     const forbiddenDeps: string[] = JSON.parse(domain.forbidden_deps_json || "[]");
@@ -87,7 +100,14 @@ export class DomainRepository {
     }
     filesQuery += " ORDER BY path ASC";
 
-    const files = this.db.query<FileRecord, any>(filesQuery).all(...params);
+    const allDomainFiles = this.db.query<FileRecord, any>(filesQuery).all(...params);
+    const totalFiles = allDomainFiles.length;
+
+    const files = fileFilter
+      ? allDomainFiles.filter((f) =>
+          f.path.replace(/\\/g, "/").toLowerCase().includes(fileFilter.replace(/\\/g, "/").toLowerCase())
+        )
+      : allDomainFiles;
 
     const catalogFiles: DomainCatalogResponse["files"] = [];
 
@@ -115,6 +135,10 @@ export class DomainRepository {
       }
     }
 
+    // Batch compute file connections for the domain (zero N+1)
+    const depRepo = new DependencyRepository(this.db);
+    const connectionsByPath = depRepo.getDomainFileConnections(domain.id);
+
     for (const file of files) {
       const symbols = symbolsByFileId.get(file.id) ?? [];
 
@@ -123,6 +147,7 @@ export class DomainRepository {
         {
           name: string;
           kind: SymbolKind;
+          lineSpan: string;
           properties: string[];
           methods: string[];
           signatures: string[];
@@ -130,63 +155,66 @@ export class DomainRepository {
       >();
 
       for (const sym of symbols) {
-        if (
-          sym.kind === "class" ||
-          sym.kind === "interface" ||
-          sym.kind === "trait" ||
-          sym.kind === "enum"
-        ) {
+        const lineSpan = `${sym.line_start}-${sym.line_end}`;
+        if (CONTAINER_KINDS.has(sym.kind)) {
           if (!symbolMap.has(sym.name)) {
             symbolMap.set(sym.name, {
               name: sym.name,
               kind: sym.kind,
+              lineSpan,
               properties: [],
               methods: [],
               signatures: [sym.signature],
             });
           }
-        } else if (sym.kind === "method") {
-          let targetContainer = Array.from(symbolMap.values()).pop();
+        } else if (sym.kind === "method" || sym.kind === "property") {
+          let targetContainer:
+            | {
+                name: string;
+                kind: SymbolKind;
+                lineSpan: string;
+                properties: string[];
+                methods: string[];
+                signatures: string[];
+              }
+            | undefined;
+
           if (sym.name.includes("::")) {
             const containerName = sym.name.split("::")[0];
-            if (symbolMap.has(containerName)) {
-              targetContainer = symbolMap.get(containerName);
+            const candidate = symbolMap.get(containerName);
+            if (candidate && CONTAINER_KINDS.has(candidate.kind)) {
+              targetContainer = candidate;
             }
           }
+
           if (targetContainer) {
-            targetContainer.methods.push(sym.signature);
+            if (sym.kind === "method") {
+              targetContainer.methods.push(sym.signature);
+            } else {
+              targetContainer.properties.push(sym.signature);
+            }
           } else {
             symbolMap.set(sym.name, {
               name: sym.name,
               kind: sym.kind,
-              properties: [],
-              methods: [],
-              signatures: [sym.signature],
-            });
-          }
-        } else if (sym.kind === "property") {
-          let targetContainer = Array.from(symbolMap.values()).pop();
-          if (sym.name.includes("::")) {
-            const containerName = sym.name.split("::")[0];
-            if (symbolMap.has(containerName)) {
-              targetContainer = symbolMap.get(containerName);
-            }
-          }
-          if (targetContainer) {
-            targetContainer.properties.push(sym.signature);
-          } else {
-            symbolMap.set(sym.name, {
-              name: sym.name,
-              kind: sym.kind,
-              properties: [sym.signature],
+              lineSpan,
+              properties: sym.kind === "property" ? [sym.signature] : [],
               methods: [],
               signatures: [sym.signature],
             });
           }
         } else {
+          if (
+            detailLevel === "compact" &&
+            (sym.kind === "variable" || sym.kind === "constant") &&
+            sym.visibility === "private"
+          ) {
+            continue;
+          }
           symbolMap.set(sym.name, {
             name: sym.name,
             kind: sym.kind,
+            lineSpan,
             properties: [],
             methods: [],
             signatures: [sym.signature],
@@ -194,25 +222,54 @@ export class DomainRepository {
         }
       }
 
+      const rawConn = connectionsByPath.get(file.path);
+      const fileConnections = {
+        imports_from: rawConn?.imports_from ?? [],
+        imported_by_count: rawConn?.imported_by_count ?? 0,
+      };
+
       catalogFiles.push({
         path: file.path,
         archetype: file.archetype,
-        symbols: Array.from(symbolMap.values()).map((s) => ({
-          name: s.name,
-          kind: s.kind,
-          properties: s.properties.length > 0 ? s.properties : undefined,
-          methods: s.methods.length > 0 ? s.methods : undefined,
-          signatures: s.signatures.length > 0 ? s.signatures : undefined,
-        })),
+        line_count: file.line_count,
+        connections: fileConnections,
+        symbols: Array.from(symbolMap.values()).map((s) => {
+          if (detailLevel === "compact") {
+            return {
+              name: s.name,
+              kind: s.kind,
+              line_span: s.lineSpan,
+              methods_count: s.methods.length > 0 ? s.methods.length : undefined,
+              properties_count: s.properties.length > 0 ? s.properties.length : undefined,
+            };
+          }
+          return {
+            name: s.name,
+            kind: s.kind,
+            line_span: s.lineSpan,
+            methods_count: s.methods.length > 0 ? s.methods.length : undefined,
+            properties_count: s.properties.length > 0 ? s.properties.length : undefined,
+            properties: s.properties.length > 0 ? s.properties : undefined,
+            methods: s.methods.length > 0 ? s.methods : undefined,
+            signatures: s.signatures.length > 0 ? s.signatures : undefined,
+          };
+        }),
       });
     }
 
     return {
       domain: domain.name,
       root: domain.root_path,
+      detail_level: detailLevel,
+      total_files: totalFiles,
+      showing_files: catalogFiles.length,
       allowed_dependencies: allowedDeps,
       forbidden_dependencies: forbiddenDeps,
       files: catalogFiles,
+      agent_hint:
+        detailLevel === "compact"
+          ? "Compact view (<400 tokens). Use septum_get_symbol({ symbol }) for exact method signatures, or septum_get_domain_catalog({ domain, detail_level: 'full', file_filter: '<path>' }) for full member lists."
+          : undefined,
     };
   }
 }
