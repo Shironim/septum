@@ -286,3 +286,148 @@ export function calculatePythonNesting(
 
   return maxDepth;
 }
+
+/**
+ * Replaces the contents of comments and string/template literals with spaces while
+ * preserving exact character offsets, outer quote delimiters, and line breaks.
+ */
+export function blankCommentsAndStrings(
+  content: string,
+  options?: { hashComments?: boolean }
+): string {
+  const hashComments = options?.hashComments ?? false;
+  const out = content.split("");
+  const len = out.length;
+
+  let i = 0;
+  let inSingle = false;
+  let inDouble = false;
+  let inTemplate = false;
+  let inLineComment = false;
+  let inBlockComment = false;
+
+  while (i < len) {
+    const ch = out[i];
+    const next = i + 1 < len ? out[i + 1] : "";
+
+    if (inLineComment) {
+      if (ch === "\n") {
+        inLineComment = false;
+      } else if (ch !== "\r") {
+        out[i] = " ";
+      }
+      i++;
+      continue;
+    }
+
+    if (inBlockComment) {
+      if (ch === "*" && next === "/") {
+        out[i] = " ";
+        out[i + 1] = " ";
+        inBlockComment = false;
+        i += 2;
+        continue;
+      }
+      if (ch !== "\n" && ch !== "\r") {
+        out[i] = " ";
+      }
+      i++;
+      continue;
+    }
+
+    if (inSingle) {
+      if (ch === "\\" && i + 1 < len) {
+        if (out[i] !== "\n" && out[i] !== "\r") out[i] = " ";
+        if (out[i + 1] !== "\n" && out[i + 1] !== "\r") out[i + 1] = " ";
+        i += 2;
+        continue;
+      }
+      if (ch === "'") {
+        inSingle = false;
+      } else if (ch !== "\n" && ch !== "\r") {
+        out[i] = " ";
+      }
+      i++;
+      continue;
+    }
+
+    if (inDouble) {
+      if (ch === "\\" && i + 1 < len) {
+        if (out[i] !== "\n" && out[i] !== "\r") out[i] = " ";
+        if (out[i + 1] !== "\n" && out[i + 1] !== "\r") out[i + 1] = " ";
+        i += 2;
+        continue;
+      }
+      if (ch === '"') {
+        inDouble = false;
+      } else if (ch !== "\n" && ch !== "\r") {
+        out[i] = " ";
+      }
+      i++;
+      continue;
+    }
+
+    if (inTemplate) {
+      if (ch === "\\" && i + 1 < len) {
+        if (out[i] !== "\n" && out[i] !== "\r") out[i] = " ";
+        if (out[i + 1] !== "\n" && out[i + 1] !== "\r") out[i + 1] = " ";
+        i += 2;
+        continue;
+      }
+      if (ch === "`") {
+        inTemplate = false;
+      } else if (ch !== "\n" && ch !== "\r") {
+        out[i] = " ";
+      }
+      i++;
+      continue;
+    }
+
+    // Normal code state
+    if (ch === "/" && next === "/") {
+      out[i] = " ";
+      out[i + 1] = " ";
+      inLineComment = true;
+      i += 2;
+      continue;
+    }
+
+    if (ch === "/" && next === "*") {
+      out[i] = " ";
+      out[i + 1] = " ";
+      inBlockComment = true;
+      i += 2;
+      continue;
+    }
+
+    if (hashComments && ch === "#") {
+      out[i] = " ";
+      inLineComment = true;
+      i++;
+      continue;
+    }
+
+    if (ch === "'") {
+      inSingle = true;
+      i++;
+      continue;
+    }
+
+    if (ch === '"') {
+      inDouble = true;
+      i++;
+      continue;
+    }
+
+    if (ch === "`") {
+      inTemplate = true;
+      i++;
+      continue;
+    }
+
+    i++;
+  }
+
+  return out.join("");
+}
+

@@ -2,6 +2,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ExecutionChainNode, VerticalSliceRecord } from "../../../types/index.ts";
 import { BehavioralAnalyzer } from "../behavioral-analyzer.ts";
+import { blankCommentsAndStrings } from "../boundary-tracker.ts";
 import { SchemaProviderRegistry } from "../schema/schema-provider-registry.ts";
 import type {
   SemanticSliceExtractor,
@@ -312,6 +313,7 @@ export class LaravelSemanticExtractor implements SemanticSliceExtractor {
 
     // 2. Parse routes with group context tracking (prefix, controller, name prefix)
     const lines = content.split(/\r?\n/);
+    const cleanLines = blankCommentsAndStrings(content, { hashComments: true }).split(/\r?\n/);
     interface GroupContext {
       prefix: string;
       controller: string;
@@ -326,10 +328,14 @@ export class LaravelSemanticExtractor implements SemanticSliceExtractor {
 
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i];
+      const cleanLine = cleanLines[i] ?? "";
+      const cleanTrimmed = cleanLine.trim();
       const trimmed = line.trim();
 
+      if (!cleanTrimmed) continue;
+
       // Check group opens: Route::...group(
-      if (trimmed.includes("Route::") && trimmed.includes("group(") && trimmed.includes("function")) {
+      if (cleanTrimmed.includes("Route::") && cleanTrimmed.includes("group(") && cleanTrimmed.includes("function")) {
         const prefixMatch = /prefix\s*\(\s*['"]([^'"]+)['"]\s*\)/.exec(trimmed);
         const controllerMatch = /controller\s*\(\s*([\\A-Za-z0-9_]+)::class\s*\)/.exec(trimmed);
         const nameMatch = /name\s*\(\s*['"]([^'"]+)['"]\s*\)/.exec(trimmed);
@@ -351,8 +357,8 @@ export class LaravelSemanticExtractor implements SemanticSliceExtractor {
         });
       }
 
-      // Track brace depth
-      for (const char of line) {
+      // Track brace depth on string/comment-stripped line so '/orders/{id}' never corrupts braceDepth
+      for (const char of cleanLine) {
         if (char === "{") currentBraceDepth++;
         if (char === "}") {
           currentBraceDepth--;
@@ -366,14 +372,14 @@ export class LaravelSemanticExtractor implements SemanticSliceExtractor {
       }
 
       // Route statement accumulation across lines
-      if (!inStatement && trimmed.startsWith("Route::") && !trimmed.includes("Route::resource") && !trimmed.includes("Route::group")) {
+      if (!inStatement && cleanTrimmed.startsWith("Route::") && !cleanTrimmed.includes("Route::resource") && !cleanTrimmed.includes("Route::group") && !(cleanTrimmed.includes("group(") && cleanTrimmed.includes("function"))) {
         statementBuffer = trimmed;
         inStatement = true;
       } else if (inStatement) {
         statementBuffer += " " + trimmed;
       }
 
-      if (inStatement && statementBuffer.includes(";")) {
+      if (inStatement && cleanLine.includes(";")) {
         inStatement = false;
         const stmt = statementBuffer;
         statementBuffer = "";
@@ -519,16 +525,17 @@ export class LaravelSemanticExtractor implements SemanticSliceExtractor {
   }
 
   private extractActionBody(controllerCode: string, actionName: string): string {
-    const fnRegex = new RegExp(`public\\s+function\\s+${actionName}\\s*\\([^{]*\\)\\s*\\{`, "i");
-    const match = fnRegex.exec(controllerCode);
+    const cleanCode = blankCommentsAndStrings(controllerCode, { hashComments: true });
+    const fnRegex = new RegExp(`(?:public\\s+)?function\\s+${actionName}\\s*\\([^{]*\\)\\s*\\{`, "i");
+    const match = fnRegex.exec(cleanCode);
     if (!match) return "";
 
     const startIndex = match.index + match[0].length;
     let braceDepth = 1;
     let endIndex = startIndex;
 
-    while (braceDepth > 0 && endIndex < controllerCode.length) {
-      const char = controllerCode[endIndex];
+    while (braceDepth > 0 && endIndex < cleanCode.length) {
+      const char = cleanCode[endIndex];
       if (char === "{") braceDepth++;
       else if (char === "}") braceDepth--;
       endIndex++;
@@ -750,10 +757,9 @@ export class LaravelSemanticExtractor implements SemanticSliceExtractor {
 
   private extractValidationRules(requestCode: string): Record<string, string> {
     const rules: Record<string, string> = {};
-    const rulesMatch = requestCode.match(/function\s+rules\s*\(\s*\)[^{]*\{([^}]*)\}/i);
-    if (!rulesMatch) return rules;
+    const body = this.extractActionBody(requestCode, "rules");
+    if (!body) return rules;
 
-    const body = rulesMatch[1];
     // Match 'status' => 'in:pending,paid' or 'status' => ['required', 'string']
     const rulePairRegex = /['"]([A-Za-z0-9_]+)['"]\s*=>\s*(?:['"]([^'"]+)['"]|\[([^\]]+)\])/g;
     let rm;

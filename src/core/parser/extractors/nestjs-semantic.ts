@@ -31,18 +31,27 @@ export class NestJsSemanticExtractor implements SemanticSliceExtractor {
     const controllerFiles = this.findFilesRecursively(srcDir, /\.controller\.(ts|js)$/);
 
     for (const file of controllerFiles) {
-      const relPath = path.relative(projectRoot, file);
+      const relPath = path.relative(projectRoot, file).replace(/\\/g, "/");
       const content = fs.readFileSync(file, "utf-8");
 
       // Extract @Controller('prefix')
-      const controllerMatch = content.match(/@Controller\s*\(\s*['"]?([^'")]*)['"]?\s*\)\s*export\s+class\s+([A-Za-z0-9_]+)/);
+      const controllerMatch = /@Controller\s*\(\s*['"]?([^'")]*)['"]?\s*\)[\s\S]*?export\s+class\s+([A-Za-z0-9_]+)/.exec(
+        content
+      );
       if (!controllerMatch) continue;
 
       const routePrefix = controllerMatch[1] ? `/${controllerMatch[1].replace(/^\/+|\/+$/g, "")}` : "";
       const controllerClass = controllerMatch[2];
+      const controllerClassLine =
+        controllerMatch.index !== undefined
+          ? content
+              .slice(0, controllerMatch.index + controllerMatch[0].lastIndexOf(controllerClass))
+              .split("\n").length
+          : 1;
 
       // Extract methods: @Get('path'), @Post('path'), etc.
-      const methodRegex = /@(Get|Post|Put|Patch|Delete)\s*\(\s*['"]?([^'")]*)['"]?\s*\)\s*(?:@[A-Za-z0-9_]+\s*\([^)]*\)\s*)*\s*(?:async\s+)?([a-zA-Z0-9_]+)\s*\(([^)]*)\)/g;
+      const methodRegex =
+        /@(Get|Post|Put|Patch|Delete)\s*\(\s*['"]?([^'")]*)['"]?\s*\)\s*(?:@[A-Za-z0-9_]+\s*\([^)]*\)\s*)*\s*(?:(?:public|protected|private)\s+)?(?:async\s+)?([a-zA-Z0-9_]+)\s*\(([^)]*)\)/g;
       let match: RegExpExecArray | null;
 
       while ((match = methodRegex.exec(content)) !== null) {
@@ -51,6 +60,10 @@ export class NestJsSemanticExtractor implements SemanticSliceExtractor {
         const fullUri = `${routePrefix}${subPath}` || "/";
         const actionName = match[3];
         const params = match[4];
+
+        const decoratorLine = content.slice(0, match.index).split("\n").length;
+        const actionOffset = match.index + match[0].lastIndexOf(actionName);
+        const actionLine = content.slice(0, actionOffset).split("\n").length || controllerClassLine;
 
         // Extract DTO from parameters: e.g. @Body() createDto: CreateUserDto
         const dtoMatch = params.match(/@Body\s*\([^)]*\)\s*[a-zA-Z0-9_]+\s*:\s*([A-Za-z0-9_]+Dto)/);
@@ -61,6 +74,7 @@ export class NestJsSemanticExtractor implements SemanticSliceExtractor {
             stage: "ingress",
             symbol: `${httpMethod} ${fullUri}`,
             file: relPath,
+            line: decoratorLine,
             description: `NestJS Route: ${httpMethod} ${fullUri}`,
           },
         ];
@@ -77,7 +91,7 @@ export class NestJsSemanticExtractor implements SemanticSliceExtractor {
           stage: "controller",
           symbol: `${controllerClass}::${actionName}`,
           file: relPath,
-          line: 1,
+          line: actionLine,
           description: `NestJS Controller Action`,
         });
 
@@ -90,13 +104,14 @@ export class NestJsSemanticExtractor implements SemanticSliceExtractor {
           controller_class: controllerClass,
           action_name: actionName,
           controller_file: relPath,
-          controller_line: 1,
+          controller_line: actionLine,
           architecture_style: "mvc",
           entry_kind: "http_route",
           execution_chain_json: JSON.stringify(chain),
         });
       }
     }
+
 
     return slices;
   }

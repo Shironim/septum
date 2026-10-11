@@ -30,6 +30,8 @@ export class McpCliSemanticExtractor implements SemanticSliceExtractor {
 
   public extractSlices(projectRoot: string, domainId?: number): VerticalSliceCandidate[] {
     const slices: VerticalSliceCandidate[] = [];
+    const { toolPrefix, cliBinName } = this.resolveProjectNaming(projectRoot);
+    const registeredTools = this.scanRegisteredMcpToolNames(projectRoot);
 
     // 1. Extract MCP Tools
     const mcpToolsDir = path.join(projectRoot, "src/mcp/tools");
@@ -41,30 +43,46 @@ export class McpCliSemanticExtractor implements SemanticSliceExtractor {
 
         for (const file of toolFiles) {
           const fullPath = path.join(mcpToolsDir, file);
-          const relPath = path.relative(projectRoot, fullPath);
+          const relPath = path.relative(projectRoot, fullPath).replace(/\\/g, "/");
           const content = fs.readFileSync(fullPath, "utf-8");
-          const baseName = path.basename(file, path.extname(file)); // e.g. 'get-domain-catalog'
-          const toolIdentifier = `septum_${baseName.replace(/-/g, "_")}`;
+          const baseName = path.basename(file, path.extname(file));
+          const snakeBase = baseName.replace(/-/g, "_");
+          const toolIdentifier =
+            registeredTools.get(snakeBase) || `${toolPrefix}_${snakeBase}`;
 
-          // Detect handler function
-          const handlerMatch = content.match(/export\s+async?\s+function\s+([a-zA-Z0-9_]+)/);
-          const actionName = handlerMatch ? handlerMatch[1] : `handle_${baseName}`;
+          // Detect handler function (both sync and async) and its 1-indexed line number
+          const handlerMatch = /export\s+(?:async\s+)?function\s+([a-zA-Z0-9_]+)/.exec(content);
+          const classMatch = /export\s+class\s+([A-Za-z0-9_]+)/.exec(content);
+          const actionName = handlerMatch ? handlerMatch[1] : `handle_${snakeBase}`;
+          const controllerClass = classMatch ? classMatch[1] : baseName;
+          const handlerLine =
+            handlerMatch && handlerMatch.index !== undefined
+              ? content.slice(0, handlerMatch.index).split("\n").length
+              : 1;
 
-          // Detect args interface
-          const argsMatch = content.match(/export\s+interface\s+([a-zA-Z0-9_]+Args)/);
+          // Detect args interface and its line number
+          const argsMatch = /(?:export\s+)?interface\s+([a-zA-Z0-9_]+Args)\b/.exec(content);
           const formRequestClass = argsMatch ? argsMatch[1] : null;
+          const argsLine =
+            argsMatch && argsMatch.index !== undefined
+              ? content.slice(0, argsMatch.index).split("\n").length
+              : undefined;
 
-          // Detect model/service dependency (e.g. SeptumRepository, ConfigLoader)
-          let modelClass: string | null = null;
-          if (content.includes("SeptumRepository")) modelClass = "SeptumRepository";
-          else if (content.includes("SessionManager")) modelClass = "SessionManager";
-          else if (content.includes("ConfigLoader")) modelClass = "ConfigLoader";
+          // Detect service/repository dependency and its actual file path
+          const serviceDep = this.resolveServiceDependency(projectRoot, fullPath, content);
 
-          const mcpChain: Array<{ stage: string; symbol: string; file?: string; line?: number; description?: string }> = [
+          const mcpChain: Array<{
+            stage: string;
+            symbol: string;
+            file?: string;
+            line?: number;
+            description?: string;
+          }> = [
             {
               stage: "ingress",
               symbol: `tool:${toolIdentifier}`,
               file: relPath,
+              line: handlerLine,
               description: `MCP Tool Endpoint: ${toolIdentifier}`,
             },
           ];
@@ -74,23 +92,24 @@ export class McpCliSemanticExtractor implements SemanticSliceExtractor {
               stage: "validation",
               symbol: formRequestClass,
               file: relPath,
+              ...(argsLine ? { line: argsLine } : {}),
               description: "MCP Argument Schema",
             });
           }
 
           mcpChain.push({
             stage: "controller",
-            symbol: `McpToolHandler::${actionName}`,
+            symbol: classMatch ? `${controllerClass}::${actionName}` : actionName,
             file: relPath,
-            line: 1,
-            description: `Tool Handler Execution`,
+            line: handlerLine,
+            description: "Tool Handler Execution",
           });
 
-          if (modelClass) {
+          if (serviceDep) {
             mcpChain.push({
               stage: "service",
-              symbol: modelClass,
-              file: "src/core/database/repository.ts",
+              symbol: serviceDep.symbol,
+              ...(serviceDep.file ? { file: serviceDep.file } : {}),
               description: "Core Engine Service",
             });
           }
@@ -101,10 +120,10 @@ export class McpCliSemanticExtractor implements SemanticSliceExtractor {
             http_method: "MCP",
             route_uri: `tool:${toolIdentifier}`,
             route_name: toolIdentifier,
-            controller_class: "McpToolHandler",
+            controller_class: controllerClass,
             action_name: actionName,
             controller_file: relPath,
-            controller_line: 1,
+            controller_line: handlerLine,
             architecture_style: "rpc",
             entry_kind: "mcp_tool",
             execution_chain_json: JSON.stringify(mcpChain),
@@ -123,30 +142,44 @@ export class McpCliSemanticExtractor implements SemanticSliceExtractor {
 
         for (const file of commandFiles) {
           const fullPath = path.join(cliCommandsDir, file);
-          const relPath = path.relative(projectRoot, fullPath);
+          const relPath = path.relative(projectRoot, fullPath).replace(/\\/g, "/");
           const content = fs.readFileSync(fullPath, "utf-8");
-          const commandName = path.basename(file, path.extname(file)); // e.g. 'ingest', 'check'
+          const commandName = path.basename(file, path.extname(file));
 
-          const handlerMatch = content.match(/export\s+async?\s+function\s+([a-zA-Z0-9_]+Command)/);
-          const actionName = handlerMatch ? handlerMatch[1] : `handle${commandName.charAt(0).toUpperCase() + commandName.slice(1)}Command`;
+          const handlerMatch = /export\s+(?:async\s+)?function\s+([a-zA-Z0-9_]+)/.exec(content);
+          const classMatch = /export\s+class\s+([A-Za-z0-9_]+)/.exec(content);
+          const actionName = handlerMatch
+            ? handlerMatch[1]
+            : `handle${commandName.charAt(0).toUpperCase() + commandName.slice(1)}Command`;
+          const controllerClass = classMatch ? classMatch[1] : commandName;
+          const handlerLine =
+            handlerMatch && handlerMatch.index !== undefined
+              ? content.slice(0, handlerMatch.index).split("\n").length
+              : 1;
 
           // Detect options / args
-          const optionsMatch = content.match(/interface\s+([a-zA-Z0-9_]+Options)/);
+          const optionsMatch = /(?:export\s+)?interface\s+([a-zA-Z0-9_]+(?:Options|Args))\b/.exec(content);
           const formRequestClass = optionsMatch ? optionsMatch[1] : null;
+          const optionsLine =
+            optionsMatch && optionsMatch.index !== undefined
+              ? content.slice(0, optionsMatch.index).split("\n").length
+              : undefined;
 
-          // Detect Core Service used
-          let modelClass: string | null = null;
-          if (content.includes("IngestionPipeline")) modelClass = "IngestionPipeline";
-          else if (content.includes("BoundaryEvaluator")) modelClass = "BoundaryEvaluator";
-          else if (content.includes("VerticalSliceTracer")) modelClass = "VerticalSliceTracer";
-          else if (content.includes("SeptumRepository")) modelClass = "SeptumRepository";
+          const serviceDep = this.resolveServiceDependency(projectRoot, fullPath, content);
 
-          const cliChain: Array<{ stage: string; symbol: string; file?: string; line?: number; description?: string }> = [
+          const cliChain: Array<{
+            stage: string;
+            symbol: string;
+            file?: string;
+            line?: number;
+            description?: string;
+          }> = [
             {
               stage: "ingress",
-              symbol: `septum ${commandName}`,
+              symbol: `${cliBinName} ${commandName}`,
               file: relPath,
-              description: `CLI Command Entrypoint: septum ${commandName}`,
+              line: handlerLine,
+              description: `CLI Command Entrypoint: ${cliBinName} ${commandName}`,
             },
           ];
 
@@ -155,23 +188,24 @@ export class McpCliSemanticExtractor implements SemanticSliceExtractor {
               stage: "validation",
               symbol: formRequestClass,
               file: relPath,
+              ...(optionsLine ? { line: optionsLine } : {}),
               description: "CLI Options Interface",
             });
           }
 
           cliChain.push({
             stage: "controller",
-            symbol: `CLICommandHandler::${actionName}`,
+            symbol: classMatch ? `${controllerClass}::${actionName}` : actionName,
             file: relPath,
-            line: 1,
+            line: handlerLine,
             description: "Command Execution Handler",
           });
 
-          if (modelClass) {
+          if (serviceDep) {
             cliChain.push({
               stage: "service",
-              symbol: modelClass,
-              file: "src/core/",
+              symbol: serviceDep.symbol,
+              ...(serviceDep.file ? { file: serviceDep.file } : {}),
               description: "Core Engine Service",
             });
           }
@@ -181,11 +215,11 @@ export class McpCliSemanticExtractor implements SemanticSliceExtractor {
             feature_key: `cli.${commandName}`,
             http_method: "CLI",
             route_uri: `command:${commandName}`,
-            route_name: `septum ${commandName}`,
-            controller_class: "CLICommandHandler",
+            route_name: `${cliBinName} ${commandName}`,
+            controller_class: controllerClass,
             action_name: actionName,
             controller_file: relPath,
-            controller_line: 1,
+            controller_line: handlerLine,
             architecture_style: "cli",
             entry_kind: "cli_command",
             execution_chain_json: JSON.stringify(cliChain),
@@ -196,4 +230,99 @@ export class McpCliSemanticExtractor implements SemanticSliceExtractor {
 
     return slices;
   }
+
+  private resolveProjectNaming(projectRoot: string): { toolPrefix: string; cliBinName: string } {
+    const pkgPath = path.join(projectRoot, "package.json");
+    if (fs.existsSync(pkgPath)) {
+      try {
+        const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf-8"));
+        const rawName = typeof pkg.name === "string" ? pkg.name.replace(/^@[^/]+\//, "") : "mcp";
+        const toolPrefix = rawName.replace(/[^a-zA-Z0-9_]/g, "_").toLowerCase() || "mcp";
+        let cliBinName = rawName;
+        if (typeof pkg.bin === "string") {
+          cliBinName = rawName;
+        } else if (pkg.bin && typeof pkg.bin === "object") {
+          const firstBin = Object.keys(pkg.bin)[0];
+          if (firstBin) cliBinName = firstBin;
+        }
+        return { toolPrefix, cliBinName };
+      } catch {}
+    }
+    return { toolPrefix: "mcp", cliBinName: "cli" };
+  }
+
+  private scanRegisteredMcpToolNames(projectRoot: string): Map<string, string> {
+    const map = new Map<string, string>();
+    const serverPath = path.join(projectRoot, "src/mcp/server.ts");
+    if (!fs.existsSync(serverPath)) return map;
+
+    try {
+      const content = fs.readFileSync(serverPath, "utf-8");
+      const nameRegex = /name:\s*['"]([a-zA-Z0-9_-]+)['"]/g;
+      let match: RegExpExecArray | null;
+      while ((match = nameRegex.exec(content)) !== null) {
+        const fullToolName = match[1];
+        const normalized = fullToolName.replace(/-/g, "_");
+        map.set(normalized, fullToolName);
+        const withoutPrefix = normalized.replace(/^[a-z0-9]+_/, "");
+        if (withoutPrefix) {
+          map.set(withoutPrefix, fullToolName);
+        }
+      }
+    } catch {}
+    return map;
+  }
+
+  private resolveServiceDependency(
+    projectRoot: string,
+    sourceFile: string,
+    content: string
+  ): { symbol: string; file?: string } | null {
+    const importRegex = /import\s+(?:type\s+)?\{([^}]+)\}\s+from\s+['"]([^'"]+)['"]/g;
+    let match: RegExpExecArray | null;
+
+    while ((match = importRegex.exec(content)) !== null) {
+      const clause = match[1];
+      const spec = match[2];
+      const identifiers = clause
+        .split(",")
+        .map((s) => s.trim().split(/\s+as\s+/)[0].trim())
+        .filter(Boolean);
+
+      for (const id of identifiers) {
+        if (
+          /(?:Repository|Service|Manager|Loader|Pipeline|Evaluator|Tracer|Detector|Engine|Store)$/.test(
+            id
+          )
+        ) {
+          const resolvedFile = this.resolveImportFile(projectRoot, sourceFile, spec);
+          return {
+            symbol: id,
+            ...(resolvedFile ? { file: resolvedFile } : {}),
+          };
+        }
+      }
+    }
+
+    return null;
+  }
+
+  private resolveImportFile(projectRoot: string, sourceFile: string, importSpec: string): string | undefined {
+    if (!importSpec.startsWith(".")) return undefined;
+    const baseResolved = path.resolve(path.dirname(sourceFile), importSpec);
+    const candidates = [
+      baseResolved,
+      `${baseResolved}.ts`,
+      `${baseResolved}.js`,
+      baseResolved.replace(/\.js$/, ".ts"),
+      path.join(baseResolved, "index.ts"),
+    ];
+    for (const c of candidates) {
+      if (fs.existsSync(c) && fs.statSync(c).isFile()) {
+        return path.relative(projectRoot, c).replace(/\\/g, "/");
+      }
+    }
+    return undefined;
+  }
 }
+

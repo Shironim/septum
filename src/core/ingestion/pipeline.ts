@@ -59,6 +59,11 @@ export class IngestionPipeline {
       domainNames = Object.keys(config.domains);
     }
 
+    const existingFilesMap = new Map<string, import("../../types/index.ts").FileRecord>();
+    for (const f of this.repo.getAllFiles()) {
+      existingFilesMap.set(f.path, f);
+    }
+
     for (const domainName of domainNames) {
       const domainCfg = config.domains[domainName];
       const domainId = this.repo.upsertDomain(domainName, domainCfg);
@@ -85,7 +90,13 @@ export class IngestionPipeline {
         config.settings.ignore_patterns,
         childDomainRoots
       );
-      const activeRelPaths: string[] = [];
+      const activeRelPaths = new Set<string>();
+
+      const pendingMetadataUpdates: Array<{
+        id: number;
+        mtimeMs: number;
+        sizeBytes: number;
+      }> = [];
 
       const pendingUpdates: Array<{
         fullPath: string;
@@ -100,7 +111,7 @@ export class IngestionPipeline {
 
       for (const { fullPath, relPath } of collectedFiles) {
         filesScanned++;
-        activeRelPaths.push(relPath);
+        activeRelPaths.add(relPath);
 
         let stat;
         try {
@@ -111,7 +122,7 @@ export class IngestionPipeline {
 
         const mtimeMs = Math.round(stat.mtimeMs);
         const sizeBytes = stat.size;
-        const existingFile = this.repo.getFileByPath(relPath);
+        const existingFile = existingFilesMap.get(relPath);
 
         // Tier 1: Fast OS metadata check (inode mtime + size + domain match)
         if (
@@ -133,8 +144,8 @@ export class IngestionPipeline {
           existingFile.domain_id === domainId &&
           existingFile.content_hash === currentHash
         ) {
-          // Content identical despite mtime bump (e.g. touch) - update metadata without re-parsing AST
-          this.repo.updateFileMetadataOnly(existingFile.id, mtimeMs, sizeBytes);
+          // Content identical despite mtime bump (e.g. touch) - queue metadata update for batch transaction
+          pendingMetadataUpdates.push({ id: existingFile.id, mtimeMs, sizeBytes });
           filesSkipped++;
           continue;
         }
@@ -158,6 +169,10 @@ export class IngestionPipeline {
 
       // Batch ACID Transaction per domain
       this.repo.runInTransaction(() => {
+        for (const meta of pendingMetadataUpdates) {
+          this.repo.updateFileMetadataOnly(meta.id, meta.mtimeMs, meta.sizeBytes);
+        }
+
         for (const item of pendingUpdates) {
           const fileId = this.repo.upsertFile(
             domainId,
@@ -176,8 +191,13 @@ export class IngestionPipeline {
           dependenciesIndexed += item.ast.dependencies.length;
         }
 
-        // State Reconciliation: Prune deleted files from DB
-        this.repo.deleteFilesNotInPaths(domainId, activeRelPaths);
+        // State Reconciliation: Prune deleted files from DB using pre-loaded existingFilesMap
+        for (const [existingPath, existingRecord] of existingFilesMap.entries()) {
+          if (existingRecord.domain_id === domainId && !activeRelPaths.has(existingPath)) {
+            this.repo.deleteFileByPath(existingPath);
+            existingFilesMap.delete(existingPath);
+          }
+        }
       });
     }
 
@@ -188,29 +208,28 @@ export class IngestionPipeline {
       detectedTopology.framework
     );
 
-    this.repo.clearVerticalSlices();
+    const slicesToPersist =
+      semanticSlices.length > 0
+        ? semanticSlices
+        : new CallGraphTracer(this.repo, projectRoot).traceAllSlices();
 
-    if (semanticSlices.length > 0) {
-      for (const slice of semanticSlices) {
+    this.repo.runInTransaction(() => {
+      this.repo.clearVerticalSlices();
+      for (const slice of slicesToPersist) {
         this.repo.upsertVerticalSlice(slice);
       }
-    } else {
-      // Heuristic Call-Graph Tracer fallback for Clean/Hexagonal or generic architectures
-      const callGraphTracer = new CallGraphTracer(this.repo, projectRoot);
-      const graphSlices = callGraphTracer.traceAllSlices();
-      for (const slice of graphSlices) {
-        this.repo.upsertVerticalSlice(slice);
-      }
-    }
+    });
 
     const durationMs = Math.round(performance.now() - startTime);
 
     // Update SSOT repo_meta watermark
-    this.repo.setMeta("last_sync", new Date().toISOString());
-    this.repo.setMeta("files_scanned", String(filesScanned));
-    this.repo.setMeta("files_updated", String(filesUpdated));
-    this.repo.setMeta("symbols_indexed", String(symbolsIndexed));
-    this.repo.setMeta("dependencies_indexed", String(dependenciesIndexed));
+    this.repo.runInTransaction(() => {
+      this.repo.setMeta("last_sync", new Date().toISOString());
+      this.repo.setMeta("files_scanned", String(filesScanned));
+      this.repo.setMeta("files_updated", String(filesUpdated));
+      this.repo.setMeta("symbols_indexed", String(symbolsIndexed));
+      this.repo.setMeta("dependencies_indexed", String(dependenciesIndexed));
+    });
 
     return {
       domains_processed: domainNames.length,
@@ -521,7 +540,7 @@ export class IngestionPipeline {
     const projectRoot = this.customWorkspaceRoot || process.cwd();
     const relPath = relative(projectRoot, fullPath).replace(/\\/g, "/");
 
-    if (this.isIgnored(relPath, config.settings.ignore_patterns ?? [])) {
+    if (this.shouldIgnore(relPath, config.settings.ignore_patterns ?? [])) {
       return false;
     }
 
