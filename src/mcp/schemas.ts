@@ -78,11 +78,28 @@ export function normalizeFeatureContextArgs(raw: unknown): unknown {
   return obj;
 }
 
-function normalizeBoundaryArgs(raw: unknown): unknown {
+export function normalizeBoundaryArgs(raw: unknown): unknown {
   if (Array.isArray(raw) && raw.length > 1 && raw.every((item) => typeof item === "string")) {
     raw = { file_paths: raw };
   }
-  const coerced = extractSingleStringFallback(raw, "file_path");
+  const coerced = extractSingleStringFallback(raw, "file_path", [
+    "workspace_path",
+    "workspacePath",
+    "workspace",
+    "project_root",
+    "projectRoot",
+    "scope",
+    "domain",
+    "domain_name",
+    "domainName",
+    "feature_key",
+    "featureKey",
+    "feature",
+    "feature_name",
+    "featureName",
+    "name",
+    "key",
+  ]);
   if (typeof coerced !== "object" || coerced === null || Array.isArray(coerced)) return coerced;
   const obj = { ...(coerced as Record<string, unknown>) };
   const aliases: Record<string, string> = {
@@ -104,6 +121,12 @@ function normalizeBoundaryArgs(raw: unknown): unknown {
     featureName: "feature_key",
     name: "feature_key",
     key: "feature_key",
+    domain_name: "domain",
+    domainName: "domain",
+    workspace: "workspace_path",
+    workspacePath: "workspace_path",
+    project_root: "workspace_path",
+    projectRoot: "workspace_path",
   };
   for (const [alias, target] of Object.entries(aliases)) {
     if (obj[alias] !== undefined && obj[target] === undefined) {
@@ -134,22 +157,55 @@ function normalizeBoundaryArgs(raw: unknown): unknown {
     obj.file_path = obj.file_paths;
     delete obj.file_paths;
   }
+  if (obj.staged === true && obj.scope === undefined) {
+    obj.scope = "staged";
+  }
+  if (obj.domain !== undefined && obj.file_path === undefined && obj.file_paths === undefined) {
+    obj.scope = "domain";
+  }
   return obj;
 }
 
 export function normalizeDomainCatalogArgs(raw: unknown): unknown {
-  const coerced = extractSingleStringFallback(raw, "domain");
+  const coerced = extractSingleStringFallback(raw, "domain", [
+    "workspace_path",
+    "workspacePath",
+    "workspace",
+    "project_root",
+    "projectRoot",
+    "target_path",
+    "path",
+    "archetype_filter",
+    "archetype",
+    "archetypeFilter",
+    "type",
+    "detail_level",
+    "detailLevel",
+    "mode",
+    "format",
+    "file_filter",
+    "fileFilter",
+    "file",
+    "filter",
+  ]);
   if (typeof coerced !== "object" || coerced === null || Array.isArray(coerced)) return coerced;
   const obj = withAliases(coerced, {
     domain_name: "domain",
     domainName: "domain",
     name: "domain",
-    archetype_filter: "archetype",
-    archetypeFilter: "archetype",
-    type: "archetype",
+    archetype: "archetype_filter",
+    archetypeFilter: "archetype_filter",
+    type: "archetype_filter",
+    detailLevel: "detail_level",
+    mode: "detail_level",
+    format: "detail_level",
+    fileFilter: "file_filter",
+    file: "file_filter",
+    filter: "file_filter",
     workspace: "workspace_path",
     workspacePath: "workspace_path",
     project_root: "workspace_path",
+    projectRoot: "workspace_path",
     target_path: "workspace_path",
     path: "workspace_path",
   }) as Record<string, unknown>;
@@ -157,6 +213,14 @@ export function normalizeDomainCatalogArgs(raw: unknown): unknown {
     obj.name = obj.domain;
   } else if (obj.name !== undefined && obj.domain === undefined) {
     obj.domain = obj.name;
+  }
+  if (obj.archetype_filter !== undefined && obj.archetype === undefined) {
+    obj.archetype = obj.archetype_filter;
+  } else if (obj.archetype !== undefined && obj.archetype_filter === undefined) {
+    obj.archetype_filter = obj.archetype;
+  }
+  if (obj.full === true && obj.detail_level === undefined) {
+    obj.detail_level = "full";
   }
   return obj;
 }
@@ -166,7 +230,10 @@ export const GetDomainCatalogSchema = z.preprocess(
   z.object({
     domain: z.string().optional(),
     name: z.string().optional(),
+    archetype_filter: z.string().optional(),
     archetype: z.string().optional(),
+    detail_level: z.enum(["compact", "full"]).optional().default("compact"),
+    file_filter: z.string().optional(),
     workspace_path: z.string().optional(),
   })
 );
@@ -182,8 +249,26 @@ export const GetFeatureContextSchema = z.preprocess(
 );
 export type GetFeatureContextArgs = z.infer<typeof GetFeatureContextSchema>;
 
+export const ClearFeatureContextSchema = z
+  .object({
+    workspace_path: z.string().optional(),
+  })
+  .passthrough();
+export type ClearFeatureContextArgs = z.infer<typeof ClearFeatureContextSchema>;
+
 export function normalizeLocateSymbolArgs(raw: unknown): unknown {
-  const coerced = extractSingleStringFallback(raw, "query");
+  const coerced = extractSingleStringFallback(raw, "query", [
+    "workspace_path",
+    "workspacePath",
+    "workspace",
+    "project_root",
+    "projectRoot",
+    "target_path",
+    "path",
+    "domain",
+    "domain_name",
+    "domainName",
+  ]);
   if (typeof coerced !== "object" || coerced === null || Array.isArray(coerced)) return coerced;
   const obj = withAliases(coerced, {
     symbol: "query",
@@ -197,6 +282,7 @@ export function normalizeLocateSymbolArgs(raw: unknown): unknown {
     workspace: "workspace_path",
     workspacePath: "workspace_path",
     project_root: "workspace_path",
+    projectRoot: "workspace_path",
     target_path: "workspace_path",
     path: "workspace_path",
   }) as Record<string, unknown>;
@@ -214,14 +300,23 @@ export const LocateSymbolSchema = z.preprocess(
     query: z.string().min(1, "query is required"),
     symbol: z.string().optional(),
     domain: z.string().optional(),
-    limit: z.number().int().positive().optional().default(10),
+    limit: z.number().int().min(1).max(50).optional().default(10),
     workspace_path: z.string().optional(),
   })
 );
 export type LocateSymbolArgs = z.infer<typeof LocateSymbolSchema>;
 
 export function normalizeGetSymbolArgs(raw: unknown): unknown {
-  const coerced = extractSingleStringFallback(raw, "symbol");
+  const coerced = extractSingleStringFallback(raw, "symbol", [
+    "workspace_path",
+    "workspacePath",
+    "workspace",
+    "project_root",
+    "projectRoot",
+    "domain",
+    "domain_name",
+    "domainName",
+  ]);
   if (typeof coerced !== "object" || coerced === null || Array.isArray(coerced)) return coerced;
   const obj = withAliases(coerced, {
     query: "symbol",
@@ -236,6 +331,10 @@ export function normalizeGetSymbolArgs(raw: unknown): unknown {
     includeDeps: "include_dependencies",
     dependencies: "include_dependencies",
     deps: "include_dependencies",
+    workspace: "workspace_path",
+    workspacePath: "workspace_path",
+    project_root: "workspace_path",
+    projectRoot: "workspace_path",
   }) as Record<string, unknown>;
   if (obj.symbol !== undefined && obj.query === undefined) {
     obj.query = obj.symbol;
@@ -252,6 +351,7 @@ export const GetSymbolSchema = z.preprocess(
     query: z.string().optional(),
     domain: z.string().optional(),
     include_dependencies: z.boolean().optional().default(true),
+    workspace_path: z.string().optional(),
   })
 );
 export type GetSymbolArgs = z.infer<typeof GetSymbolSchema>;
@@ -269,6 +369,10 @@ export function normalizeGetSymbolImpactArgs(raw: unknown): unknown {
     file: "symbol",
     path: "symbol",
     target: "symbol",
+    workspace: "workspace_path",
+    workspacePath: "workspace_path",
+    project_root: "workspace_path",
+    projectRoot: "workspace_path",
   }) as Record<string, unknown>;
   if (obj.symbol !== undefined && obj.query === undefined) {
     obj.query = obj.symbol;
@@ -283,6 +387,7 @@ export const GetSymbolImpactSchema = z.preprocess(
   z.object({
     symbol: z.string().min(1, "symbol is required"),
     query: z.string().optional(),
+    workspace_path: z.string().optional(),
   })
 );
 export type GetSymbolImpactArgs = z.infer<typeof GetSymbolImpactSchema>;
@@ -308,11 +413,18 @@ export function normalizeTraceVerticalSliceArgs(raw: unknown): unknown {
     featureKey: "query",
     maxDepth: "max_depth",
     depth: "max_depth",
+    workspace: "workspace_path",
+    workspacePath: "workspace_path",
+    project_root: "workspace_path",
+    projectRoot: "workspace_path",
   }) as Record<string, unknown>;
   if (obj.query !== undefined && obj.symbol === undefined) {
     obj.symbol = obj.query;
   } else if (obj.symbol !== undefined && obj.query === undefined) {
     obj.query = obj.symbol;
+  }
+  if (obj.max_depth !== undefined && obj.max_depth !== null && !Number.isNaN(Number(obj.max_depth))) {
+    obj.max_depth = Math.min(Math.max(Math.trunc(Number(obj.max_depth)), 1), 8);
   }
   return obj;
 }
@@ -322,7 +434,8 @@ export const TraceVerticalSliceSchema = z.preprocess(
   z.object({
     query: z.string().min(1, "query is required"),
     symbol: z.string().optional(),
-    max_depth: z.number().int().positive().optional().default(5),
+    max_depth: z.number().int().min(1).max(8).optional().default(5),
+    workspace_path: z.string().optional(),
   })
 );
 export type TraceVerticalSliceArgs = z.infer<typeof TraceVerticalSliceSchema>;
@@ -332,8 +445,12 @@ export const CheckBoundarySchema = z.preprocess(
   z.object({
     file_path: z.string().optional(),
     file_paths: z.array(z.string()).optional(),
-    proposed_imports: z.array(z.string()).default([]),
+    proposed_imports: z.array(z.string()).optional().default([]),
     feature_key: z.string().optional(),
+    scope: z.enum(["file", "all", "staged", "domain"]).optional(),
+    domain: z.string().optional(),
+    staged: z.boolean().optional(),
+    workspace_path: z.string().optional(),
   })
 );
 export type CheckBoundaryArgs = z.infer<typeof CheckBoundarySchema>;
@@ -349,14 +466,19 @@ export const GetSymbolHotspotsSchema = z.preprocess(
       lines: "min_lines",
       minLines: "min_lines",
       sortBy: "sort_by",
+      workspace: "workspace_path",
+      workspacePath: "workspace_path",
+      project_root: "workspace_path",
+      projectRoot: "workspace_path",
     }),
   z.object({
     min_lines: z.number().int().nonnegative().optional(),
     min_nesting: z.number().int().positive().optional(),
     kind: z.string().optional(),
     domain: z.string().optional(),
-    limit: z.number().int().positive().optional().default(10),
+    limit: z.number().int().positive().optional().default(30),
     sort_by: z.enum(["lines", "nesting", "risk_score"]).optional(),
+    workspace_path: z.string().optional(),
   })
 );
 export type GetSymbolHotspotsArgs = z.infer<typeof GetSymbolHotspotsSchema>;
@@ -388,6 +510,10 @@ export function normalizeRegisterDomainArgs(raw: unknown): unknown {
     forbidden: "forbidden_dependencies",
     archetype: "archetypes",
     ingestNow: "ingest_now",
+    workspace: "workspace_path",
+    workspacePath: "workspace_path",
+    project_root: "workspace_path",
+    projectRoot: "workspace_path",
   }) as Record<string, unknown>;
   if (obj.domain !== undefined && obj.name === undefined) {
     obj.name = obj.domain;
@@ -408,6 +534,7 @@ export const RegisterDomainSchema = z.preprocess(
     forbidden_dependencies: z.array(z.string()).optional(),
     archetypes: z.record(z.string()).optional(),
     ingest_now: z.boolean().optional().default(false),
+    workspace_path: z.string().optional(),
   })
 );
 export type RegisterDomainArgs = z.infer<typeof RegisterDomainSchema>;
@@ -436,8 +563,6 @@ export function normalizeRegisterFeatureArgs(raw: unknown): unknown {
     symbols: "reuse_symbols",
     inputContract: "input_contract",
     outputContract: "output_contract",
-    persistToConfig: "persist_to_config",
-    persist: "persist_to_config",
     workspace: "workspace_path",
     workspacePath: "workspace_path",
     project_root: "workspace_path",
@@ -491,26 +616,19 @@ export const RegisterFeatureSchema = z.preprocess(
     reuse_symbols: z.array(z.string()).optional(),
     input_contract: z.record(z.unknown()).optional(),
     output_contract: z.record(z.unknown()).optional(),
-    persist_to_config: z.boolean().optional().default(false),
     workspace_path: z.string().optional(),
   })
 );
 export type RegisterFeatureArgs = z.infer<typeof RegisterFeatureSchema>;
 
-export const AutoDiscoverDomainsSchema = z.preprocess(
-  (args) =>
-    withAliases(args, {
-      save: "persist",
-    }),
-  z.object({
-    persist: z.boolean().optional().default(true),
-  })
-);
-export type AutoDiscoverDomainsArgs = z.infer<typeof AutoDiscoverDomainsSchema>;
-
 function normalizeTopologyArgs(raw: unknown): unknown {
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return raw;
-  const obj = { ...(raw as Record<string, unknown>) };
+  const obj = withAliases(raw, {
+    workspace: "workspace_path",
+    workspacePath: "workspace_path",
+    project_root: "workspace_path",
+    projectRoot: "workspace_path",
+  }) as Record<string, unknown>;
   if (obj.resolve_node !== undefined && obj.resolveNode === undefined) {
     obj.resolveNode = obj.resolve_node;
   }
@@ -571,8 +689,7 @@ export const GetEnvironmentTopologySchema = z.preprocess(
       })
       .optional(),
     refresh: z.boolean().optional().default(false),
+    workspace_path: z.string().optional(),
   })
 );
 export type GetEnvironmentTopologyArgs = z.infer<typeof GetEnvironmentTopologySchema>;
-
-

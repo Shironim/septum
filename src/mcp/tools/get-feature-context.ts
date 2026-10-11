@@ -4,12 +4,9 @@ import type { ValidatedSeptumConfig } from "../../core/config/schema.ts";
 import type { SeptumRepository } from "../../core/database/repository.ts";
 import { SessionManager } from "../../core/session/session-manager.ts";
 import type { FeatureContextResponse } from "../../types/index.ts";
+import type { GetFeatureContextArgs } from "../schemas.ts";
 
-export interface GetFeatureContextArgs {
-  feature_key?: string;
-  feature?: string;
-  workspace_path?: string;
-}
+export type { GetFeatureContextArgs } from "../schemas.ts";
 
 export function handleClearFeatureContext(workspaceRoot: string = process.cwd()): boolean {
   return SessionManager.clearActiveSession(workspaceRoot);
@@ -22,7 +19,15 @@ export function handleGetFeatureContext(
   workspaceRoot: string = process.cwd()
 ) {
   const featureKey = (args.feature_key || args.feature || "").trim();
-  const features = config.features ?? {};
+  const features = { ...(config.features ?? {}) };
+  if (typeof repo?.getMeta === "function") {
+    try {
+      const metaFeaturesRaw = repo.getMeta("features_json");
+      if (metaFeaturesRaw) {
+        Object.assign(features, JSON.parse(metaFeaturesRaw));
+      }
+    } catch {}
+  }
 
   // ZERO-ARGUMENT GRACEFUL FALLBACK: Guide the agent instead of throwing validation errors
   if (!featureKey) {
@@ -186,7 +191,7 @@ export function handleGetFeatureContext(
     ...(isInferred ? { is_inferred: true } : {}),
   };
 
-  recordFeatureAccess(featureConfig.domain, featureKey);
+  recordFeatureAccess(featureConfig.domain, featureKey, workspaceRoot);
 
   return {
     content: [
@@ -198,9 +203,9 @@ export function handleGetFeatureContext(
   };
 }
 
-function recordFeatureAccess(domain: string, feature: string): void {
+function recordFeatureAccess(domain: string, feature: string, workspaceRoot: string = process.cwd()): void {
   try {
-    const septumDir = path.resolve(process.cwd(), ".septum");
+    const septumDir = path.resolve(workspaceRoot, ".septum");
     if (!fs.existsSync(septumDir)) {
       fs.mkdirSync(septumDir, { recursive: true });
     }
@@ -219,3 +224,4 @@ function recordFeatureAccess(domain: string, feature: string): void {
     fs.writeFileSync(logPath, JSON.stringify(log, null, 2), "utf-8");
   } catch {}
 }
+

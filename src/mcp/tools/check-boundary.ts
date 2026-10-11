@@ -1,56 +1,191 @@
+import { execSync } from "node:child_process";
 import type { BoundaryEvaluator } from "../../core/boundary/evaluator.ts";
 import type { ValidatedSeptumConfig } from "../../core/config/schema.ts";
 import type { SeptumRepository } from "../../core/database/repository.ts";
+import type { BoundaryViolation } from "../../types/index.ts";
+import { normalizeBoundaryArgs, type CheckBoundaryArgs } from "../schemas.ts";
 
-export interface CheckBoundaryArgs {
-  file_path?: string;
-  filePath?: string;
-  file?: string;
-  path?: string;
-  from_file?: string;
-  fromFile?: string;
-  to_file?: string | string[];
-  toFile?: string | string[];
-  file_paths?: string[];
-  filePaths?: string[];
-  files?: string[];
-  paths?: string[];
-  proposed_imports?: string[];
-  proposedImports?: string[];
-  imports?: string[];
-  feature_key?: string;
-  featureKey?: string;
-  feature?: string;
-}
+export type { CheckBoundaryArgs } from "../schemas.ts";
 
 export function handleCheckBoundary(
   evaluator: BoundaryEvaluator,
   config: ValidatedSeptumConfig,
-  args: CheckBoundaryArgs,
+  rawArgs: CheckBoundaryArgs & Record<string, unknown>,
   repo?: SeptumRepository,
-  _workspaceRoot?: string
+  workspaceRoot?: string
 ) {
-  const rawToFile = args.to_file ?? args.toFile;
-  const toFileImports = rawToFile ? (Array.isArray(rawToFile) ? rawToFile.map(String) : [String(rawToFile)]) : [];
-  const rawFilePaths = args.file_paths ?? args.filePaths ?? args.files ?? args.paths;
-  const rawFilePath = args.file_path ?? args.filePath ?? args.file ?? args.path ?? args.from_file ?? args.fromFile;
-  const proposedImports = [
-    ...(args.proposed_imports ?? args.proposedImports ?? args.imports ?? []),
-    ...toFileImports,
-  ];
-  const featureKey = args.feature_key ?? args.featureKey ?? args.feature;
+  const args = (normalizeBoundaryArgs(rawArgs ?? {}) ?? {}) as CheckBoundaryArgs & Record<string, unknown>;
+  const root = workspaceRoot || args.workspace_path || process.cwd();
+  const proposedImports = args.proposed_imports ?? [];
+  const featureKey = args.feature_key;
 
   const filesToCheck: string[] = [];
-  if (rawFilePaths && Array.isArray(rawFilePaths) && rawFilePaths.length > 0) {
-    filesToCheck.push(...rawFilePaths);
-  } else if (rawFilePath) {
-    if (Array.isArray(rawFilePath)) {
-      filesToCheck.push(...rawFilePath);
-    } else {
-      filesToCheck.push(rawFilePath);
+  if (args.file_paths && Array.isArray(args.file_paths) && args.file_paths.length > 0) {
+    filesToCheck.push(...args.file_paths);
+  } else if (args.file_path) {
+    if (Array.isArray(args.file_path)) {
+      filesToCheck.push(...args.file_path);
+    } else if (typeof args.file_path === "string" && args.file_path.trim().length > 0) {
+      filesToCheck.push(args.file_path.trim());
     }
-  } else {
-    throw new Error("Missing required argument: specify either 'file_path' or 'file_paths'");
+  }
+
+  // Repo-wide, domain-scoped, or git-staged boundary audit when neither file_path nor file_paths is provided
+  if (filesToCheck.length === 0) {
+    const effectiveScope =
+      args.scope ?? (args.staged ? "staged" : args.domain ? "domain" : "all");
+
+    if (effectiveScope === "staged") {
+      let stagedFiles: string[] = [];
+      try {
+        const gitOut = execSync("git diff --name-only --cached", {
+          cwd: root,
+          encoding: "utf-8",
+          timeout: 5000,
+        });
+        stagedFiles = gitOut
+          .split("\n")
+          .map((f) => f.trim())
+          .filter(Boolean);
+      } catch {
+        stagedFiles = [];
+      }
+
+      if (stagedFiles.length === 0) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: JSON.stringify(
+                {
+                  status: "approved",
+                  scope: "staged",
+                  total_checked: 0,
+                  total_violations: 0,
+                  circular_dependencies: [],
+                  domain_violation_breakdown: {},
+                  violations: [],
+                  message: "No git staged files found. Boundary check passed.",
+                },
+                null,
+                2
+              ),
+            },
+          ],
+        };
+      }
+
+      const codebaseViolations = evaluator.auditCodebase(config);
+      const stagedNormalized = new Set(
+        stagedFiles.map((f) => f.replace(/\\/g, "/").replace(/^\.\//, ""))
+      );
+      const stagedViolations: BoundaryViolation[] = [];
+
+      for (const filePath of stagedFiles) {
+        const evalViolations = evaluator.evaluate(filePath, proposedImports, featureKey, config);
+        stagedViolations.push(...evalViolations);
+      }
+      for (const v of codebaseViolations) {
+        const normFile = v.file.replace(/\\/g, "/").replace(/^\.\//, "");
+        if (stagedNormalized.has(normFile)) {
+          stagedViolations.push(v);
+        }
+      }
+
+      const filteredViolations = args.domain
+        ? stagedViolations.filter(
+            (v) =>
+              v.source_domain.toLowerCase() === args.domain!.toLowerCase() ||
+              v.target_domain.toLowerCase() === args.domain!.toLowerCase()
+          )
+        : stagedViolations;
+
+      const circularDependencies = filteredViolations.filter((v) => v.rule === "circular_dependency");
+      const domainBreakdown: Record<string, number> = {};
+      for (const v of filteredViolations) {
+        const pair = `${v.source_domain} -> ${v.target_domain}`;
+        domainBreakdown[pair] = (domainBreakdown[pair] || 0) + 1;
+      }
+
+      const hasViolations = filteredViolations.length > 0;
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify(
+              {
+                status: hasViolations ? "rejected" : "approved",
+                scope: "staged",
+                total_checked: stagedFiles.length,
+                total_violations: filteredViolations.length,
+                circular_dependencies_count: circularDependencies.length,
+                circular_dependencies: circularDependencies,
+                domain_violation_breakdown: domainBreakdown,
+                violations: filteredViolations,
+                message: hasViolations
+                  ? `${filteredViolations.length} boundary violation(s) detected across ${stagedFiles.length} staged file(s).`
+                  : `All ${stagedFiles.length} staged file(s) approved. No boundary violations detected.`,
+              },
+              null,
+              2
+            ),
+          },
+        ],
+      };
+    }
+
+    // Scope: "all" or "domain"
+    let violations = evaluator.auditCodebase(config);
+    if (args.domain) {
+      const targetDom = args.domain.toLowerCase();
+      violations = violations.filter(
+        (v) =>
+          v.source_domain.toLowerCase() === targetDom ||
+          v.target_domain.toLowerCase() === targetDom
+      );
+    }
+
+    const circularDependencies = violations.filter((v) => v.rule === "circular_dependency");
+    const domainBreakdown: Record<string, number> = {};
+    for (const v of violations) {
+      const pair = `${v.source_domain} -> ${v.target_domain}`;
+      domainBreakdown[pair] = (domainBreakdown[pair] || 0) + 1;
+    }
+
+    const hasViolations = violations.length > 0;
+    const domainCount = Object.keys(config?.domains || {}).length;
+
+    return {
+      content: [
+        {
+          type: "text" as const,
+          text: JSON.stringify(
+            {
+              status: hasViolations ? "rejected" : "approved",
+              scope: args.domain ? "domain" : "all",
+              ...(args.domain ? { domain: args.domain } : {}),
+              total_domains_checked: domainCount,
+              total_violations: violations.length,
+              circular_dependencies_count: circularDependencies.length,
+              circular_dependencies: circularDependencies,
+              domain_violation_breakdown: domainBreakdown,
+              violations,
+              message: hasViolations
+                ? `${violations.length} boundary violation(s) (${circularDependencies.length} circular) detected${
+                    args.domain ? ` in domain '${args.domain}'` : " across codebase"
+                  }.`
+                : domainCount === 0
+                ? "No boundary violations detected. [Septum Notice: Domain catalog is currently unindexed. Run 'septum_register_domain' to initialize bounded contexts.]"
+                : `All domain boundaries are clean${
+                    args.domain ? ` for domain '${args.domain}'` : ""
+                  }. Zero cross-domain leaks or circular dependencies detected.`,
+            },
+            null,
+            2
+          ),
+        },
+      ],
+    };
   }
 
   // Multi-file batch evaluation
@@ -169,3 +304,4 @@ export function handleCheckBoundary(
     ],
   };
 }
+

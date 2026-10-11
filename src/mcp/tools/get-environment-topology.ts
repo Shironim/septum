@@ -1,13 +1,10 @@
 import type { ValidatedSeptumConfig } from "../../core/config/schema.ts";
 import type { SeptumRepository } from "../../core/database/repository.ts";
 import { EnvironmentDetector } from "../../core/topology/environment-detector.ts";
-import type { EnvironmentLayer, ResolveLayerInput, ResolveNodeInput } from "../../core/topology/types.ts";
+import type { EnvironmentLayer } from "../../core/topology/types.ts";
+import type { GetEnvironmentTopologyArgs } from "../schemas.ts";
 
-export interface GetEnvironmentTopologyArgs {
-  resolve?: ResolveLayerInput;
-  resolveNode?: ResolveNodeInput;
-  refresh?: boolean;
-}
+export type { GetEnvironmentTopologyArgs } from "../schemas.ts";
 
 export function handleGetEnvironmentTopology(
   repo: SeptumRepository,

@@ -2,12 +2,10 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ValidatedSeptumConfig } from "../../core/config/schema.ts";
 import type { SeptumRepository } from "../../core/database/repository.ts";
+import type { DomainCatalogResponse } from "../../types/index.ts";
+import type { GetDomainCatalogArgs } from "../schemas.ts";
 
-export interface GetDomainCatalogArgs {
-  domain?: string;
-  archetype_filter?: string;
-  workspace_path?: string;
-}
+export type { GetDomainCatalogArgs } from "../schemas.ts";
 
 export function handleGetDomainCatalog(
   repo: SeptumRepository,
@@ -16,8 +14,9 @@ export function handleGetDomainCatalog(
   workspaceRoot?: string
 ) {
   const targetRoot = args.workspace_path || workspaceRoot || (repo as any)?.projectRoot || process.cwd();
+  const domainName = args.domain ?? args.name;
 
-  if (!args.domain) {
+  if (!domainName) {
     const allDomains = repo.getAllDomains();
     if (allDomains.length === 0) {
       const root = targetRoot;
@@ -50,7 +49,10 @@ export function handleGetDomainCatalog(
     const projectType = repo.getMeta("project_type") || "generic";
     const framework = repo.getMeta("framework") || "unknown";
     const archStyle = repo.getMeta("architecture_style") || "modular";
-    const totalSlices = repo.getAllVerticalSlices().length;
+    const totalSlices =
+      typeof (repo as any).countVerticalSlices === "function"
+        ? (repo as any).countVerticalSlices()
+        : repo.getAllVerticalSlices().length;
 
     const macroMap = {
       telescope_view: {
@@ -81,23 +83,31 @@ export function handleGetDomainCatalog(
     };
   }
 
-  const catalog = repo.getDomainCatalog(args.domain, args.archetype_filter);
+  const archetypeFilter = args.archetype_filter ?? args.archetype;
+  const detailLevel = args.detail_level ?? "compact";
+  const fileFilter = args.file_filter;
+
+  const catalog: DomainCatalogResponse | null = (repo.getDomainCatalog as any)(
+    domainName,
+    archetypeFilter,
+    { detailLevel, fileFilter }
+  );
   if (!catalog) {
     const available = Object.keys(config.domains || {});
     const suggestions = available.filter((d) =>
-      d.toLowerCase().includes(args.domain!.toLowerCase()) ||
-      args.domain!.toLowerCase().includes(d.toLowerCase())
+      d.toLowerCase().includes(domainName.toLowerCase()) ||
+      domainName.toLowerCase().includes(d.toLowerCase())
     );
     const notFoundPayload = {
       status: "not_found",
       found: false,
-      domain: args.domain,
-      message: `Domain '${args.domain}' not found in Septum catalog.`,
+      domain: domainName,
+      message: `Domain '${domainName}' not found in Septum catalog.`,
       available_domains: available,
       suggestions: suggestions.length > 0 ? suggestions : available,
       suggested_action: {
         tool: "septum_register_domain",
-        params: { domain: args.domain, root: `src/domains/${args.domain}` },
+        params: { domain: domainName, root: `src/domains/${domainName}` },
       },
     };
     return {
@@ -112,7 +122,7 @@ export function handleGetDomainCatalog(
   }
 
   // Record access log for Gate 3 (Mandatory Catalog Consultation)
-  recordCatalogAccess(args.domain, targetRoot);
+  recordCatalogAccess(domainName, targetRoot);
 
   // Token-efficient serialization: keep payload dense and under 500 tokens
   return {

@@ -1,23 +1,14 @@
 import type { ValidatedSeptumConfig } from "../../core/config/schema.ts";
 import type { SeptumRepository } from "../../core/database/repository.ts";
 import { IngestionPipeline, type IngestionMetrics } from "../../core/ingestion/pipeline.ts";
-import type { DomainConfig } from "../../types/index.ts";
+import type { RegisterDomainArgs } from "../schemas.ts";
 
-export interface RegisterDomainArgs {
-  domain?: string;
-  name?: string;
-  root: string;
-  description?: string;
-  allowed_dependencies?: string[];
-  forbidden_dependencies?: string[];
-  archetypes?: Record<string, string>;
-  ingest_now?: boolean;
-}
+export type { RegisterDomainArgs } from "../schemas.ts";
 
 export async function handleRegisterDomain(
   repo: SeptumRepository,
   config: ValidatedSeptumConfig,
-  args: RegisterDomainArgs,
+  args: Partial<RegisterDomainArgs>,
   workspaceRoot: string = process.cwd()
 ) {
   const domainName = (args.domain || args.name || "").trim();

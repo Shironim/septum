@@ -1,18 +1,12 @@
 import type { ValidatedSeptumConfig } from "../../core/config/schema.ts";
-import type { DatabaseRepository } from "../../core/database/repository.ts";
+import type { SeptumRepository } from "../../core/database/repository.ts";
 import type { SymbolKind } from "../../types/index.ts";
+import type { GetSymbolHotspotsArgs } from "../schemas.ts";
 
-export interface GetSymbolHotspotsArgs {
-  min_lines?: number;
-  min_nesting?: number;
-  kind?: SymbolKind | string;
-  domain?: string;
-  limit?: number;
-  sort_by?: "lines" | "nesting" | "risk_score";
-}
+export type { GetSymbolHotspotsArgs } from "../schemas.ts";
 
 export function handleGetSymbolHotspots(
-  repo: DatabaseRepository,
+  repo: SeptumRepository,
   _config: ValidatedSeptumConfig,
   args: GetSymbolHotspotsArgs,
   _workspaceRoot?: string

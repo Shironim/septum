@@ -2,18 +2,14 @@ import type { ValidatedSeptumConfig } from "../../core/config/schema.ts";
 import type { SeptumRepository } from "../../core/database/repository.ts";
 import { VerticalSliceTracer } from "../../core/resolver/vertical-slice-tracer.ts";
 import type { VerticalSliceTraceResponse } from "../../types/index.ts";
+import type { TraceVerticalSliceArgs } from "../schemas.ts";
 
-export interface TraceVerticalSliceArgs {
-  query?: string;
-  symbol?: string;
-  route?: string;
-  max_depth?: number;
-}
+export type { TraceVerticalSliceArgs } from "../schemas.ts";
 
 export function handleTraceVerticalSlice(
   repo: SeptumRepository,
   config: ValidatedSeptumConfig,
-  args: TraceVerticalSliceArgs,
+  args: Partial<TraceVerticalSliceArgs> & { route?: string },
   workspaceRoot?: string
 ) {
   const query = (
@@ -31,10 +27,12 @@ export function handleTraceVerticalSlice(
 
   const root =
     workspaceRoot ||
+    args.workspace_path ||
     ((config.settings as Record<string, unknown>)?.workspace_root as string) ||
     process.cwd();
+  const maxDepth = Math.min(Math.max(Math.trunc(Number(args.max_depth ?? 5)), 1), 8);
   const tracer = new VerticalSliceTracer(repo, root);
-  const result: VerticalSliceTraceResponse = tracer.trace(query);
+  const result: VerticalSliceTraceResponse = (tracer.trace as any)(query, maxDepth);
   const chain = result.chain || result.slice || [];
 
   let summary = "";
@@ -55,6 +53,7 @@ export function handleTraceVerticalSlice(
     confidence: result.confidence || (result.found ? "exact" : undefined),
     is_exact_match: result.is_exact_match,
     architecture_style: result.architecture_style,
+    max_depth_applied: result.max_depth_applied ?? maxDepth,
     entrypoint: result.entrypoint || null,
     chain,
     alternatives: result.alternatives || [],
@@ -72,3 +71,4 @@ export function handleTraceVerticalSlice(
     metadata: payload,
   };
 }
+

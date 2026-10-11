@@ -1,5 +1,5 @@
 import { existsSync, readdirSync } from "node:fs";
-import { isAbsolute, join, basename } from "node:path";
+import { isAbsolute, join } from "node:path";
 import type { ValidatedSeptumConfig } from "../../core/config/schema.ts";
 import type { SeptumRepository } from "../../core/database/repository.ts";
 import type { IngestionPipeline } from "../../core/ingestion/pipeline.ts";
@@ -7,18 +7,14 @@ import {
   SymbolLocator,
   type SymbolLocationResult,
 } from "../../core/resolver/symbol-locator.ts";
+import type { LocateSymbolArgs } from "../schemas.ts";
 
-export interface LocateSymbolArgs {
-  query?: string;
-  symbol?: string;
-  domain?: string;
-  workspace_path?: string;
-}
+export type { LocateSymbolArgs } from "../schemas.ts";
 
 export async function handleLocateSymbol(
   repo: SeptumRepository,
   config: ValidatedSeptumConfig,
-  args: LocateSymbolArgs,
+  args: Partial<LocateSymbolArgs>,
   pipeline?: IngestionPipeline,
   workspaceRoot?: string
 ) {
@@ -29,7 +25,8 @@ export async function handleLocateSymbol(
     );
   }
 
-  const root = workspaceRoot || process.cwd();
+  const root = workspaceRoot || args.workspace_path || process.cwd();
+  const limit = args.limit ?? 10;
 
   // 1. Guarded Lazy Ingestion on Empty Catalog / Cold Start
   if (repo.countFiles() === 0 && pipeline) {
@@ -66,7 +63,7 @@ export async function handleLocateSymbol(
   }
 
   const locator = new SymbolLocator(repo);
-  let result: SymbolLocationResult = locator.locate(query, args.domain);
+  let result: SymbolLocationResult = (locator.locate as any)(query, args.domain, limit);
 
   // 2. JIT Delta Sync: Check if located file has changed on disk since last ingest
   if (result.found && result.file_path && pipeline) {
@@ -76,7 +73,7 @@ export async function handleLocateSymbol(
     try {
       const reindexed = await pipeline.ingestFile(fullPath, config);
       if (reindexed) {
-        result = locator.locate(query, args.domain);
+        result = (locator.locate as any)(query, args.domain, limit);
       }
     } catch {
       // Silently fall back to existing result
@@ -95,7 +92,7 @@ export async function handleLocateSymbol(
           if (reindexed) anyReindexed = true;
         }
         if (anyReindexed) {
-          result = locator.locate(query, args.domain);
+          result = (locator.locate as any)(query, args.domain, limit);
         }
       }
     } catch {
@@ -103,9 +100,10 @@ export async function handleLocateSymbol(
     }
   }
 
+  const suggestions = (result.suggestions || []).slice(0, limit);
   const summary = result.found
     ? `[FOUND] ${result.exact_symbol?.name || query} in ${result.file_path} (lines ${result.exact_symbol?.line_start}-${result.exact_symbol?.line_end})`
-    : `[NOT FOUND] Symbol '${query}' not found. ${result.suggestions.length > 0 ? `Top suggestions: ${result.suggestions.map((s) => s.name).slice(0, 3).join(", ")}` : "No close suggestions."}`;
+    : `[NOT FOUND] Symbol '${query}' not found. ${suggestions.length > 0 ? `Top suggestions: ${suggestions.map((s) => s.name).slice(0, 3).join(", ")}` : "No close suggestions."}`;
 
   const payload = {
     status: result.found ? "success" : "not_found",
@@ -115,7 +113,7 @@ export async function handleLocateSymbol(
     container_name: result.container_name || null,
     exact_symbol: result.exact_symbol || null,
     sibling_methods: result.sibling_methods || [],
-    suggestions: result.suggestions || [],
+    suggestions,
     summary,
     message: result.message || summary,
   };

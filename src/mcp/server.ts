@@ -1,5 +1,5 @@
-import { watch, type FSWatcher } from "node:fs";
-import { extname, resolve } from "node:path";
+import { existsSync, watch, type FSWatcher } from "node:fs";
+import { extname, relative, resolve } from "node:path";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
@@ -14,37 +14,20 @@ import { SeptumRepository } from "../core/database/repository.ts";
 import { IngestionPipeline } from "../core/ingestion/pipeline.ts";
 import { SessionManager } from "../core/session/session-manager.ts";
 import { SeptumTelemetry } from "../core/telemetry/telemetry.ts";
-import {
-  handleCheckBoundary,
-  type CheckBoundaryArgs,
-} from "./tools/check-boundary.ts";
-import {
-  handleGetDomainCatalog,
-  type GetDomainCatalogArgs,
-} from "./tools/get-domain-catalog.ts";
+import { handleCheckBoundary } from "./tools/check-boundary.ts";
+import { handleGetDomainCatalog } from "./tools/get-domain-catalog.ts";
 import {
   handleClearFeatureContext,
   handleGetFeatureContext,
-  type GetFeatureContextArgs,
 } from "./tools/get-feature-context.ts";
-import {
-  handleLocateSymbol,
-  type LocateSymbolArgs,
-} from "./tools/locate-symbol.ts";
-import {
-  handleTraceVerticalSlice,
-  type TraceVerticalSliceArgs,
-} from "./tools/trace-vertical-slice.ts";
-import {
-  handleGetSymbolHotspots,
-  type GetSymbolHotspotsArgs,
-} from "./tools/get-symbol-hotspots.ts";
+import { handleLocateSymbol } from "./tools/locate-symbol.ts";
+import { handleTraceVerticalSlice } from "./tools/trace-vertical-slice.ts";
+import { handleGetSymbolHotspots } from "./tools/get-symbol-hotspots.ts";
 import { handleGetSymbol } from "./tools/get-symbol.ts";
 import { handleGetSymbolImpact } from "./tools/get-symbol-impact.ts";
 import { handleRegisterDomain } from "./tools/register-domain.ts";
 import { handleRegisterFeature } from "./tools/register-feature.ts";
 import { handleGetEnvironmentTopology } from "./tools/get-environment-topology.ts";
-import type { GetSymbolArgs, GetSymbolImpactArgs } from "../types/index.ts";
 import {
   CheckBoundarySchema,
   GetDomainCatalogSchema,
@@ -152,7 +135,9 @@ function getWorkspaceContext(pathHint?: string): WorkspaceContext {
   }
 
   const config = ConfigLoader.load(undefined, root);
-  const db = new SeptumDatabase(config.settings.db_path);
+  const rawDbPath = config.settings.db_path || ".septum/septum.db";
+  const resolvedDbPath = resolve(root, rawDbPath);
+  const db = new SeptumDatabase(resolvedDbPath);
   const repo = new SeptumRepository(db.raw);
   const evaluator = new BoundaryEvaluator(repo, new ModuleResolver(root, repo));
   const pipeline = new IngestionPipeline(repo, root);
@@ -195,6 +180,16 @@ export async function runMCPServer(): Promise<void> {
                 type: "string",
                 description: "Optional filter: 'service' | 'model' | 'controller' | 'repository'",
               },
+              detail_level: {
+                type: "string",
+                enum: ["compact", "full"],
+                default: "compact",
+                description: "Catalog detail level: 'compact' (default, token-efficient summary with file connections) or 'full' (includes full method/property signatures).",
+              },
+              file_filter: {
+                type: "string",
+                description: "Optional substring filter to inspect specific file(s) within the domain.",
+              },
             },
             required: [],
           },
@@ -222,7 +217,7 @@ export async function runMCPServer(): Promise<void> {
         {
           name: "septum_check_boundary",
           description:
-            "Pre-flight boundary check to verify proposed file changes and imports against domain rules and feature touchpoints. Rejects illegal cross-domain dependencies before writing to disk.",
+            "Pre-flight boundary check to verify proposed file changes and imports against domain rules and feature touchpoints, or audit the entire repository / staged files / domain for cross-domain and circular dependencies.",
           inputSchema: {
             type: "object",
             properties: {
@@ -243,6 +238,15 @@ export async function runMCPServer(): Promise<void> {
               feature_key: {
                 type: "string",
                 description: "Optional feature key to validate touchpoints against.",
+              },
+              scope: {
+                type: "string",
+                enum: ["file", "all", "staged", "domain"],
+                description: "Audit scope when file_path is omitted: 'all' (entire codebase), 'staged' (git staged files), 'domain' (specific domain), or 'file'.",
+              },
+              domain: {
+                type: "string",
+                description: "Optional domain name to filter boundary audit when scope is 'domain' or 'all'.",
               },
             },
           },
@@ -311,8 +315,12 @@ export async function runMCPServer(): Promise<void> {
                 type: "string",
                 description: "Optional domain filter (e.g. 'orders')",
               },
+              limit: {
+                type: "number",
+                description: "Maximum number of suggestions to return (default: 10, max: 50).",
+              },
             },
-            required: [],
+            required: ["query"],
           },
         },
         {
@@ -333,10 +341,13 @@ export async function runMCPServer(): Promise<void> {
               },
               max_depth: {
                 type: "number",
-                description: "Maximum depth to trace (default: 5).",
+                default: 5,
+                minimum: 1,
+                maximum: 8,
+                description: "Maximum depth to trace (default: 5, min: 1, max: 8).",
               },
             },
-            required: [],
+            required: ["query"],
           },
         },
         {
@@ -364,7 +375,7 @@ export async function runMCPServer(): Promise<void> {
                 description: "Whether to include injected dependencies and outbound calls (default: true)",
               },
             },
-            required: [],
+            required: ["symbol"],
           },
         },
         {
@@ -384,7 +395,7 @@ export async function runMCPServer(): Promise<void> {
                 description: "Alias for 'symbol'.",
               },
             },
-            required: [],
+            required: ["symbol"],
           },
         },
         {
@@ -436,7 +447,7 @@ export async function runMCPServer(): Promise<void> {
         {
           name: "septum_register_feature",
           description:
-            "Directly registers or updates an ephemeral or persistent feature/task context in Septum. Establishes an active session lease (.septum/session.json) with allowed_touchpoints and reuse_symbols to enforce surgical blast-radius boundaries during code modifications.",
+            "Directly registers or updates a feature/task context in Septum SQLite SSOT. Establishes an active session lease (.septum/session.json) with allowed_touchpoints and reuse_symbols to enforce surgical blast-radius boundaries during code modifications.",
           inputSchema: {
             type: "object",
             properties: {
@@ -475,11 +486,6 @@ export async function runMCPServer(): Promise<void> {
                 type: "object",
                 description: "Expected output response / return contract",
               },
-              persist_to_config: {
-                type: "boolean",
-                description: "If true, persists this feature specification to septum.config.json",
-                default: false,
-              },
             },
             required: ["feature_key", "domain"],
           },
@@ -511,6 +517,43 @@ export async function runMCPServer(): Promise<void> {
                 },
                 required: ["layer", "platform"],
                 description: "Optional argument to record and verify a specific layer into SQLite SSOT",
+              },
+              resolveNode: {
+                type: "object",
+                properties: {
+                  id: {
+                    type: "string",
+                    description: "Unique node identifier (e.g. 'api-gateway-1', 'db-primary')",
+                  },
+                  layer: {
+                    type: "string",
+                    enum: ["edge", "gateway", "host", "runtime", "storage", "telemetry"],
+                    description: "Topology layer for this node",
+                  },
+                  name: {
+                    type: "string",
+                    description: "Human-readable node name",
+                  },
+                  platform: {
+                    type: "string",
+                    description: "Platform or infrastructure provider for this node",
+                  },
+                  domain_or_ip: {
+                    type: "string",
+                    description: "Optional domain or IP address of the node",
+                  },
+                  role: {
+                    type: "string",
+                    description: "Optional architectural role of the node",
+                  },
+                  connected_to: {
+                    type: "array",
+                    items: { type: "string" },
+                    description: "Optional list of target node IDs this node connects to",
+                  },
+                },
+                required: ["id", "layer", "name", "platform"],
+                description: "Optional argument to record and verify a distributed topology node into SQLite SSOT",
               },
               refresh: {
                 type: "boolean",
@@ -783,9 +826,9 @@ export async function runMCPServer(): Promise<void> {
 
   try {
     const bgPipeline = initialCtx.pipeline;
-    const cwd = process.cwd();
+    const watchRoot = initialCtx.root;
 
-    fsWatcher = watch(cwd, { recursive: true }, (_event, filename) => {
+    fsWatcher = watch(watchRoot, { recursive: true }, (_event, filename) => {
       if (!filename) return;
 
       const norm = filename.replace(/\\/g, "/");
@@ -798,8 +841,17 @@ export async function runMCPServer(): Promise<void> {
       if (debounceTimer) clearTimeout(debounceTimer);
       debounceTimer = setTimeout(async () => {
         try {
-          const freshConfig = ConfigLoader.load();
-          const targetPath = resolve(cwd, filename);
+          const freshConfig = ConfigLoader.load(undefined, watchRoot);
+          const targetPath = resolve(watchRoot, filename);
+          const relPath = relative(watchRoot, targetPath).replace(/\\/g, "/");
+          if (!existsSync(targetPath)) {
+            if (typeof (initialCtx.repo as any).deleteFileByPath === "function") {
+              (initialCtx.repo as any).deleteFileByPath(relPath);
+            } else if (typeof initialCtx.repo.deleteFile === "function") {
+              initialCtx.repo.deleteFile(relPath);
+            }
+            return;
+          }
           const updated = await bgPipeline.ingestFile(targetPath, freshConfig);
           if (updated) {
             console.error(
