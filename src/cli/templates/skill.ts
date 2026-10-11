@@ -1,69 +1,65 @@
 export const SEPTUM_MAP_SKILL_TEMPLATE = `---
 name: septum-map
-description: Framework-agnostic codebase discovery, architectural domain mapping, and bounded-context initialization for Septum. Uses AI reasoning to map unknown project topologies (JS/TS, PHP, Python, Go), auto-registers bounded contexts into Septum's SQLite catalog, and enforces deterministic architectural boundaries.
+description: Framework-agnostic codebase discovery, multi-language AST symbol & file-connection mapping, and bounded-context governance for Septum. Uses Tree-Sitter WASM (TS/JS/TSX, PHP, Python, Go, Rust, Java, C#, Ruby + Vue/Svelte/Astro/Blade) and SQLite SSOT (.septum/septum.db) to prevent symbol duplication, map file integrations, and enforce architectural boundaries.
 ---
 
-# \`septum-map\` — Framework-Agnostic Semantic Discovery & Bounded-Context Initialization
+# \`septum-map\` — Multi-Language AST Discovery, File Connectivity & Bounded-Context Governance
 
-> **Prinsip Utama:** AI Agent berperan sebagai *The Architect* untuk membedah topologi arsitektur proyek apa pun tanpa terikat pada framework tertentu, merumuskan batas bounded-context, dan mendaftarkannya langsung ke database deterministik (.septum/septum.db via septum_register_domain) agar AI coding berikutnya tidak mengalami context poisoning atau over-editing.
-
----
-
-## 1. Landasan Riset & Filosofi Desain
-
-Skill ini berakar langsung pada riset rekayasa perangkat lunak terkemuka:
-1. **Software Reflexion Models (Murphy, Notkin, & Sullivan, IEEE TSE):**
-   Membedakan model arsitektur tingkat tinggi yang dirancang (*high-level intention*) dengan implementasi fisik di kode sumber. Septum mendeteksi *Divergences* (pelanggaran baru) dan *Absences* sebelum kode di-merge.
-2. **Eliminasi Over-Editing (SWE-bench, RepoCoder - NeurIPS / ICLR):**
-   Akar kegagalan agen AI terbesar adalah mengedit file di luar lokus tugas (*local scope myopia*). \`septum-map\` menetapkan *bounded context* dan *allowed touchpoints* sejak awal.
-3. **Principle of Least Privilege & Object-Capabilities (Miller):**
-   Agen hanya diberikan kapabilitas membaca dan mengubah file dalam domain/fitur aktif, memangkas *blast radius* kesalahan hingga mendekati nol.
-4. **Hybrid Defense (SynCode / NeMo Guardrails):**
-   Probabilistic AI digunakan untuk penalaran awal (*discovery & blueprinting*), sementara eksekusi dan penegakannya 100% deterministik (*Tree-sitter WASM, SQLite WAL, Pre-Commit Hooks*).
+> **Prinsip Utama:** Septum memetakan setiap fungsi, class, method, struct/interface, dan variabel/konstanta di file backend beserta keterhubungan dua arah antar-file (\`imports_from\` & \`imported_by\`) ke dalam SQLite SSOT (\`.septum/septum.db\`). Dengan peta deterministik ini, AI Agent **tidak boleh menduplikasi simbol yang sudah ada** dan wajib menjaga integritas batas domain (*bounded-context*) serta mencegah *circular dependency*.
 
 ---
 
-## 2. Kapan Wajib Menggunakan (Trigger Moments)
+## 1. Landasan Arsitektur & Pencegahan Duplikasi
+
+1. **Anti-Symbol Duplication (Peta Simbol & Keterhubungan File):**
+   Setiap file yang diindeks oleh mesin \`web-tree-sitter\` Septum memiliki daftar simbol terstruktur (\`class\`, \`interface\`, \`struct\`, \`trait\`, \`enum\`, \`function\`, \`method\`, \`type\`, \`constant\`, \`variable\`) serta graf koneksi dua arah (\`connections.imports_from\` dan \`connections.imported_by_count\`). Agen wajib memeriksa peta ini sebelum membuat fungsi, class, atau variabel baru.
+2. **Software Reflexion Models & Boundary Enforcement:**
+   Septum memvalidasi rencana perubahan kode terhadap aturan \`allowed_dependencies\`, \`forbidden_dependencies\`, \`allowed_touchpoints\`, dan mendeteksi siklus dependensi (\`circular_dependency\`) baik per-file maupun lintas-domain.
+3. **Token-Budgeted Context (< 400 Tokens Default):**
+   Katalog domain secara default disajikan dalam mode ringkas (\`detail_level: "compact"\`) agar agen memperoleh topologi file, rentang baris (\`line_span\`), jumlah method/property, dan koneksi antar-file tanpa membanjiri jendela konteks.
+
+---
+
+## 2. Referensi Cepat 12 Tool MCP Septum (Standardized \`snake_case\` Contracts)
+
+| Tool MCP | Parameter Utama (\`snake_case\`) | Fungsi & Kapan Digunakan |
+|---|---|---|
+| **\`septum_get_domain_catalog\`** | \`{ domain?, detail_level?: "compact"\\|"full", archetype_filter?, file_filter? }\` | Tanpa \`domain\`: menampilkan *Macro Semantic Map* seluruh proyek. Dengan \`domain\`: menampilkan daftar file, \`connections\` (\`imports_from\`, \`imported_by_count\`), dan simbol di domain tersebut (\`compact\` default < 400 token). |
+| **\`septum_locate_symbol\`** | \`{ query, domain?, limit?: 10 }\` | Mencari lokasi file dan baris (\`line_start\`-\`line_end\`) dari class, fungsi, method (\`Class::method\`), struct, atau konstanta. |
+| **\`septum_get_symbol\`** | \`{ symbol, domain?, include_dependencies?: true }\` | Mengekstrak detail kontrak simbol: signature, \`exact_range\`, \`dependencies_injected\`, \`outbound_calls\`, \`sibling_methods\`, dan \`connected_files\`. |
+| **\`septum_get_symbol_impact\`** | \`{ symbol }\` | Menghitung *blast radius* (\`inbound_callers\`, \`total_dependents\`, \`risk_level\`) termasuk pelacakan *named imports* lintas file sebelum mengubah signature. |
+| **\`septum_trace_vertical_slice\`** | \`{ query, max_depth?: 5 }\` | Menelusuri alur eksekusi end-to-end (\`Ingress ➔ Validation ➔ Controller ➔ Service ➔ Repository ➔ Entity\`). \`max_depth\` default \`5\`, rentang \`1..8\` (gunakan \`6..8\` untuk deep trace Event/Job/Queue). |
+| **\`septum_check_boundary\`** | \`{ file_path?, file_paths?, proposed_imports?, feature_key?, scope?: "file"\\|"all"\\|"staged"\\|"domain", domain? }\` | **Pre-Write:** memvalidasi \`proposed_imports\` pada \`file_path\`. **Macro Audit:** panggil dengan \`{ scope: "all" }\` atau \`{ scope: "staged" }\` untuk mengaudit seluruh batas domain & *circular dependencies*. |
+| **\`septum_get_symbol_hotspots\`** | \`{ domain?, min_lines?: 30, min_nesting?, kind?, limit?: 30, sort_by?: "risk_score" }\` | Mengidentifikasi fungsi/class paling kompleks berdasarkan \`risk_score\` (\`line_count\` $\\times$ \`nesting_depth\`). |
+| **\`septum_get_feature_context\`** | \`{ feature_key? }\` | Mengambil konteks fitur aktif (\`allowed_touchpoints\`, \`reuse_symbols\`, input/output contract). |
+| **\`septum_clear_feature_context\`** | \`{}\` | Melepaskan kunci sesi fitur aktif di \`.septum/session.json\`. |
+| **\`septum_register_domain\`** | \`{ domain, root, description?, allowed_dependencies?, forbidden_dependencies?, archetypes?, ingest_now?: true }\` | Mendaftarkan atau memperbarui bounded-context domain langsung ke SQLite SSOT (\`.septum/septum.db\`). |
+| **\`septum_register_feature\`** | \`{ feature_key, domain, description?, allowed_touchpoints?, reuse_symbols?, input_contract?, output_contract? }\` | Mendaftarkan kontrak fitur baru ke SQLite SSOT dan mengaktifkan sesi *touchpoint lock*. |
+| **\`septum_get_environment_topology\`** | \`{ resolve?, resolveNode?, refresh? }\` | Memetakan 6-layer topologi infrastruktur (\`EDGE\`, \`GATEWAY\`, \`HOST\`, \`RUNTIME\`, \`STORAGE\`, \`TELEMETRY\`) beserta invarian lintas-layer. |
+
+---
+
+## 3. Alur Kerja Pemetaan & Inisialisasi Domain (The 4-Step Lifecycle)
 
 > [!NOTE] Zero-Config Default (\`septum init\`)
-> Untuk mayoritas proyek (library kecil/menengah, layered monolith standar, MVC, CLI, MCP tools), pengguna atau agen **cukup menjalankan \`septum init\`** di terminal. Perintah \`septum init\` secara default berjalan 100% otomatis tanpa wawancara manual (zero-config heuristic auto-detect & auto-ingest).
+> Menjalankan \`septum init\` di terminal secara otomatis mendeteksi bahasa & framework (TS/JS, PHP/Laravel, Python, Go, Rust, Java, C#, Ruby), mendaftarkan domain ke \`.septum/septum.db\`, mengindeks AST via Tree-Sitter WASM, dan memasang hook di \`.agents/\`.
 
-Gunakan alur 4 langkah skill ini HANYA saat:
-1. Memetakan domain bisnis kustom / modular DDD enterprise yang kompleks di mana batasan dependency non-standar perlu disepakati bersama Tech Lead.
-2. Memetakan ulang domain bisnis setelah terjadi refactoring arsitektur besar (*re-mapping*).
-3. Mengonfigurasi sesi fitur baru (\`features\` session) untuk mengunci daftar file yang boleh dimodifikasi (*allowed_touchpoints*) dan simbol yang wajib dipakai ulang (*reuse_symbols*).
-4. Pengguna secara eksplisit meminta konsultasi desain domain boundary interaktif.
+Gunakan alur 4 langkah ini saat merancang domain baru, melakukan *re-mapping* arsitektur, atau mengunci kontrak fitur:
 
----
+### Langkah 1: Topological & Connectivity Scan (Maksimal 2 Tool Call)
+1. Panggil \`septum_get_domain_catalog({})\` untuk memeriksa *Telescope View* dan daftar domain yang terdaftar.
+2. Panggil \`septum_get_domain_catalog({ domain: "<target>", detail_level: "compact" })\` untuk memetakan file, simbol yang sudah ada, dan koneksi \`imports_from\` / \`imported_by_count\`.
 
-## 3. Alur Kerja 4 Langkah (The 4-Step Discovery Lifecycle)
+### Langkah 2: Perumusan Kontrak Domain & Anti-Duplikasi Simbol
+* **\`domain\` & \`root\`:** Nama domain dan direktori kanonikalnya.
+* **\`allowed_dependencies\` & \`forbidden_dependencies\`:** Whitelist dan blacklist dependensi lintas-domain.
+* **\`reuse_symbols\`:** Daftar class, service, repository, atau konstanta eksisting yang **wajib digunakan kembali** agar agen tidak membuat kode duplikat.
 
-### Langkah 1: Topological Scan (Maksimal 2 Tool Call)
-Analisis karakteristik proyek secara framework-agnostic:
-1. **Periksa Manifest & Config Root:**
-   * JS/TS: \`package.json\`, \`tsconfig.json\` (baca dependencies, path aliases).
-   * PHP: \`composer.json\` (baca \`autoload.psr-4\`, framework dependencies).
-   * Python: \`pyproject.toml\`, \`requirements.txt\`, \`setup.py\` (baca modules & framework).
-   * Go: \`go.mod\` (baca module path).
-2. **Petakan Direktori Tingkat Atas:**
-   Identifikasi apakah proyek menggunakan pola:
-   * *Domain-Driven / Vertical Slice:* \`src/domains/\`, \`app/Domain/\`, \`features/\`.
-   * *Layered / Clean Architecture:* \`core/\`, \`infrastructure/\`, \`application/\`, \`interfaces/\`.
-   * *Framework Conventional:* NestJS modules, Laravel app folders, FastAPI routers, Next.js route groups.
+### Langkah 3: Registrasi Deterministik ke SQLite SSOT
+1. Gunakan \`septum_register_domain({ domain, root, allowed_dependencies, forbidden_dependencies, ingest_now: true })\` untuk menyimpan batas domain.
+2. Gunakan \`septum_register_feature({ feature_key, domain, allowed_touchpoints, reuse_symbols })\` untuk mengunci fokus pengerjaan fitur.
 
-### Langkah 2: Semantic Blueprint Drafting & Domain Boundary Formulation
-Rumuskan spesifikasi domain dengan prinsip **Contract & Invariants (Bukan Prosedural)**:
-* **\`root\`:** Direktori fisik domain (gunakan path kanonikal).
-* **\`allowed_dependencies\`:** Domain mana saja yang sah diimpor (inbound whitelist).
-* **\`forbidden_dependencies\`:** Domain yang dilarang keras diimpor (outbound blacklist).
-* **\`archetypes\`:** Pola glob penamaan layer (\`service: "*Service.*"\`, \`model: "*Model.*"\`).
-
-### Langkah 3: Human-in-the-Loop Approval Gate
-Tampilkan ringkasan domain boundary yang dirumuskan kepada pengguna / Tech Lead untuk disetujui atau disesuaikan sebelum didaftarkan.
-
-### Langkah 4: Deterministic Registration & Ingestion
-Setelah disetujui:
-1. Daftarkan domain secara langsung via tool MCP \`septum_register_domain(domain_name, root, ...)\` dengan opsi \`ingest_now: true\`.
-2. Atau jalankan CLI \`septum ingest\` untuk mengekstrak seluruh simbol AST dan menyimpannya ke database SQLite \`.septum/septum.db\`.
-3. Pastikan hook pre-commit terpasang aktif di \`.git/hooks/pre-commit\`.
+### Langkah 4: Verifikasi Boundary & Siklus Dependensi
+Jalankan \`septum_check_boundary({ scope: "all" })\` (atau CLI \`septum check --staged\`) untuk memastikan 0 pelanggaran batas domain dan 0 *circular dependency*.
 `;
+

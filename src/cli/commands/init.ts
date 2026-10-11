@@ -9,20 +9,22 @@ import {
 import { SEPTUM_RULES_TEMPLATE } from "../templates/rules.ts";
 import { SEPTUM_MAP_SKILL_TEMPLATE } from "../templates/skill.ts";
 import { TopologyDetector } from "../../core/discovery/topology-detector.ts";
+import { EnvironmentDetector } from "../../core/topology/environment-detector.ts";
 import { SeptumDatabase } from "../../core/database/client.ts";
 import { SeptumRepository } from "../../core/database/repository.ts";
 
 export async function handleInitCommand(force: boolean = false): Promise<void> {
-  console.log("[Septum] Initializing Septum bounded-context environment (Zero-Config)...\n");
+  console.log("[Septum] Initializing Septum bounded-context & AST environment (Zero-Config SQLite SSOT)...\n");
 
   const cwd = process.cwd();
   const dbPath = ".septum/septum.db";
 
   // 1. Auto-discover project topology and persist to SQLite SSOT
-  console.log("  • Analyzing codebase topology and modular boundaries...");
+  console.log("  • Analyzing codebase topology, modular boundaries, and 6-layer environment plane...");
   const db = new SeptumDatabase(dbPath);
   const repo = new SeptumRepository(db.raw);
   const domains = TopologyDetector.discoverAndPersist(repo, cwd);
+  EnvironmentDetector.detect(cwd, repo);
   const domainNames = Object.keys(domains);
   console.log(`  ✓ Discovered and registered ${domainNames.length} domains directly in SQLite (${dbPath}):`);
   for (const name of domainNames) {
@@ -40,12 +42,12 @@ export async function handleInitCommand(force: boolean = false): Promise<void> {
   scaffoldAgentCustomizations(cwd);
 
   // 5. Run initial codebase ingestion
-  console.log("\n[Septum] Running initial ingestion to build deterministic structural catalog...");
+  console.log("\n[Septum] Running initial Tree-Sitter WASM ingestion to build symbol & file-connection catalog...");
   try {
     await handleIngestCommand();
     console.log("\n✓ Septum successfully initialized and ready for production use!");
     console.log("  • Pre-commit hook is active (runs 'septum check --staged' before each commit).");
-    console.log("  • AI Agent skill '/septum-map' and boundary hooks installed in '.agents/'.");
+    console.log("  • AI Agent skill '/septum-map', anti-duplication rules, and boundary hooks installed in '.agents/'.");
     console.log("  • MCP server is ready for AI coding agents via 'septum serve'.\n");
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);

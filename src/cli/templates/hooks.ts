@@ -2,7 +2,7 @@ export const SEPTUM_HOOKS_CONFIG = {
   "septum-boundary-guard": {
     "PreToolUse": [
       {
-        "matcher": "write_to_file|replace_file_content",
+        "matcher": "write_to_file|replace_file_content|multi_replace_file_content|Write|Edit|MultiEdit",
         "hooks": [
           {
             "type": "command",
@@ -14,7 +14,7 @@ export const SEPTUM_HOOKS_CONFIG = {
     ],
     "PostToolUse": [
       {
-        "matcher": "write_to_file|replace_file_content",
+        "matcher": "write_to_file|replace_file_content|multi_replace_file_content|Write|Edit|MultiEdit",
         "hooks": [
           {
             "type": "command",
@@ -61,13 +61,13 @@ fi
 
 # Trigger background incremental sync
 if command -v bun >/dev/null 2>&1 && [ -f "$ROOT_DIR/bin/septum.ts" ]; then
-  bun run "$ROOT_DIR/bin/septum.ts" sync --json >/dev/null 2>&1 &
+  bun run "$ROOT_DIR/bin/septum.ts" sync >/dev/null 2>&1 &
 elif command -v septum >/dev/null 2>&1; then
-  septum sync --json >/dev/null 2>&1 &
+  septum sync >/dev/null 2>&1 &
 elif [ -f "$ROOT_DIR/node_modules/.bin/septum" ]; then
-  "$ROOT_DIR/node_modules/.bin/septum" sync --json >/dev/null 2>&1 &
+  "$ROOT_DIR/node_modules/.bin/septum" sync >/dev/null 2>&1 &
 elif command -v bunx >/dev/null 2>&1; then
-  bunx septum sync --json >/dev/null 2>&1 &
+  bunx septum sync >/dev/null 2>&1 &
 fi
 
 exit 0

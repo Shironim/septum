@@ -1,38 +1,50 @@
-export const SEPTUM_RULES_TEMPLATE = `# Septum Bounded-Context & Anti-Poisoning Partition Rules
+export const SEPTUM_RULES_TEMPLATE = `# Septum Bounded-Context, Anti-Duplication & File Connectivity Rules
 
-> **Prinsip Utama:** Proyek ini menggunakan **Septum** untuk menegakkan batasan arsitektur (bounded-context) secara deterministik. Setiap AI Coding Agent wajib mematuhi aturan batas domain dan touchpoint berikut.
-
----
-
-## 1. Single Source of Truth (SSOT) via Septum MCP
-
-Sebelum menulis atau mengedit file backend/domain:
-1. **Dilarang Menebak Kontrak Domain:**
-   Gunakan tool MCP \`septum_get_domain_catalog(domain: "...")\` untuk memeriksa file, arketipe, dan signature publik yang sah di dalam domain tersebut.
-2. **Kunci Scope pada Fitur Aktif:**
-   Jika sedang mengerjakan fitur spesifik yang terdaftar di katalog Septum, panggil \`septum_get_feature_context(feature: "...")\`.
-   * **Wajib patuhi \`allowed_touchpoints\`:** Jangan menyentuh atau memodifikasi file di luar daftar yang diizinkan untuk fitur tersebut.
-   * **Wajib gunakan ulang \`reuse_symbols\`:** Jangan membuat fungsi atau helper duplikat jika simbol tersebut sudah terdaftar di \`reuse_symbols\`.
+> **Prinsip Utama:** Proyek ini menggunakan **Septum** (\`.septum/septum.db\`) sebagai Single Source of Truth (SSOT) untuk memetakan seluruh class, fungsi, method, struct/interface, dan variabel/konstanta beserta keterhubungan antar-file. Setiap AI Coding Agent **dilarang membuat simbol duplikat** dan wajib mematuhi batas domain.
 
 ---
 
-## 2. Pre-Flight Boundary Check Sebelum Menulis Kode
+## 1. Anti-Duplikasi Simbol & Peta Keterhubungan File (Wajib Sebelum Coding)
 
-Sebelum mengeksekusi penulisan file (\`write_to_file\` atau \`replace_file_content\`):
-1. Panggil tool MCP:
+Sebelum membuat class, fungsi, method, tipe, atau variabel/konstanta baru di file backend:
+1. **Periksa Peta Domain & Koneksi File (Compact Mode < 400 Token):**
+   Panggil \`septum_get_domain_catalog({ domain: "<nama_domain>", detail_level: "compact" })\` (atau tanpa \`domain\` untuk *Macro Semantic Map*).
+   * Perhatikan daftar simbol eksisting (\`class\`, \`interface\`, \`struct\`, \`function\`, \`type\`, \`constant\`, \`variable\`) beserta \`line_span\`-nya.
+   * Perhatikan \`connections.imports_from\` (file mana saja yang diimpor oleh file tersebut) dan \`connections.imported_by_count\` (berapa file lain yang bergantung padanya).
+   * Jika membutuhkan daftar signature method lengkap pada satu file, panggil \`septum_get_symbol({ symbol: "<NamaSimbol>" })\` atau \`septum_get_domain_catalog({ domain: "<nama_domain>", detail_level: "full", file_filter: "<nama_file>" })\`.
+2. **Cari Simbol Lintas-Domain Sebelum Membuat Baru:**
+   Panggil \`septum_locate_symbol({ query: "<kata_kunci>" })\` untuk memastikan fungsi/helper/class yang ingin dibuat belum ada di codebase.
+3. **Kunci Scope pada Fitur Aktif:**
+   Jika mengerjakan fitur terdaftar, panggil \`septum_get_feature_context({ feature_key: "<nama_fitur>" })\`:
+   * **Patuhi \`allowed_touchpoints\`:** Jangan memodifikasi file di luar daftar touchpoint fitur aktif.
+   * **Gunakan ulang \`reuse_symbols\`:** Wajib mengimpor dan memakai kembali simbol yang terdaftar di \`reuse_symbols\`.
+
+---
+
+## 2. Audit Blast Radius & Alur Eksekusi Sebelum Refactoring
+
+1. **Cek Dampak Simbol (\`inbound_callers\`):**
+   Sebelum mengubah parameter/return signature atau menghapus class/fungsi/method publik, wajib panggil:
+   \`\`\`json
+   septum_get_symbol_impact({ "symbol": "NamaClassAtauFungsi" })
+   \`\`\`
+   Periksa seluruh \`inbound_callers\` (termasuk *named imports* lintas file) agar tidak memutus kontrak file pemanggil.
+2. **Telusuri Vertical Slice (Default Depth 5, Max Depth 8):**
+   Gunakan \`septum_trace_vertical_slice({ query: "<route|command|handler>", max_depth: 5 })\` (naikkan hingga \`max_depth: 8\` untuk alur Event/Job/Queue berlapis) guna memahami rantai eksekusi dari Ingress hingga Repository/Entity.
+
+---
+
+## 3. Pre-Flight Boundary & Circular Dependency Check
+
+1. **Sebelum Menulis Import Lintas-Domain (\`write_to_file\` / \`replace_file_content\`):**
    \`\`\`json
    septum_check_boundary({
      "file_path": "path/ke/file.ts",
-     "proposed_imports": ["target_import_statement"],
-     "feature_key": "nama_fitur_opsional"
+     "proposed_imports": ["../other-domain/service"],
+     "feature_key": "opsional_feature_key"
    })
    \`\`\`
-2. **Rejection Handling:** Jika Septum mengembalikan status \`rejected\` (\`forbidden_dependency\`, \`disallowed_dependency\`, atau \`touchpoint_violation\`), **BATALKAN** rencana penulisan tersebut dan cari rute arsitektur yang sah (misal melalui Interface/Shared-Kernel yang diizinkan).
-
----
-
-## 3. Anti Local Scope Myopia
-
-* Dilarang menghapus fungsi publik atau mengubah signature class hanya karena fungsi tersebut tidak terlihat dipanggil di file lokal yang sedang diedit.
-* Pastikan seluruh dependensi inbound/outbound mematuhi batasan domain yang terdaftar di database Septum (\`.septum/septum.db\`).
+2. **Audit Menyeluruh & Deteksi Siklus (\`circular_dependency\`):**
+   Jalankan \`septum_check_boundary({ scope: "staged" })\` atau \`septum_check_boundary({ scope: "all" })\` setelah menyelesaikan perubahan multi-file. Jika status \`rejected\` (\`forbidden_dependency\`, \`disallowed_dependency\`, \`touchpoint_violation\`, atau \`circular_dependency\`), batalkan/perbaiki arsitektur import sebelum melakukan commit.
 `;
+

@@ -8,14 +8,26 @@ import { ASTParserEngine } from "../../core/parser/tree-sitter.ts";
 import { SessionManager } from "../../core/session/session-manager.ts";
 
 export interface ToolPayload {
-  tool_name: string;
-  tool_input: {
+  tool_name?: string;
+  tool_input?: {
     TargetFile?: string;
     file_path?: string;
+    filePath?: string;
+    path?: string;
     ReplacementContent?: string;
     CodeContent?: string;
+    new_string?: string;
+    content?: string;
+    ReplacementChunks?: Array<{ ReplacementContent?: string }>;
     feature_key?: string;
   };
+  arguments?: Record<string, unknown>;
+  TargetFile?: string;
+  file_path?: string;
+  filePath?: string;
+  path?: string;
+  ReplacementContent?: string;
+  CodeContent?: string;
 }
 
 export async function handleHookCommand(args: string[]): Promise<void> {
@@ -49,9 +61,20 @@ async function runPreWriteHook(): Promise<void> {
     process.exit(0);
   }
 
-  const toolInput = payload.tool_input || {};
-  const targetFile = toolInput.TargetFile || toolInput.file_path;
-  const content = toolInput.ReplacementContent || toolInput.CodeContent || "";
+  const toolInput: Record<string, any> =
+    payload.tool_input || payload.arguments || (payload as Record<string, any>) || {};
+  const targetFile: string | undefined =
+    toolInput.TargetFile || toolInput.file_path || toolInput.filePath || toolInput.path;
+  const chunkContent = Array.isArray(toolInput.ReplacementChunks)
+    ? toolInput.ReplacementChunks.map((c: any) => c?.ReplacementContent || "").join("\n")
+    : "";
+  const content: string =
+    toolInput.ReplacementContent ||
+    toolInput.CodeContent ||
+    toolInput.new_string ||
+    toolInput.content ||
+    chunkContent ||
+    "";
 
   if (!targetFile) {
     process.exit(0);
@@ -77,7 +100,12 @@ async function runPreWriteHook(): Promise<void> {
       if (fs.existsSync(accessLogPath)) {
         try {
           const rawAccess = JSON.parse(fs.readFileSync(accessLogPath, "utf-8"));
-          const domainAccessedAt = rawAccess.domains?.[sourceDomain];
+          const domainsMap: Record<string, string> = rawAccess.domains || {};
+          const lowerSource = sourceDomain.toLowerCase();
+          const domainAccessedAt =
+            domainsMap[sourceDomain] ||
+            domainsMap[lowerSource] ||
+            Object.entries(domainsMap).find(([k]) => k.toLowerCase() === lowerSource)?.[1];
           if (domainAccessedAt) {
             hasConsulted = true;
           }
@@ -90,8 +118,8 @@ async function runPreWriteHook(): Promise<void> {
         console.error(
           `\n[SEPTUM GATE 3 VIOLATION - Mandatory Consultation Required]\n` +
             `✕ Operation blocked: You are attempting to write to domain '${sourceDomain}' (${targetFile}) ` +
-            `without inspecting its authoritative catalog first.\n` +
-            `▶ REQUIRED ACTION: Call tool 'septum_get_domain_catalog(domain: "${sourceDomain}")' ` +
+            `without inspecting its authoritative symbol & file-connection catalog first.\n` +
+            `▶ REQUIRED ACTION: Call tool 'septum_get_domain_catalog({ domain: "${sourceDomain}", detail_level: "compact" })' ` +
             `or 'septum_get_feature_context' before writing code.\n`
         );
         db.close();

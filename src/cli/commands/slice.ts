@@ -5,15 +5,16 @@ import { VerticalSliceTracer } from "../../core/resolver/vertical-slice-tracer.t
 
 export async function handleSliceCommand(
   query: string,
-  options?: { json?: boolean }
+  options?: { json?: boolean; maxDepth?: number }
 ): Promise<void> {
   const config = ConfigLoader.load();
   const db = new SeptumDatabase(config.settings.db_path);
   const repo = new SeptumRepository(db.raw);
 
   try {
+    const maxDepth = Math.min(Math.max(Math.trunc(Number(options?.maxDepth ?? 5)), 1), 8);
     const tracer = new VerticalSliceTracer(repo);
-    const result = tracer.trace(query);
+    const result = (tracer.trace as any)(query, maxDepth);
 
     if (options?.json) {
       console.log(JSON.stringify(result, null, 2));
@@ -46,3 +47,4 @@ export async function handleSliceCommand(
     db.close();
   }
 }
+
