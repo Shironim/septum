@@ -156,14 +156,15 @@ export class CallGraphTracer {
   /**
    * Build execution chains for all discovered entrypoints and controller actions.
    */
-  public traceAllSlices(): Array<Omit<VerticalSliceRecord, "id" | "created_at">> {
+  public traceAllSlices(maxDepth: number = 5): Array<Omit<VerticalSliceRecord, "id" | "created_at">> {
+    const effectiveMaxDepth = Math.min(Math.max(Math.trunc(maxDepth || 5), 1), 8);
     this.initMaps();
     const slices: Array<Omit<VerticalSliceRecord, "id" | "created_at">> = [];
     const declarativeRoutes = this.discoverDeclarativeRoutes();
 
     // 1. Trace from declarative routes
     for (const route of declarativeRoutes) {
-      const chain = this.traceChainFromRoute(route);
+      const chain = this.traceChainFromRoute(route, effectiveMaxDepth);
       if (chain.length > 0) {
         const sliceRecord = this.buildSliceRecordFromChain(
           route.method,
@@ -188,11 +189,6 @@ export class CallGraphTracer {
       const symbols = this.symbolsByFileId.get(file.id) || [];
       const methods = symbols.filter((s) => s.kind === "method" || s.kind === "function");
 
-      const ctrlName =
-        symbols.find((s) => s.kind === "class")?.name ||
-        file.path.split("/").pop()?.replace(/\.[^.]+$/, "") ||
-        "Controller";
-
       for (const m of methods) {
         // Skip constructors or private helpers
         if (m.name === "constructor" || m.name.startsWith("_")) continue;
@@ -205,7 +201,7 @@ export class CallGraphTracer {
         );
         if (alreadyCovered) continue;
 
-        const chain = this.traceChainFromController(file, m);
+        const chain = this.traceChainFromController(file, m, effectiveMaxDepth);
         if (chain.length > 0) {
           const defaultMethod = /create|store|save|add/i.test(m.name)
             ? "POST"
@@ -233,7 +229,8 @@ export class CallGraphTracer {
   /**
    * Trace execution chain starting from a declarative route.
    */
-  public traceChainFromRoute(route: DiscoveredRoute): ExecutionChainNode[] {
+  public traceChainFromRoute(route: DiscoveredRoute, maxDepth: number = 5): ExecutionChainNode[] {
+    const effectiveMaxDepth = Math.min(Math.max(Math.trunc(maxDepth || 5), 1), 8);
     const chain: ExecutionChainNode[] = [];
 
     // Stage 1: Ingress
@@ -296,19 +293,23 @@ export class CallGraphTracer {
       });
 
       // Forward reachability BFS from controller
-      this.traverseOutboundDependencies(controllerFile, chain);
+      this.traverseOutboundDependencies(controllerFile, chain, effectiveMaxDepth);
     }
 
     return chain;
   }
+
+  public static readonly MAX_CHAIN_NODES = 25;
 
   /**
    * Trace execution chain starting from a controller method.
    */
   public traceChainFromController(
     controllerFile: FileRecord,
-    method: SymbolRecord
+    method: SymbolRecord,
+    maxDepth: number = 5
   ): ExecutionChainNode[] {
+    const effectiveMaxDepth = Math.min(Math.max(Math.trunc(maxDepth || 5), 1), 8);
     const chain: ExecutionChainNode[] = [];
     const syms = this.symbolsByFileId.get(controllerFile.id) || [];
     const ctrlName =
@@ -344,33 +345,60 @@ export class CallGraphTracer {
     });
 
     // Forward reachability BFS
-    this.traverseOutboundDependencies(controllerFile, chain);
+    this.traverseOutboundDependencies(controllerFile, chain, effectiveMaxDepth);
 
     return chain;
   }
 
   /**
-   * Traverse outbound dependencies using BFS with cycle detection and max hop limit.
+   * Expand an existing slice execution chain starting from controllerFilePath up to maxDepth.
    */
-  private traverseOutboundDependencies(
+  public expandChainFromFile(
+    controllerFilePath: string,
+    existingChain: ExecutionChainNode[],
+    maxDepth: number = 5
+  ): ExecutionChainNode[] {
+    const effectiveMaxDepth = Math.min(Math.max(Math.trunc(maxDepth || 5), 1), 8);
+    if (this.fileMapByNormPath.size === 0) {
+      this.initMaps();
+    }
+    const startFile = this.fileMapByNormPath.get(this.normalizeFilePath(controllerFilePath));
+    if (!startFile) {
+      return existingChain.slice(0, CallGraphTracer.MAX_CHAIN_NODES);
+    }
+
+    const chain = [...existingChain];
+    this.traverseOutboundDependencies(startFile, chain, effectiveMaxDepth);
+    return chain;
+  }
+
+  /**
+   * Traverse outbound dependencies using BFS with cycle detection, max hop limit, and node ceiling.
+   */
+  public traverseOutboundDependencies(
     startFile: FileRecord,
     chain: ExecutionChainNode[],
-    maxDepth: number = 6
+    maxDepth: number = 5
   ): void {
+    const effectiveMaxDepth = Math.min(Math.max(Math.trunc(maxDepth || 5), 1), 8);
     const visitedFiles = new Set<string>();
     visitedFiles.add(startFile.path);
+    for (const node of chain) {
+      if (node.file) visitedFiles.add(node.file);
+    }
 
     const queue: Array<{ file: FileRecord; depth: number }> = [
       { file: startFile, depth: 1 },
     ];
 
-    while (queue.length > 0) {
+    while (queue.length > 0 && chain.length < CallGraphTracer.MAX_CHAIN_NODES) {
       const current = queue.shift()!;
-      if (current.depth > maxDepth) break;
+      if (current.depth > effectiveMaxDepth) break;
 
       const deps = this.dependenciesByFileId.get(current.file.id) || [];
 
       for (const dep of deps) {
+        if (chain.length >= CallGraphTracer.MAX_CHAIN_NODES) break;
         if (dep.is_external) continue;
 
         const resolvedFile = this.resolveImportToFile(current.file.path, dep.target);
@@ -427,6 +455,10 @@ export class CallGraphTracer {
       const orderB = stageOrder[b.stage] || 99;
       return orderA - orderB;
     });
+
+    if (chain.length > CallGraphTracer.MAX_CHAIN_NODES) {
+      chain.length = CallGraphTracer.MAX_CHAIN_NODES;
+    }
   }
 
   /**

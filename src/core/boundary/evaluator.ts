@@ -1,3 +1,4 @@
+import { posix } from "node:path";
 import type { BoundaryViolation } from "../../types/index.ts";
 import type { ValidatedSeptumConfig } from "../config/schema.ts";
 import { ConfigLoader } from "../config/loader.ts";
@@ -23,7 +24,14 @@ export class BoundaryEvaluator {
     featureKey?: string,
     config?: ValidatedSeptumConfig
   ): BoundaryViolation[] {
-    const activeConfig = config ?? ConfigLoader.loadFromDatabaseOrDefaults();
+    let activeConfig = config;
+    if (!activeConfig) {
+      const fromRepo = ConfigLoader.loadFromRepository(this.repo);
+      activeConfig =
+        Object.keys(fromRepo.domains).length > 0
+          ? fromRepo
+          : ConfigLoader.loadFromDatabaseOrDefaults();
+    }
     const violations: BoundaryViolation[] = [];
 
     if (featureKey) {
@@ -82,6 +90,195 @@ export class BoundaryEvaluator {
         });
       }
     }
+
+    violations.push(...this.detectCircularDependencies(config, allDependencies));
+
+    return violations;
+  }
+
+  public detectCircularDependencies(
+    config: ValidatedSeptumConfig,
+    preloadedDeps?: Array<{
+      source_file: string;
+      source_domain: string;
+      line_number: number;
+      target: string;
+      statement: string;
+      is_external: boolean;
+    }>
+  ): BoundaryViolation[] {
+    const violations: BoundaryViolation[] = [];
+    const allDependencies = preloadedDeps ?? this.repo.getAllDependenciesWithDomains();
+
+    // Prepare file lookup maps for internal file-to-file resolution
+    const fileByNormPath = new Map<string, string>();
+    const fileByNoExtPath = new Map<string, string>();
+
+    const registerKnownFile = (rawPath: string) => {
+      const norm = rawPath.replace(/\\/g, "/").replace(/^\.\//, "");
+      fileByNormPath.set(norm.toLowerCase(), rawPath);
+      const noExt = norm.replace(/\.[^/.]+$/, "").toLowerCase();
+      fileByNoExtPath.set(noExt, rawPath);
+      if (noExt.endsWith("/index")) {
+        fileByNoExtPath.set(noExt.slice(0, -"/index".length), rawPath);
+      }
+    };
+
+    if (typeof this.repo.getAllFiles === "function") {
+      for (const f of this.repo.getAllFiles()) {
+        registerKnownFile(f.path);
+      }
+    }
+    for (const d of allDependencies) {
+      registerKnownFile(d.source_file);
+    }
+
+    const resolveTargetFile = (sourceFile: string, rawTarget: string): string | null => {
+      const cleaned = rawTarget.trim().replace(/^['"]|['"]$/g, "").replace(/\\/g, "/");
+      if (!cleaned) return null;
+
+      if (cleaned.startsWith(".")) {
+        const srcDir = posix.dirname(sourceFile.replace(/\\/g, "/"));
+        const joined = posix.normalize(posix.join(srcDir, cleaned)).replace(/^\.\//, "");
+        const lowerJoined = joined.toLowerCase();
+        const exact =
+          fileByNormPath.get(lowerJoined) ??
+          fileByNoExtPath.get(lowerJoined.replace(/\.[^/.]+$/, ""));
+        if (exact) return exact;
+      }
+
+      const aliasClean = cleaned.replace(/^@\//, "src/").replace(/^\.\//, "");
+      const lowerAlias = aliasClean.toLowerCase();
+      const byAlias =
+        fileByNormPath.get(lowerAlias) ??
+        fileByNoExtPath.get(lowerAlias.replace(/\.[^/.]+$/, ""));
+      if (byAlias) return byAlias;
+
+      return null;
+    };
+
+    type EdgeMeta = {
+      file: string;
+      line: number;
+      source_domain: string;
+      target_domain: string;
+      target: string;
+    };
+
+    const fileGraph = new Map<string, Map<string, EdgeMeta>>();
+    const domainGraph = new Map<string, Map<string, EdgeMeta>>();
+
+    for (const dep of allDependencies) {
+      if (dep.is_external) continue;
+
+      const targetDomain = this.resolveTargetDomain(dep.target, config, dep.source_file);
+
+      // 1. Domain-to-domain edge
+      if (targetDomain && targetDomain !== dep.source_domain) {
+        let outMap = domainGraph.get(dep.source_domain);
+        if (!outMap) {
+          outMap = new Map();
+          domainGraph.set(dep.source_domain, outMap);
+        }
+        if (!outMap.has(targetDomain)) {
+          outMap.set(targetDomain, {
+            file: dep.source_file,
+            line: dep.line_number,
+            source_domain: dep.source_domain,
+            target_domain: targetDomain,
+            target: dep.target,
+          });
+        }
+      }
+
+      // 2. File-to-file edge
+      const targetFile = resolveTargetFile(dep.source_file, dep.target);
+      if (targetFile && targetFile !== dep.source_file) {
+        let outMap = fileGraph.get(dep.source_file);
+        if (!outMap) {
+          outMap = new Map();
+          fileGraph.set(dep.source_file, outMap);
+        }
+        if (!outMap.has(targetFile)) {
+          outMap.set(targetFile, {
+            file: dep.source_file,
+            line: dep.line_number,
+            source_domain: dep.source_domain,
+            target_domain: targetDomain ?? dep.source_domain,
+            target: dep.target,
+          });
+        }
+      }
+    }
+
+    const findCycles = (
+      graph: Map<string, Map<string, EdgeMeta>>,
+      kindLabel: "file" | "domain"
+    ) => {
+      const visited = new Set<string>();
+      const inStack = new Set<string>();
+      const stack: string[] = [];
+      const reportedCycles = new Set<string>();
+
+      const canonicalizeCycle = (nodes: string[]): string => {
+        if (nodes.length === 0) return "";
+        let minIdx = 0;
+        for (let i = 1; i < nodes.length; i++) {
+          if (nodes[i] < nodes[minIdx]) minIdx = i;
+        }
+        const rotated = [...nodes.slice(minIdx), ...nodes.slice(0, minIdx)];
+        return rotated.join("->");
+      };
+
+      const dfs = (node: string) => {
+        visited.add(node);
+        inStack.add(node);
+        stack.push(node);
+
+        const neighbors = graph.get(node);
+        if (neighbors) {
+          for (const [nextNode, edgeMeta] of neighbors.entries()) {
+            if (!visited.has(nextNode)) {
+              dfs(nextNode);
+            } else if (inStack.has(nextNode)) {
+              const cycleStartIndex = stack.indexOf(nextNode);
+              if (cycleStartIndex !== -1) {
+                const cycleNodes = stack.slice(cycleStartIndex);
+                const sig = canonicalizeCycle(cycleNodes);
+                if (!reportedCycles.has(sig)) {
+                  reportedCycles.add(sig);
+                  const firstNode = cycleNodes[0];
+                  const secondNode = cycleNodes[1] ?? nextNode;
+                  const firstEdge = graph.get(firstNode)?.get(secondNode) ?? edgeMeta;
+                  const cycleDisplay = [...cycleNodes, cycleNodes[0]].join(" -> ");
+                  violations.push({
+                    file: firstEdge.file,
+                    line: firstEdge.line,
+                    source_domain: firstEdge.source_domain,
+                    target_domain: firstEdge.target_domain,
+                    imported_target: firstEdge.target,
+                    rule: "circular_dependency",
+                    message: `Circular ${kindLabel} dependency detected: ${cycleDisplay}.`,
+                  });
+                }
+              }
+            }
+          }
+        }
+
+        stack.pop();
+        inStack.delete(node);
+      };
+
+      for (const startNode of graph.keys()) {
+        if (!visited.has(startNode)) {
+          dfs(startNode);
+        }
+      }
+    };
+
+    findCycles(fileGraph, "file");
+    findCycles(domainGraph, "domain");
 
     return violations;
   }

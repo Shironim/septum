@@ -556,22 +556,120 @@ export class EnvironmentDetector {
     const realEnv = this.parseEnvFileSafe(path.join(root, ".env"));
     const mergedEnv = new Map([...envMap, ...realEnv]);
     const detectedStorage: string[] = [];
+    const detectedFrom = new Set<string>();
 
     const dbConn = mergedEnv.get("DB_CONNECTION")?.toLowerCase() || "";
     const dbPort = mergedEnv.get("DB_PORT") || "";
 
-    if (dbConn === "mysql" || dbPort === "3306" || [...mergedEnv.keys()].some(k => k.startsWith("MYSQL_"))) {
+    if (dbConn === "mysql" || dbPort === "3306" || [...mergedEnv.keys()].some((k) => k.startsWith("MYSQL_"))) {
       detectedStorage.push("MySQL / MariaDB");
-    } else if (dbConn === "pgsql" || dbPort === "5432" || [...mergedEnv.keys()].some(k => k.startsWith("POSTGRES_"))) {
+      detectedFrom.add(".env");
+    } else if (
+      dbConn === "pgsql" ||
+      dbPort === "5432" ||
+      [...mergedEnv.keys()].some((k) => k.startsWith("POSTGRES_"))
+    ) {
       detectedStorage.push("PostgreSQL");
+      detectedFrom.add(".env");
     } else if (dbConn === "sqlite" || fs.existsSync(path.join(root, "database", "database.sqlite"))) {
       detectedStorage.push("SQLite (File-based)");
+      detectedFrom.add(dbConn === "sqlite" ? ".env" : "database/database.sqlite");
     }
 
     const queueConn = mergedEnv.get("QUEUE_CONNECTION")?.toLowerCase() || "";
     const redisHost = mergedEnv.get("REDIS_HOST");
     if (queueConn === "redis" || redisHost || mergedEnv.has("REDIS_CLIENT")) {
       detectedStorage.push("Redis (Cache & Queues)");
+      detectedFrom.add(".env");
+    }
+
+    // Inspect package.json dependencies & devDependencies
+    const packageJson = this.readJsonSafe(path.join(root, "package.json"));
+    const allPkgDeps: Record<string, string> = {
+      ...(packageJson?.dependencies || {}),
+      ...(packageJson?.devDependencies || {}),
+    };
+
+    const addStorageUnique = (label: string, source: string): void => {
+      if (!detectedStorage.some((s) => s.toLowerCase().startsWith(label.split(" ")[0].toLowerCase()))) {
+        detectedStorage.push(label);
+      }
+      detectedFrom.add(source);
+    };
+
+    if (allPkgDeps["mysql2"] || allPkgDeps["mysql"]) {
+      addStorageUnique("MySQL / MariaDB", "package.json");
+    }
+    if (allPkgDeps["pg"] || allPkgDeps["postgres"]) {
+      addStorageUnique("PostgreSQL", "package.json");
+    }
+    if (allPkgDeps["better-sqlite3"] || allPkgDeps["sqlite3"] || allPkgDeps["@libsql/client"]) {
+      addStorageUnique("SQLite (Embedded / Local WAL)", "package.json");
+    }
+    if (allPkgDeps["redis"] || allPkgDeps["ioredis"]) {
+      addStorageUnique("Redis (Cache & Queues)", "package.json");
+    }
+
+    // Inspect go.mod for Go database drivers
+    const goMod = this.readFileSafe(path.join(root, "go.mod"));
+    if (goMod) {
+      if (goMod.includes("go-sql-driver/mysql") || goMod.includes("driver/mysql")) {
+        addStorageUnique("MySQL / MariaDB", "go.mod");
+      }
+      if (goMod.includes("lib/pq") || goMod.includes("jackc/pgx") || goMod.includes("driver/postgres")) {
+        addStorageUnique("PostgreSQL", "go.mod");
+      }
+      if (
+        goMod.includes("mattn/go-sqlite3") ||
+        goMod.includes("modernc.org/sqlite") ||
+        goMod.includes("driver/sqlite")
+      ) {
+        addStorageUnique("SQLite (Embedded / Local WAL)", "go.mod");
+      }
+      if (goMod.includes("go-redis")) {
+        addStorageUnique("Redis (Cache & Queues)", "go.mod");
+      }
+    }
+
+    // Inspect .septum/septum.db or bun:sqlite usage in source
+    const hasSeptumDb = fs.existsSync(path.join(root, ".septum", "septum.db"));
+    const hasBunSqliteConn =
+      fs.existsSync(path.join(root, "src", "core", "database", "connection.ts")) &&
+      this.readFileSafe(path.join(root, "src", "core", "database", "connection.ts")).includes("bun:sqlite");
+
+    if (hasSeptumDb || hasBunSqliteConn) {
+      addStorageUnique(
+        "SQLite (Embedded / Local WAL)",
+        hasBunSqliteConn ? "src/core/database/connection.ts (bun:sqlite)" : ".septum/septum.db"
+      );
+    } else if (allPkgDeps["@types/bun"] || packageJson?.engines?.bun) {
+      const entryFiles = [
+        path.join(root, "src", "index.ts"),
+        path.join(root, "src", "db.ts"),
+        path.join(root, "src", "database.ts"),
+      ];
+      for (const ef of entryFiles) {
+        if (fs.existsSync(ef) && this.readFileSafe(ef).includes("bun:sqlite")) {
+          addStorageUnique("SQLite (Embedded / Local WAL)", path.relative(root, ef));
+          break;
+        }
+      }
+    }
+
+    if (
+      detectedStorage.length === 0 &&
+      (allPkgDeps["@prisma/client"] || allPkgDeps["drizzle-orm"])
+    ) {
+      const prismaSchema = this.readFileSafe(path.join(root, "prisma", "schema.prisma"));
+      if (prismaSchema.includes('"sqlite"')) {
+        addStorageUnique("SQLite (Embedded / Local WAL)", "prisma/schema.prisma");
+      } else if (prismaSchema.includes('"postgresql"')) {
+        addStorageUnique("PostgreSQL", "prisma/schema.prisma");
+      } else if (prismaSchema.includes('"mysql"')) {
+        addStorageUnique("MySQL / MariaDB", "prisma/schema.prisma");
+      } else {
+        addStorageUnique("SQL Database (Prisma / Drizzle ORM)", "package.json");
+      }
     }
 
     if (detectedStorage.length > 0) {
@@ -580,7 +678,7 @@ export class EnvironmentDetector {
         platform: detectedStorage.join(" + "),
         canonical_tag: "managed_db",
         status: "DETECTED",
-        detected_from: [".env"],
+        detected_from: Array.from(detectedFrom),
         constraints: [
           "Database connection pool limits and socket timeouts must be configured.",
           "Pada Shared Hosting: Akses MySQL biasanya terikat ke 'localhost' / loopback dengan batas koneksi maksimal.",
@@ -713,12 +811,17 @@ export class EnvironmentDetector {
     }
 
     // Distributed Interplay 5: Database Migration Concurrency Invariant
-    const computeNodes = nodes.filter((n) => n.layer === "host" || (n.layer === "runtime" && n.role !== "frontend_spa"));
-    if (computeNodes.length > 1) {
+    const hostLayerNodes = nodes.filter((n) => n.layer === "host");
+    const backendRuntimeNodes = nodes.filter((n) => n.layer === "runtime" && n.role !== "frontend_spa");
+    if (hostLayerNodes.length > 1 || backendRuntimeNodes.length > 1) {
+      const involvedComputeIds = [
+        ...(hostLayerNodes.length > 1 ? hostLayerNodes.map((n) => n.id) : []),
+        ...(backendRuntimeNodes.length > 1 ? backendRuntimeNodes.map((n) => n.id) : []),
+      ];
       interplays.push({
         title: "Distributed Database Migration Concurrency Invariant",
         involved_layers: ["host", "storage"],
-        involved_node_ids: computeNodes.map((n) => n.id),
+        involved_node_ids: involvedComputeIds,
         risk_or_rule: "Terdapat lebih dari 1 instance host/compute (multi-VPS / multi-node) yang terhubung ke database bersama. Menjalankan migrasi database serentak saat deployment memicu deadlock tabel atau migration race condition.",
         required_action: "Pastikan script migrasi (seperti 'artisan migrate --isolated') hanya dijalankan oleh satu designated deploy pipeline runner sebelum node lain menerima traffic.",
       });

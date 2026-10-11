@@ -20,6 +20,9 @@ export class ModuleResolver {
   private tsBaseUrl: string = ".";
   private psr4Rules: Psr4Rule[] = [];
   private configsLoaded = false;
+  private fileDomainCache?: Map<string, string>;
+  private symbolDomainCache?: Map<string, string>;
+  private packageNameCache?: Map<string, string | null>;
 
   constructor(projectRoot: string = process.cwd(), repo?: SeptumRepository) {
     this.projectRoot = path.resolve(projectRoot);
@@ -28,6 +31,8 @@ export class ModuleResolver {
 
   public setRepository(repo: SeptumRepository): void {
     this.repo = repo;
+    this.fileDomainCache = undefined;
+    this.symbolDomainCache = undefined;
   }
 
   public getProjectRoot(): string {
@@ -42,6 +47,47 @@ export class ModuleResolver {
     this.loadTsConfig();
     this.loadComposerJson();
     this.configsLoaded = true;
+  }
+
+  private ensureRepoCachesLoaded(): void {
+    if (!this.repo) return;
+    if (this.fileDomainCache && this.symbolDomainCache) return;
+
+    this.fileDomainCache = new Map<string, string>();
+    this.symbolDomainCache = new Map<string, string>();
+
+    if (
+      typeof this.repo.getAllDomains === "function" &&
+      typeof this.repo.getAllFiles === "function"
+    ) {
+      const domains = this.repo.getAllDomains();
+      const domainById = new Map<number, string>();
+      for (const d of domains) {
+        domainById.set(d.id, d.name);
+      }
+
+      const files = this.repo.getAllFiles();
+      const domainByFilePath = new Map<string, string>();
+      for (const f of files) {
+        const domName = domainById.get(f.domain_id);
+        if (domName) {
+          this.fileDomainCache.set(f.path, domName);
+          const norm = f.path.replace(/\\/g, "/");
+          this.fileDomainCache.set(norm, domName);
+          domainByFilePath.set(f.path, domName);
+        }
+      }
+
+      if (typeof this.repo.getAllSymbolsWithFiles === "function") {
+        const symbols = this.repo.getAllSymbolsWithFiles();
+        for (const s of symbols) {
+          const domName = domainByFilePath.get(s.file_path) ?? this.fileDomainCache.get(s.file_path);
+          if (domName && !this.symbolDomainCache.has(s.name)) {
+            this.symbolDomainCache.set(s.name, domName);
+          }
+        }
+      }
+    }
   }
 
   /**
@@ -128,19 +174,33 @@ export class ModuleResolver {
       if (domainFromPhp) return domainFromPhp;
     }
 
-    // 4. Database-driven direct file lookup
+    // 4. Database-driven direct file & symbol lookup (pre-cached in memory to eliminate N+1)
     if (this.repo) {
-      const fileRecord = this.repo.getFileWithDomain(normalizedTarget);
-      if (fileRecord) {
-        return fileRecord.domain_name;
+      this.ensureRepoCachesLoaded();
+      const normKey = normalizedTarget.replace(/\\/g, "/");
+      const cachedFileDomain =
+        this.fileDomainCache?.get(normalizedTarget) ?? this.fileDomainCache?.get(normKey);
+      if (cachedFileDomain !== undefined) {
+        if (cachedFileDomain) return cachedFileDomain;
+      } else if (typeof this.repo.getFileWithDomain === "function") {
+        const fileRecord = this.repo.getFileWithDomain(normalizedTarget);
+        const domName = fileRecord?.domain_name ?? "";
+        this.fileDomainCache?.set(normalizedTarget, domName);
+        this.fileDomainCache?.set(normKey, domName);
+        if (domName) return domName;
       }
 
       // 5. Database-driven symbol lookup
       const symbolName = this.extractSymbolName(normalizedTarget);
       if (symbolName) {
-        const symbolRecord = this.repo.findSymbolWithDomain(symbolName);
-        if (symbolRecord) {
-          return symbolRecord.domain_name;
+        const cachedSymDomain = this.symbolDomainCache?.get(symbolName);
+        if (cachedSymDomain !== undefined) {
+          if (cachedSymDomain) return cachedSymDomain;
+        } else if (typeof this.repo.findSymbolWithDomain === "function") {
+          const symbolRecord = this.repo.findSymbolWithDomain(symbolName);
+          const domName = symbolRecord?.domain_name ?? "";
+          this.symbolDomainCache?.set(symbolName, domName);
+          if (domName) return domName;
         }
       }
     }
@@ -198,20 +258,31 @@ export class ModuleResolver {
   }
 
   private matchDomainByPackageName(target: string, config: ValidatedSeptumConfig): string | null {
+    if (!this.packageNameCache) {
+      this.packageNameCache = new Map<string, string | null>();
+    }
+
     for (const [domainName, domainCfg] of Object.entries(config.domains)) {
       const pkgJsonPath = path.resolve(this.projectRoot, domainCfg.root, "package.json");
-      if (fs.existsSync(pkgJsonPath)) {
-        try {
-          const raw = fs.readFileSync(pkgJsonPath, "utf8");
-          const pkg = JSON.parse(raw);
-          if (pkg.name && typeof pkg.name === "string") {
-            if (target === pkg.name || target.startsWith(`${pkg.name}/`)) {
-              return domainName;
+      const cached = this.packageNameCache.get(pkgJsonPath);
+      let pkgName: string | null = cached ?? null;
+      if (cached === undefined) {
+        if (fs.existsSync(pkgJsonPath)) {
+          try {
+            const raw = fs.readFileSync(pkgJsonPath, "utf8");
+            const pkg = JSON.parse(raw);
+            if (pkg.name && typeof pkg.name === "string") {
+              pkgName = pkg.name;
             }
+          } catch {
+            // Ignore unreadable or invalid package.json
           }
-        } catch {
-          // Ignore unreadable or invalid package.json
         }
+        this.packageNameCache.set(pkgJsonPath, pkgName);
+      }
+
+      if (pkgName && (target === pkgName || target.startsWith(`${pkgName}/`))) {
+        return domainName;
       }
     }
     return null;

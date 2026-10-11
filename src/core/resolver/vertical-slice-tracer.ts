@@ -22,7 +22,8 @@ export class VerticalSliceTracer {
    *  - "createOrder"
    *  - "Ubah status order di dashboard"
    */
-  public trace(rawQuery: string): VerticalSliceTraceResponse {
+  public trace(rawQuery: string, maxDepth: number = 5): VerticalSliceTraceResponse {
+    const effectiveMaxDepth = Math.min(Math.max(Math.trunc(maxDepth || 5), 1), 8);
     const trimmed = rawQuery.trim();
     const lowerTrimmed = trimmed.toLowerCase();
     let allSlices = this.repo.getAllVerticalSlices();
@@ -44,7 +45,7 @@ export class VerticalSliceTracer {
           allSlices = this.repo.getAllVerticalSlices();
         } else {
           const tracer = new CallGraphTracer(this.repo, this.projectRoot);
-          const traced = tracer.traceAllSlices();
+          const traced = tracer.traceAllSlices(effectiveMaxDepth);
           if (traced.length > 0) {
             for (const s of traced) {
               this.repo.upsertVerticalSlice(s);
@@ -62,6 +63,7 @@ export class VerticalSliceTracer {
       return {
         query: trimmed,
         found: false,
+        max_depth_applied: effectiveMaxDepth,
         message: "No vertical slices cataloged. Run 'septum ingest' to extract framework routes and MVC slices.",
       };
     }
@@ -77,7 +79,7 @@ export class VerticalSliceTracer {
           (s.route_uri.toLowerCase() === uri || this.urisMatch(s.route_uri, uri))
       );
       if (exact) {
-        return this.formatSuccessResponse(trimmed, exact, "exact");
+        return this.formatSuccessResponse(trimmed, exact, "exact", undefined, effectiveMaxDepth);
       }
     }
 
@@ -85,10 +87,10 @@ export class VerticalSliceTracer {
     const uriMatches = allSlices.filter((s) => s.route_uri.toLowerCase() === lowerTrimmed);
     if (uriMatches.length > 0) {
       if (uriMatches.length === 1) {
-        return this.formatSuccessResponse(trimmed, uriMatches[0], "exact");
+        return this.formatSuccessResponse(trimmed, uriMatches[0], "exact", undefined, effectiveMaxDepth);
       }
       // Multiple matches (e.g. GET /orders and POST /orders) -> return primary with alternatives
-      return this.formatSuccessResponse(trimmed, uriMatches[0], "exact", uriMatches.slice(1));
+      return this.formatSuccessResponse(trimmed, uriMatches[0], "exact", uriMatches.slice(1), effectiveMaxDepth);
     }
 
     // 3. Named Route match: "orders.status.update" or "admin.users.index"
@@ -96,7 +98,7 @@ export class VerticalSliceTracer {
       (s) => s.route_name && s.route_name.toLowerCase() === lowerTrimmed
     );
     if (nameMatch) {
-      return this.formatSuccessResponse(trimmed, nameMatch, "exact");
+      return this.formatSuccessResponse(trimmed, nameMatch, "exact", undefined, effectiveMaxDepth);
     }
 
     // 3b. Omni-Trigger Match: "JOB ProcessOrderJob", "job:ProcessOrderJob", "CLI order:cleanup", "EVENT OrderPlacedListener"
@@ -112,7 +114,7 @@ export class VerticalSliceTracer {
             s.route_uri.toLowerCase() === `${triggerKind.toLowerCase()}:${targetName}`)
       );
       if (exact) {
-        return this.formatSuccessResponse(trimmed, exact, "exact");
+        return this.formatSuccessResponse(trimmed, exact, "exact", undefined, effectiveMaxDepth);
       }
     }
 
@@ -138,7 +140,7 @@ export class VerticalSliceTracer {
         return true;
       });
       if (exact) {
-        return this.formatSuccessResponse(trimmed, exact, "exact");
+        return this.formatSuccessResponse(trimmed, exact, "exact", undefined, effectiveMaxDepth);
       }
     }
 
@@ -162,7 +164,7 @@ export class VerticalSliceTracer {
       return false;
     });
     if (symbolMatch) {
-      return this.formatSuccessResponse(trimmed, symbolMatch, "inferred");
+      return this.formatSuccessResponse(trimmed, symbolMatch, "inferred", undefined, effectiveMaxDepth);
     }
 
     // 6. Semantic / Token Scoring for Natural Language (e.g. "Ubah status order di dashboard")
@@ -193,12 +195,13 @@ export class VerticalSliceTracer {
     if (scoredSlices.length > 0) {
       const primary = scoredSlices[0].slice;
       const alternatives = scoredSlices.slice(1, 4).map((item) => item.slice);
-      return this.formatSuccessResponse(trimmed, primary, "inferred", alternatives);
+      return this.formatSuccessResponse(trimmed, primary, "inferred", alternatives, effectiveMaxDepth);
     }
 
     return {
       query: trimmed,
       found: false,
+      max_depth_applied: effectiveMaxDepth,
       alternatives: allSlices.slice(0, 5).map((s) => ({
         method: s.http_method,
         uri: s.route_uri,
@@ -234,7 +237,8 @@ export class VerticalSliceTracer {
     query: string,
     record: VerticalSliceRecord,
     confidence: "exact" | "inferred" = "exact",
-    alternatives?: VerticalSliceRecord[]
+    alternatives?: VerticalSliceRecord[],
+    effectiveMaxDepth: number = 5
   ): VerticalSliceTraceResponse {
     let chain: ExecutionChainNode[] = [];
     if (record.execution_chain_json) {
@@ -243,6 +247,23 @@ export class VerticalSliceTracer {
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
         console.error(`[Septum Slice Error] Corrupted execution chain JSON for slice ${record.id}: ${msg}`);
+      }
+    }
+
+    if (
+      chain.length < effectiveMaxDepth &&
+      record.controller_file &&
+      typeof (this.repo as any).getAllFiles === "function"
+    ) {
+      try {
+        const callGraphTracer = new CallGraphTracer(this.repo, this.projectRoot);
+        chain = callGraphTracer.expandChainFromFile(
+          record.controller_file,
+          chain,
+          effectiveMaxDepth
+        );
+      } catch {
+        // Ignore expansion errors on mock/partial repositories
       }
     }
 
@@ -278,6 +299,7 @@ export class VerticalSliceTracer {
       confidence,
       is_exact_match: confidence === "exact",
       architecture_style: record.architecture_style,
+      max_depth_applied: effectiveMaxDepth,
       entrypoint: {
         method: record.http_method,
         uri: record.route_uri,

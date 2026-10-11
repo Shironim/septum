@@ -62,6 +62,26 @@ export class ConfigLoader {
     };
   }
 
+  public static loadFromRepository(repo: SeptumRepository): ValidatedSeptumConfig {
+    const config = ConfigLoader.getDefaultConfig();
+    if (repo && typeof repo.getAllDomains === "function") {
+      try {
+        const rows = repo.getAllDomains();
+        for (const r of rows) {
+          config.domains[r.name] = {
+            root: r.root_path,
+            allowed_dependencies: JSON.parse(r.allowed_deps_json || "[]"),
+            forbidden_dependencies: JSON.parse(r.forbidden_deps_json || "[]"),
+            archetypes: JSON.parse(r.archetypes_json || "{}"),
+          };
+        }
+      } catch {
+        // Fallback gracefully to default config
+      }
+    }
+    return config;
+  }
+
   public static loadFromDatabaseOrDefaults(dbPath: string = ".septum/septum.db"): ValidatedSeptumConfig {
     const config = ConfigLoader.getDefaultConfig();
     config.settings.db_path = dbPath;
