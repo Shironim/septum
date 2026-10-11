@@ -21,7 +21,7 @@ export class OrderService {
     const ast = await extractor.extract("OrderService.ts", tsCode);
 
     const constSym = ast.symbols.find((s) => s.name === "API_BASE_URL");
-    expect(constSym?.kind).toBe("property");
+    expect(constSym?.kind).toBe("constant");
 
     const apiKeySym = ast.symbols.find((s) => s.name === "OrderService::apiKey");
     expect(apiKeySym?.kind).toBe("property");

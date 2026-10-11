@@ -89,9 +89,8 @@ describe("Dynamic Feature Registration & Auto-Derive Fallback", () => {
       expect(json.feature_key).toBe("pos-kasir");
     });
 
-    it("should persist to septum.config.json if persist_to_config is true", async () => {
+    it("should persist exclusively to SQLite SSOT and session without writing phantom septum.config.json", async () => {
       const configPath = path.join(tempDir, "septum.config.json");
-      fs.writeFileSync(configPath, JSON.stringify({ version: "1.0", domains: {} }), "utf-8");
 
       await handleRegisterFeature(
         repo,
@@ -100,14 +99,13 @@ describe("Dynamic Feature Registration & Auto-Derive Fallback", () => {
           feature_key: "laporan-harian",
           domain: "penjualan",
           allowed_touchpoints: ["app/Reports/DailyReport.php"],
-          persist_to_config: true,
         },
         tempDir
       );
 
-      const written = JSON.parse(fs.readFileSync(configPath, "utf-8"));
-      expect(written.features?.["laporan-harian"]).toBeDefined();
-      expect(written.features?.["laporan-harian"].domain).toBe("penjualan");
+      expect(fs.existsSync(configPath)).toBe(false);
+      expect(mockConfig.features?.["laporan-harian"]).toBeDefined();
+      expect(mockConfig.features?.["laporan-harian"].domain).toBe("penjualan");
     });
   });
 

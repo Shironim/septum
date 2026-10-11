@@ -9,8 +9,8 @@ import { SEPTUM_MAP_SKILL_TEMPLATE } from "../../src/cli/templates/skill.ts";
 describe("Agentic Scaffolding Templates", () => {
   it("should contain valid frontmatter and content for septum-map skill", () => {
     expect(SEPTUM_MAP_SKILL_TEMPLATE).toContain("name: septum-map");
-    expect(SEPTUM_MAP_SKILL_TEMPLATE).toContain("Framework-Agnostic");
-    expect(SEPTUM_MAP_SKILL_TEMPLATE).toContain("Semantic Blueprint Drafting");
+    expect(SEPTUM_MAP_SKILL_TEMPLATE.toLowerCase()).toContain("framework-agnostic");
+    expect(SEPTUM_MAP_SKILL_TEMPLATE).toContain("septum_get_domain_catalog");
   });
 
   it("should configure PreToolUse interceptors on write_to_file and replace_file_content", () => {

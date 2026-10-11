@@ -78,7 +78,7 @@ describe("Multi-Root Workspace Resolution & WorkspaceRoot Propagation", () => {
     expect(fs.existsSync(path.join(tempWorkspace2, ".septum", "session.json"))).toBe(false);
   });
 
-  it("handleRegisterFeature persists septum.config.json into the provided workspaceRoot", async () => {
+  it("handleRegisterFeature persists session into the provided workspaceRoot and updates SQLite SSOT without septum.config.json drift", async () => {
     await handleRegisterFeature(
       repo,
       mockConfig,
@@ -86,17 +86,17 @@ describe("Multi-Root Workspace Resolution & WorkspaceRoot Propagation", () => {
         feature_key: "checkout-step",
         domain: "orders",
         allowed_touchpoints: ["packages/orders/Checkout.php"],
-        persist_to_config: true,
       },
       tempWorkspace2
     );
 
     const configFile = path.join(tempWorkspace2, "septum.config.json");
-    expect(fs.existsSync(configFile)).toBe(true);
+    expect(fs.existsSync(configFile)).toBe(false);
 
-    const configData = JSON.parse(fs.readFileSync(configFile, "utf-8"));
-    expect(configData.features["checkout-step"]).toBeDefined();
-    expect(configData.features["checkout-step"].domain).toBe("orders");
+    const sessionFile = path.join(tempWorkspace2, ".septum", "session.json");
+    expect(fs.existsSync(sessionFile)).toBe(true);
+    expect(mockConfig.features["checkout-step"]).toBeDefined();
+    expect(mockConfig.features["checkout-step"].domain).toBe("orders");
   });
 
   it("BoundaryEvaluator with ModuleResolver correctly resolves relative paths inside workspaceRoot", () => {
