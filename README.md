@@ -2,13 +2,13 @@
 
 > **Deterministic Bounded-Context & Anti-Poisoning Architecture Guard for AI Coding Agents.**
 
-[![Version: 0.1.5](https://img.shields.io/badge/Version-0.1.5-blue)](package.json)
+[![Version: 0.1.7](https://img.shields.io/badge/Version-0.1.7-blue)](package.json)
 [![Runtime: Bun](https://img.shields.io/badge/Runtime-Bun-black?logo=bun)](https://bun.sh)
 [![Protocol: Model Context Protocol](https://img.shields.io/badge/Protocol-MCP-green)](https://modelcontextprotocol.io/)
 [![Database: SQLite WAL](https://img.shields.io/badge/Database-SQLite%20(bun:sqlite)-003B57?logo=sqlite)](https://sqlite.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue)](LICENSE)
 
-Septum stops **context poisoning** in AI coding agents. It indexes your codebase into an embedded SQLite SSOT (`.septum/septum.db`), enforces strict bounded-context domains, and intercepts unauthorized cross-domain edits before they hit disk.
+Septum helps AI coding agents navigate code and respect declared architectural boundaries. It indexes your codebase into an embedded SQLite SSOT (`.septum/septum.db`), enforces strict bounded-context domains, and intercepts unauthorized cross-domain edits before they hit disk.
 
 ---
 
@@ -59,7 +59,7 @@ Add Septum to your MCP client (`mcp.json` or `claude_desktop_config.json`):
 |---|---|
 | `septum init` | Detect topology, scaffold boundary guards, and build initial catalog |
 | `septum ingest` | Full AST re-indexing into `.septum/septum.db` |
-| `septum sync` | Fast incremental delta sync (< 15ms) for modified files |
+| `septum sync` | Incremental synchronization of modified files for modified files |
 | `septum check --strict` | CI/CD gate: verify boundary integrity & fail on violations |
 | `septum query [domain]` | Inspect domain catalog, archetypes, and public signatures |
 | `septum locate <query>` | Locate symbol, class, interface, method, or error source |
@@ -103,3 +103,23 @@ bun run build
 ## License
 
 [MIT](LICENSE) © shironim
+
+## Reliability and Scope
+
+`septum check --strict` enables strict dependency rules before evaluating the codebase. A full check synchronizes the index first. CLI and MCP staged checks read Git index blobs, so unstaged edits cannot hide a violation in the proposed commit. Staged checks also evaluate dependency cycles using indexed dependencies with staged imports overlaid.
+
+Domain ownership uses the most specific normalized root in both full and single-file ingestion. Feature touchpoints are normalized against the workspace; `/*` permits immediate children and `/**` permits descendants.
+
+Each active MCP workspace has a watcher. Changes to multiple files are batched without dropping earlier paths; deletion and directory moves reconcile the catalog. If a native watcher is unavailable, Septum falls back to polling and synchronizes before answering queries. Catalog responses expose `index_status.watcher_mode` and `index_status.unsupported_files`. Single-file updates invalidate cached execution slices; the next trace rebuilds them.
+
+Tree-sitter grammars are runtime dependencies and are embedded in compiled executables. The active extractors cover TypeScript/JavaScript, PHP/Blade, Python, Go, and script extraction from Vue/Svelte/Astro. Rust, Java, C#, and Ruby do not yet have active extractors. Unsupported files are reported explicitly; an incomplete audit does not receive a clean approval. Unindexed symbols return `risk_level: "unknown"`.
+
+Feature sessions have a single owner per workspace. The default owner is the MCP process; set `SEPTUM_SESSION_ID` when several commands intentionally share the same owner. Another owner cannot replace or release the active session. Use `septum feature clear --force` for explicit recovery after a process exits or for a legacy session without ownership metadata.
+
+Run the real-server integration checks with Python 3:
+
+```bash
+bun run test:integration
+```
+
+These checks exercise live rule changes, Git staged blobs, multiple workspaces, rapid edits, directory moves, and unsupported-file diagnostics. The normal `bun test` suite includes a standalone-binary regression for forbidden multiline imports.

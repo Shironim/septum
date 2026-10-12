@@ -1,6 +1,6 @@
 {
   "name": "septum",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "description": "Deterministic Bounded-Context, Structural File Catalog & Anti-Poisoning Partition for AI Agents",
   "type": "module",
   "main": "src/index.ts",
@@ -18,13 +18,15 @@
     "check": "bun run bin/septum.ts check",
     "test": "bun test",
     "build": "bun build ./bin/septum.ts --compile --outfile dist/septum",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test:integration": "python3 tests/integration/mcp-reliability.py"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.5.0",
     "web-tree-sitter": "^0.24.0",
     "yaml": "^2.7.0",
-    "zod": "^3.24.2"
+    "zod": "^3.24.2",
+    "tree-sitter-wasms": "^0.1.13"
   },
   "license": "MIT",
   "repository": {
@@ -56,8 +58,6 @@
   "devDependencies": {
     "@types/bun": "latest",
     "@types/node": "^22.13.4",
-    "tree-sitter-wasms": "^0.1.13",
     "typescript": "^5.7.3"
   }
 }
-
