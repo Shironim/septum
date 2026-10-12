@@ -129,6 +129,7 @@ export interface FileRecord {
 }
 
 export interface ActiveFeatureSession {
+  owner_id?: string;
   feature_key: string;
   domain: string;
   touchpoints: string[];
@@ -177,6 +178,7 @@ export interface ExtractedDependency {
 }
 
 export interface ParsedFileAST {
+  status?: "parsed" | "unsupported" | "degraded";
   symbols: ExtractedSymbol[];
   dependencies: ExtractedDependency[];
 }
@@ -324,6 +326,21 @@ export interface SymbolExactRange {
   total_lines: number;
 }
 
+export interface ResolvedOutboundCall {
+  symbol: string;
+  target_file?: string;
+  target_range?: SymbolExactRange;
+  domain?: string;
+  is_resolved: boolean;
+}
+
+export interface SymbolComplexitySmell {
+  is_high_complexity: boolean;
+  threshold: number;
+  total_lines: number;
+  warning: string;
+}
+
 export interface GetSymbolDetailsResponse {
   symbol: string;
   kind: SymbolKind | string;
@@ -334,6 +351,8 @@ export interface GetSymbolDetailsResponse {
   visibility?: Visibility | string;
   dependencies_injected: string[];
   outbound_calls: string[];
+  resolved_outbound_calls?: ResolvedOutboundCall[];
+  complexity_smell?: SymbolComplexitySmell;
   sibling_methods?: string[];
   connected_files?: FileConnectionsSummary;
 }
@@ -358,7 +377,7 @@ export interface GetSymbolImpactResponse {
   warning?: string;
   impact_summary: {
     total_dependents: number;
-    risk_level: "low" | "medium" | "high";
+    risk_level: "low" | "medium" | "high" | "unknown";
     affected_files_count: number;
   };
   inbound_callers: InboundCaller[];
