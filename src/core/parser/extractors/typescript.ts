@@ -46,10 +46,10 @@ export class TypeScriptExtractor implements CodeExtractor {
     );
 
     if (treeSitterResult) {
-      return treeSitterResult;
+      return { ...treeSitterResult, status: "parsed" };
     }
 
-    return this.extractFallback(content);
+    return { ...this.extractFallback(content), status: "degraded" };
   }
 
   private resolveLanguageKey(filePath: string): string {

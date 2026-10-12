@@ -123,6 +123,7 @@ export class FrontendExtractor implements CodeExtractor {
     dependencies: ExtractedDependency[]
   ): Promise<void> {
     const parsed = await this.tsExtractor.extract("component-script.ts", scriptContent);
+    if (parsed.status === "degraded") throw new Error("Cannot reliably parse component script.");
     const delta = Math.max(0, startLine - 1);
 
     for (const dep of parsed.dependencies) {

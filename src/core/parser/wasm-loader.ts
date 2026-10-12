@@ -2,6 +2,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import Parser from "web-tree-sitter";
+import { WASM_ASSETS } from "./wasm-assets.ts";
 
 const GRAMMAR_BY_KEY: Record<string, string> = {
   // Extensions
@@ -73,6 +74,8 @@ export function resolveWasmPath(fileName: string, isCoreRuntime: boolean = false
     candidates.push(path.join(envDir, fileName));
     candidates.push(path.join(envDir, "out", fileName));
   }
+
+  if (WASM_ASSETS[fileName]) candidates.push(WASM_ASSETS[fileName]);
 
   // Tier 2: Walk up from import.meta.dir to package root
   let currentDir = getModuleDir();

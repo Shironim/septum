@@ -44,10 +44,10 @@ export class PHPExtractor implements CodeExtractor {
       this.extractFromAst(rootNode, content)
     );
     if (astResult) {
-      return astResult;
+      return { ...astResult, status: "parsed" };
     }
 
-    return this.extractFallback(content);
+    return { ...this.extractFallback(content), status: "degraded" };
   }
 
   private isExternalNamespace(cleaned: string): boolean {

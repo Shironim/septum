@@ -8,6 +8,9 @@ import { PythonExtractor } from "./extractors/python.ts";
 import { TypeScriptExtractor } from "./extractors/typescript.ts";
 
 export class ASTParserEngine {
+  public static isSourceFile(filePath: string): boolean {
+    return /\.(ts|tsx|mts|cts|js|jsx|mjs|cjs|php|py|go|rs|java|cs|rb|vue|astro|svelte)$/i.test(filePath);
+  }
   private extractors: CodeExtractor[];
 
   constructor() {
@@ -24,12 +27,14 @@ export class ASTParserEngine {
   public async parseFile(filePath: string, content: string): Promise<ParsedFileAST> {
     for (const extractor of this.extractors) {
       if (extractor.canHandle(filePath)) {
-        return extractor.extract(filePath, content);
+        const result = await extractor.extract(filePath, content);
+        return { status: "parsed", ...result };
       }
     }
 
     // Default fallback extractor for unknown file types
     return {
+      status: "unsupported",
       symbols: [],
       dependencies: [],
     };

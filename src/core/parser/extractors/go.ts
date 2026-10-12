@@ -67,10 +67,10 @@ export class GoExtractor implements CodeExtractor {
       this.extractFromAst(rootNode, filePath, content)
     );
     if (astResult) {
-      return astResult;
+      return { ...astResult, status: "parsed" };
     }
 
-    return this.extractFallback(filePath, content);
+    return { ...this.extractFallback(filePath, content), status: "degraded" };
   }
 
   private extractFallback(filePath: string, content: string): ParsedFileAST {

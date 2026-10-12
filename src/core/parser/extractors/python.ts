@@ -79,10 +79,10 @@ export class PythonExtractor implements CodeExtractor {
       this.extractFromAst(rootNode, content)
     );
     if (astResult) {
-      return astResult;
+      return { ...astResult, status: "parsed" };
     }
 
-    return this.extractFallback(content);
+    return { ...this.extractFallback(content), status: "degraded" };
   }
 
   private extractFallback(content: string): ParsedFileAST {
