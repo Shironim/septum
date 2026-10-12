@@ -130,12 +130,14 @@ async function runPreWriteHook(): Promise<void> {
     // -------------------------------------------------------------
     // GATE 1: Hard Touchpoint Lock (if features are defined)
     // -------------------------------------------------------------
-    const features = config.features ?? {};
     const session = SessionManager.getActiveSession(process.cwd());
-    const activeFeatureKey =
-      toolInput.feature_key || process.env.SEPTUM_ACTIVE_FEATURE || session?.feature_key;
+    const requestedFeatureKey = toolInput.feature_key || process.env.SEPTUM_ACTIVE_FEATURE;
+    if (session && requestedFeatureKey && requestedFeatureKey !== session.feature_key) {
+      throw new Error(`Requested feature '${requestedFeatureKey}' does not own the active scope '${session.feature_key}'.`);
+    }
+    const activeFeatureKey = session?.feature_key || requestedFeatureKey;
 
-    if (activeFeatureKey && features[activeFeatureKey]) {
+    if (activeFeatureKey) {
       const touchpointViolations = evaluator.checkFeatureTouchpoints(
         activeFeatureKey,
         targetFile,
@@ -161,6 +163,9 @@ async function runPreWriteHook(): Promise<void> {
     if (content && sourceDomain) {
       const astEngine = new ASTParserEngine();
       const parsed = await astEngine.parseFile(targetFile, content);
+      if (ASTParserEngine.isSourceFile(targetFile) && (parsed.status === "unsupported" || parsed.status === "degraded")) {
+        throw new Error(`Cannot reliably check imports in '${targetFile}': parser status is ${parsed.status}.`);
+      }
 
       const proposedImports = parsed.dependencies.map((d) => d.target);
       const boundaryViolations = evaluator.checkProposedChanges(

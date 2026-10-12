@@ -1,4 +1,4 @@
-import { posix } from "node:path";
+import { posix, relative, resolve, isAbsolute } from "node:path";
 import type { BoundaryViolation } from "../../types/index.ts";
 import type { ValidatedSeptumConfig } from "../config/schema.ts";
 import { ConfigLoader } from "../config/loader.ts";
@@ -105,7 +105,8 @@ export class BoundaryEvaluator {
       target: string;
       statement: string;
       is_external: boolean;
-    }>
+    }>,
+    relevantFiles?: ReadonlySet<string>
   ): BoundaryViolation[] {
     const violations: BoundaryViolation[] = [];
     const allDependencies = preloadedDeps ?? this.repo.getAllDependenciesWithDomains();
@@ -158,6 +159,7 @@ export class BoundaryEvaluator {
     };
 
     type EdgeMeta = {
+      files: Set<string>;
       file: string;
       line: number;
       source_domain: string;
@@ -182,6 +184,7 @@ export class BoundaryEvaluator {
         }
         if (!outMap.has(targetDomain)) {
           outMap.set(targetDomain, {
+            files: new Set([dep.source_file]),
             file: dep.source_file,
             line: dep.line_number,
             source_domain: dep.source_domain,
@@ -189,6 +192,7 @@ export class BoundaryEvaluator {
             target: dep.target,
           });
         }
+        outMap.get(targetDomain)!.files.add(dep.source_file);
       }
 
       // 2. File-to-file edge
@@ -201,6 +205,7 @@ export class BoundaryEvaluator {
         }
         if (!outMap.has(targetFile)) {
           outMap.set(targetFile, {
+            files: new Set([dep.source_file]),
             file: dep.source_file,
             line: dep.line_number,
             source_domain: dep.source_domain,
@@ -245,6 +250,8 @@ export class BoundaryEvaluator {
               if (cycleStartIndex !== -1) {
                 const cycleNodes = stack.slice(cycleStartIndex);
                 const sig = canonicalizeCycle(cycleNodes);
+                const cycleEdges = cycleNodes.map((source, index) => graph.get(source)?.get(cycleNodes[(index + 1) % cycleNodes.length]));
+                if (relevantFiles && !cycleEdges.some(edge => edge && [...edge.files].some(file => relevantFiles.has(file)))) continue;
                 if (!reportedCycles.has(sig)) {
                   reportedCycles.add(sig);
                   const firstNode = cycleNodes[0];
@@ -378,39 +385,28 @@ export class BoundaryEvaluator {
       return violations;
     }
 
-    const normalizedTarget = targetFilePath.replace(/\\/g, "/").replace(/^\.\//, "");
+    const root = this.resolver.getProjectRoot();
+    const normalizedTarget = relative(root, resolve(root, targetFilePath.replace(/\\/g, "/"))).replace(/\\/g, "/");
     const allowedTouchpoints = featureConfig.allowed_touchpoints.map((tp) =>
-      tp.replace(/\\/g, "/").replace(/^\.\//, "")
+      isAbsolute(tp) ? relative(root, tp).replace(/\\/g, "/") : posix.normalize(tp.replace(/\\/g, "/"))
     );
 
     const domainCfg = config.domains[featureConfig.domain];
     const domainRoot = domainCfg?.root ? domainCfg.root.replace(/\\/g, "/").replace(/^\.\//, "") : "";
 
-    const isAllowed = allowedTouchpoints.some((pattern) => {
+    const matches = (pattern: string): boolean => {
       if (pattern.endsWith("/**")) {
-        const prefix = pattern.slice(0, -3);
-        return normalizedTarget.startsWith(prefix);
+        return normalizedTarget.startsWith(pattern.slice(0, -3) + "/");
       }
       if (pattern.endsWith("/*")) {
-        const prefix = pattern.slice(0, -2);
-        return normalizedTarget.startsWith(prefix);
+        const prefix = pattern.slice(0, -2) + "/";
+        return normalizedTarget.startsWith(prefix) && !normalizedTarget.slice(prefix.length).includes("/");
       }
-      if (normalizedTarget === pattern) return true;
-
-      if (
-        domainRoot &&
-        (normalizedTarget === `${domainRoot}/${pattern}` ||
-          normalizedTarget.startsWith(`${domainRoot}/${pattern}`))
-      ) {
-        return true;
-      }
-
-      if (pattern.includes("/") && normalizedTarget.endsWith("/" + pattern)) {
-        return true;
-      }
-
-      return false;
-    });
+      return normalizedTarget === pattern;
+    };
+    const isAllowed = allowedTouchpoints.some(pattern =>
+      matches(pattern) || Boolean(domainRoot && matches(posix.normalize(`${domainRoot}/${pattern}`)))
+    );
 
     if (!isAllowed) {
       violations.push({

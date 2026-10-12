@@ -1,4 +1,5 @@
-import { execSync } from "node:child_process";
+import { relative, resolve } from "node:path";
+import { auditStagedFiles } from "../../core/boundary/staged-auditor.ts";
 import type { BoundaryEvaluator } from "../../core/boundary/evaluator.ts";
 import type { ValidatedSeptumConfig } from "../../core/config/schema.ts";
 import type { SeptumRepository } from "../../core/database/repository.ts";
@@ -7,7 +8,7 @@ import { normalizeBoundaryArgs, type CheckBoundaryArgs } from "../schemas.ts";
 
 export type { CheckBoundaryArgs } from "../schemas.ts";
 
-export function handleCheckBoundary(
+export async function handleCheckBoundary(
   evaluator: BoundaryEvaluator,
   config: ValidatedSeptumConfig,
   rawArgs: CheckBoundaryArgs & Record<string, unknown>,
@@ -18,6 +19,17 @@ export function handleCheckBoundary(
   const root = workspaceRoot || args.workspace_path || process.cwd();
   const proposedImports = args.proposed_imports ?? [];
   const featureKey = args.feature_key;
+
+  const unsupported = JSON.parse(repo?.getMeta("unsupported_files") || "[]") as string[];
+  const requested = [...(Array.isArray(args.file_path) ? args.file_path : args.file_path ? [args.file_path] : []), ...(args.file_paths || [])]
+    .map(file => relative(root, resolve(root, file)).replace(/\\/g, "/"));
+  const relevantUnsupported = unsupported.filter(file =>
+    (!args.domain || evaluator.resolveSourceDomain(file, config) === args.domain) &&
+    (requested.length === 0 || requested.includes(file))
+  );
+  if (relevantUnsupported.length > 0 && args.scope !== "staged" && !args.staged) {
+    return { content: [{ type: "text" as const, text: JSON.stringify({ status: "unknown", unsupported_files: relevantUnsupported, message: "Boundary audit is incomplete because source files have no supported parser." }) }] };
+  }
 
   const filesToCheck: string[] = [];
   if (args.file_paths && Array.isArray(args.file_paths) && args.file_paths.length > 0) {
@@ -36,20 +48,7 @@ export function handleCheckBoundary(
       args.scope ?? (args.staged ? "staged" : args.domain ? "domain" : "all");
 
     if (effectiveScope === "staged") {
-      let stagedFiles: string[] = [];
-      try {
-        const gitOut = execSync("git diff --name-only --cached", {
-          cwd: root,
-          encoding: "utf-8",
-          timeout: 5000,
-        });
-        stagedFiles = gitOut
-          .split("\n")
-          .map((f) => f.trim())
-          .filter(Boolean);
-      } catch {
-        stagedFiles = [];
-      }
+      const { files: stagedFiles, violations: stagedViolations } = await auditStagedFiles(evaluator, config, root, featureKey, repo);
 
       if (stagedFiles.length === 0) {
         return {
@@ -73,23 +72,6 @@ export function handleCheckBoundary(
             },
           ],
         };
-      }
-
-      const codebaseViolations = evaluator.auditCodebase(config);
-      const stagedNormalized = new Set(
-        stagedFiles.map((f) => f.replace(/\\/g, "/").replace(/^\.\//, ""))
-      );
-      const stagedViolations: BoundaryViolation[] = [];
-
-      for (const filePath of stagedFiles) {
-        const evalViolations = evaluator.evaluate(filePath, proposedImports, featureKey, config);
-        stagedViolations.push(...evalViolations);
-      }
-      for (const v of codebaseViolations) {
-        const normFile = v.file.replace(/\\/g, "/").replace(/^\.\//, "");
-        if (stagedNormalized.has(normFile)) {
-          stagedViolations.push(v);
-        }
       }
 
       const filteredViolations = args.domain

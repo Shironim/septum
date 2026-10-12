@@ -132,7 +132,7 @@ export async function runCLI(argv: string[]): Promise<void> {
       case "feature": {
         const sub = positionals[1];
         if (sub === "clear") {
-          const cleared = SessionManager.clearActiveSession(process.cwd());
+          const cleared = SessionManager.clearActiveSession(process.cwd(), undefined, Boolean(flags.force));
           if (cleared) {
             console.log("✓ Active feature session successfully cleared.");
           } else {
@@ -203,6 +203,7 @@ COMMANDS:
     check                 Audit codebase for cross-domain boundary violations
                           Flags: --strict, --staged, --feature <name>
     feature [status|clear] View or release active feature context session lock
+                          Flags: --force (explicit recovery of another owner's session)
     hook [subhook]        Internal pre-tool guardrail hook (e.g. pre-write)
 
   Environment & Topology:
