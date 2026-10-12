@@ -81,6 +81,7 @@ export class VerticalSliceTracer {
       if (exact) {
         return this.formatSuccessResponse(trimmed, exact, "exact", undefined, effectiveMaxDepth);
       }
+      return { query: trimmed, found: false, max_depth_applied: effectiveMaxDepth, message: `No vertical slice found matching query '${trimmed}'.` };
     }
 
     // 2. URI-only match: "/orders" or "orders/{id}"

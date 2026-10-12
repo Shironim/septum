@@ -100,10 +100,27 @@ export async function handleLocateSymbol(
     }
   }
 
+  const exactLineCount = result.exact_symbol
+    ? result.exact_symbol.line_end - result.exact_symbol.line_start + 1
+    : 0;
+  const complexitySmell =
+    exactLineCount > 300
+      ? {
+          is_high_complexity: true,
+          threshold: 300,
+          total_lines: exactLineCount,
+          warning: `Symbol '${result.exact_symbol?.name}' spans ${exactLineCount} lines (exceeds 300-line threshold). Candidate for decomposition/refactoring.`,
+        }
+      : undefined;
+
   const suggestions = (result.suggestions || []).slice(0, limit);
-  const summary = result.found
+  let summary = result.found
     ? `[FOUND] ${result.exact_symbol?.name || query} in ${result.file_path} (lines ${result.exact_symbol?.line_start}-${result.exact_symbol?.line_end})`
     : `[NOT FOUND] Symbol '${query}' not found. ${suggestions.length > 0 ? `Top suggestions: ${suggestions.map((s) => s.name).slice(0, 3).join(", ")}` : "No close suggestions."}`;
+
+  if (complexitySmell) {
+    summary += ` | ⚠️ High-Complexity Smell: spans ${exactLineCount} lines (> 300L)`;
+  }
 
   const payload = {
     status: result.found ? "success" : "not_found",
@@ -111,7 +128,13 @@ export async function handleLocateSymbol(
     query,
     file_path: result.file_path || null,
     container_name: result.container_name || null,
-    exact_symbol: result.exact_symbol || null,
+    exact_symbol: result.exact_symbol
+      ? {
+          ...result.exact_symbol,
+          total_lines: exactLineCount,
+        }
+      : null,
+    complexity_smell: complexitySmell,
     sibling_methods: result.sibling_methods || [],
     suggestions,
     summary,

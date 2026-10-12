@@ -258,7 +258,7 @@ export class DependencyRepository {
         warning: "Empty symbol query provided.",
         impact_summary: {
           total_dependents: 0,
-          risk_level: "low",
+          risk_level: "unknown",
           affected_files_count: 0,
         },
         inbound_callers: [],
@@ -463,7 +463,7 @@ export class DependencyRepository {
     const foundInIndex = targetSymRows.length > 0 || depRows.length > 0;
     const warning = foundInIndex
       ? undefined
-      : `Symbol '${trimmed}' was not found in Septum index (neither in declared symbols nor tracked dependencies). Risk assessment defaults to low (0 callers) due to unindexed status.`;
+      : `Symbol '${trimmed}' was not found in Septum index (neither in declared symbols nor tracked dependencies). Risk cannot be assessed without index evidence.`;
 
     return {
       target_symbol: trimmed,
@@ -471,7 +471,7 @@ export class DependencyRepository {
       warning,
       impact_summary: {
         total_dependents: inboundCallers.length,
-        risk_level: riskLevel,
+        risk_level: foundInIndex ? riskLevel : "unknown",
         affected_files_count: affectedFiles.size,
       },
       inbound_callers: inboundCallers,

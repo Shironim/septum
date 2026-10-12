@@ -97,16 +97,7 @@ export class ModuleResolver {
     filePath: string,
     config: ValidatedSeptumConfig
   ): string | null {
-    const absPath = this.toAbsolutePath(filePath);
-
-    for (const [domainName, domainCfg] of Object.entries(config.domains)) {
-      const domainAbsRoot = this.toAbsolutePath(domainCfg.root);
-      if (this.isSubPathOrSame(absPath, domainAbsRoot)) {
-        return domainName;
-      }
-    }
-
-    return null;
+    return this.matchDomainByPath(filePath, config);
   }
 
   /**

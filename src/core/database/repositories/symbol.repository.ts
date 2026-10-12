@@ -5,6 +5,8 @@ import type {
   ExtractedSymbol,
   FileRecord,
   GetSymbolDetailsResponse,
+  ResolvedOutboundCall,
+  SymbolComplexitySmell,
   SymbolKind,
   SymbolRecord,
 } from "../../../types/index.ts";
@@ -460,6 +462,73 @@ export class SymbolRepository {
     const depRepo = new DependencyRepository(this.db);
     const connectedFiles = depRepo.getFileConnections(row.file_path);
 
+    // 4. Resolve Outbound Calls to target symbol line ranges
+    const resolvedOutboundCalls: ResolvedOutboundCall[] = [];
+    const lookupStmt = this.db.query<
+      {
+        name: string;
+        line_start: number;
+        line_end: number;
+        line_count: number;
+        file_path: string;
+        domain_name: string;
+      },
+      [string, string, string, string]
+    >(`
+      SELECT 
+        s.name, 
+        s.line_start, 
+        s.line_end, 
+        s.line_count, 
+        f.path AS file_path, 
+        d.name AS domain_name
+      FROM symbols s
+      JOIN files f ON s.file_id = f.id
+      JOIN domains d ON f.domain_id = d.id
+      WHERE (s.name = ? OR s.name LIKE ? OR s.name LIKE ?)
+      ORDER BY CASE WHEN s.name = ? THEN 1 ELSE 2 END, s.line_start ASC
+      LIMIT 1
+    `);
+
+    for (const call of outboundCalls) {
+      try {
+        const target = lookupStmt.get(call, `%::${call}`, `${call}::%`, call);
+        if (target) {
+          resolvedOutboundCalls.push({
+            symbol: call,
+            target_file: target.file_path,
+            target_range: {
+              start_line: target.line_start,
+              end_line: target.line_end,
+              total_lines: target.line_count,
+            },
+            domain: target.domain_name,
+            is_resolved: true,
+          });
+        } else {
+          resolvedOutboundCalls.push({
+            symbol: call,
+            is_resolved: false,
+          });
+        }
+      } catch {
+        resolvedOutboundCalls.push({
+          symbol: call,
+          is_resolved: false,
+        });
+      }
+    }
+
+    const complexitySmell: SymbolComplexitySmell | undefined =
+      row.line_count > 300
+        ? {
+            is_high_complexity: true,
+            threshold: 300,
+            total_lines: row.line_count,
+            warning: `Symbol '${row.name}' spans ${row.line_count} lines (exceeds 300-line threshold). Candidate for decomposition/refactoring.`,
+          }
+        : undefined;
+
     return {
       symbol: row.name,
       kind: row.kind,
@@ -474,6 +543,8 @@ export class SymbolRepository {
       visibility: row.visibility,
       dependencies_injected: Array.from(dependenciesInjected),
       outbound_calls: Array.from(outboundCalls),
+      resolved_outbound_calls: resolvedOutboundCalls.length > 0 ? resolvedOutboundCalls : undefined,
+      complexity_smell: complexitySmell,
       sibling_methods: siblingMethods.length > 0 ? siblingMethods : undefined,
       connected_files: connectedFiles,
     };
