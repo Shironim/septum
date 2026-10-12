@@ -41,6 +41,14 @@ export async function handleRegisterFeature(
     output_contract: args.output_contract || {},
   };
 
+  // Record Active Feature Session Lease (.septum/session.json)
+  SessionManager.saveActiveSession(workspaceRoot, {
+    feature_key: featureKey,
+    domain,
+    touchpoints: featureConfig.allowed_touchpoints,
+    locked_at: new Date().toISOString(),
+  });
+
   if (!config.features) {
     config.features = {};
   }
@@ -59,13 +67,7 @@ export async function handleRegisterFeature(
     }
   }
 
-  // Record Active Feature Session Lease (.septum/session.json)
-  SessionManager.saveActiveSession(workspaceRoot, {
-    feature_key: featureKey,
-    domain,
-    touchpoints: featureConfig.allowed_touchpoints,
-    locked_at: new Date().toISOString(),
-  });
+
 
   return {
     content: [

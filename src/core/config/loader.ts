@@ -65,19 +65,22 @@ export class ConfigLoader {
   public static loadFromRepository(repo: SeptumRepository): ValidatedSeptumConfig {
     const config = ConfigLoader.getDefaultConfig();
     if (repo && typeof repo.getAllDomains === "function") {
-      try {
-        const rows = repo.getAllDomains();
-        for (const r of rows) {
-          config.domains[r.name] = {
-            root: r.root_path,
-            allowed_dependencies: JSON.parse(r.allowed_deps_json || "[]"),
-            forbidden_dependencies: JSON.parse(r.forbidden_deps_json || "[]"),
-            archetypes: JSON.parse(r.archetypes_json || "{}"),
-          };
-        }
-      } catch {
-        // Fallback gracefully to default config
+      const rows = repo.getAllDomains();
+      for (const row of rows) {
+        config.domains[row.name] = {
+          root: row.root_path,
+          allowed_dependencies: JSON.parse(row.allowed_deps_json || "[]"),
+          forbidden_dependencies: JSON.parse(row.forbidden_deps_json || "[]"),
+          archetypes: JSON.parse(row.archetypes_json || "{}"),
+        };
       }
+    }
+
+    if (typeof repo?.getMeta === "function") {
+      const features = repo.getMeta("features_json");
+      if (features) config.features = JSON.parse(features);
+      const settings = repo.getMeta("settings_json");
+      if (settings) Object.assign(config.settings, JSON.parse(settings));
     }
     return config;
   }
@@ -95,20 +98,14 @@ export class ConfigLoader {
           )
           .get("domains");
 
-        if (tables) {
-          const rows = db.query<any, []>("SELECT * FROM domains").all();
-          for (const r of rows) {
-            config.domains[r.name] = {
-              root: r.root_path,
-              allowed_dependencies: JSON.parse(r.allowed_deps_json || "[]"),
-              forbidden_dependencies: JSON.parse(r.forbidden_deps_json || "[]"),
-              archetypes: JSON.parse(r.archetypes_json || "{}"),
-            };
-          }
+        try {
+          if (tables) Object.assign(config, ConfigLoader.loadFromRepository(new SeptumRepository(db)));
+          config.settings.db_path = dbPath;
+        } finally {
+          db.close();
         }
-        db.close();
       } catch {
-        // Fallback gracefully to default config
+        throw new Error(`Cannot load Septum configuration from '${dbPath}'.`);
       }
     }
 

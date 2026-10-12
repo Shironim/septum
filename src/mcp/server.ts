@@ -1,5 +1,5 @@
-import { existsSync, watch, type FSWatcher } from "node:fs";
-import { extname, relative, resolve } from "node:path";
+import { existsSync, statSync, watch, type FSWatcher } from "node:fs";
+import { relative, resolve } from "node:path";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
@@ -12,6 +12,7 @@ import { ConfigLoader } from "../core/config/loader.ts";
 import { SeptumDatabase } from "../core/database/client.ts";
 import { SeptumRepository } from "../core/database/repository.ts";
 import { IngestionPipeline } from "../core/ingestion/pipeline.ts";
+import { ASTParserEngine } from "../core/parser/tree-sitter.ts";
 import { SessionManager } from "../core/session/session-manager.ts";
 import { SeptumTelemetry } from "../core/telemetry/telemetry.ts";
 import { handleCheckBoundary } from "./tools/check-boundary.ts";
@@ -52,6 +53,8 @@ interface WorkspaceContext {
   repo: SeptumRepository;
   evaluator: BoundaryEvaluator;
   pipeline: IngestionPipeline;
+  ready: Promise<void>;
+  watcher: { flush: () => Promise<void>; close: () => void };
 }
 
 const workspaceContextCache = new Map<string, WorkspaceContext>();
@@ -127,6 +130,87 @@ export function extractPathHint(args: unknown): string | undefined {
   return undefined;
 }
 
+function createWorkspaceWatcher(root: string, repo: SeptumRepository, pipeline: IngestionPipeline, ready: Promise<void>) {
+  const pending = new Set<string>();
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  let flushing: Promise<void> | null = null;
+  let closed = false;
+  let needsFullSync = false;
+  const ignored = new Set(["node_modules", "vendor", ".git", ".septum", ".strata", "dist", "build", ".output", ".nuxt", ".next", ".cache", "coverage", ".turbo"]);
+  let watcher: FSWatcher | null = null;
+  let polling: ReturnType<typeof setInterval> | null = null;
+
+  const flush = async (): Promise<void> => {
+    if (timer) { clearTimeout(timer); timer = null; }
+    if (flushing) return flushing;
+    flushing = (async () => {
+      await ready;
+      if (!closed && (!watcher || needsFullSync || repo.getMeta("sync_error"))) {
+        needsFullSync = false;
+        await pipeline.run(ConfigLoader.load(undefined, root), { verifyContent: true });
+        repo.setMeta("sync_error", "");
+      }
+      while (!closed && pending.size > 0) {
+        const paths = [...pending];
+        pending.clear();
+        const config = ConfigLoader.load(undefined, root);
+        for (const filename of paths) {
+          const target = resolve(root, filename);
+          const relPath = relative(root, target).replace(/\\/g, "/");
+          if (!existsSync(target)) {
+            repo.runInTransaction(() => { repo.deleteFileByPath(relPath); repo.clearVerticalSlices();
+              const unsupported = JSON.parse(repo.getMeta("unsupported_files") || "[]") as string[];
+              repo.setMeta("unsupported_files", JSON.stringify(unsupported.filter(path => path !== relPath))); });
+          } else {
+            await pipeline.ingestFile(target, config);
+          }
+        }
+      }
+    })();
+    try { await flushing; } finally { flushing = null; }
+  };
+
+  const usePolling = (error: unknown) => {
+    watcher?.close();
+    watcher = null;
+    repo.setMeta("watcher_mode", "polling");
+    console.error(`[Septum Watcher Warning] Using polling: ${String(error)}`);
+    if (!polling) polling = setInterval(() => {
+      void flush().catch(failure => repo.setMeta("sync_error", String(failure)));
+    }, 1000);
+  };
+
+  try {
+    watcher = watch(root, { recursive: true }, (_event, filename) => {
+      if (!filename || closed) return;
+      const norm = filename.replace(/\\/g, "/");
+      if (norm.split("/").some(segment => ignored.has(segment))) return;
+      const target = resolve(root, norm);
+      let directory = false;
+      try { directory = statSync(target).isDirectory(); } catch { /* The path may have been removed before the event arrives. */ }
+      if (directory || (!ASTParserEngine.isSourceFile(norm) && (repo.getAllFiles().some(file => file.path.startsWith(norm + "/")) || (JSON.parse(repo.getMeta("unsupported_files") || "[]") as string[]).some(file => file.startsWith(norm + "/"))))) {
+        needsFullSync = true;
+      } else if (ASTParserEngine.isSourceFile(norm)) {
+        pending.add(norm);
+      } else {
+        return;
+      }
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => {
+        void flush().catch(error => {
+          repo.setMeta("sync_error", String(error));
+          console.error(`[Septum Watcher Warning] ${String(error)}`);
+        });
+      }, 300);
+    });
+    repo.setMeta("watcher_mode", "native");
+    watcher.on("error", usePolling);
+  } catch (error) {
+    usePolling(error);
+  }
+  return { flush, close: () => { closed = true; if (timer) clearTimeout(timer); if (polling) clearInterval(polling); watcher?.close(); } };
+}
+
 function getWorkspaceContext(pathHint?: string): WorkspaceContext {
   const root = resolveWorkspaceRoot(pathHint);
   let ctx = workspaceContextCache.get(root);
@@ -142,13 +226,16 @@ function getWorkspaceContext(pathHint?: string): WorkspaceContext {
   const evaluator = new BoundaryEvaluator(repo, new ModuleResolver(root, repo));
   const pipeline = new IngestionPipeline(repo, root);
 
-  ctx = { root, config, db, repo, evaluator, pipeline };
+  const ready = pipeline.run(config, { verifyContent: true }).then(() => {});
+  const watcher = createWorkspaceWatcher(root, repo, pipeline, ready);
+  ctx = { root, config, db, repo, evaluator, pipeline, ready, watcher };
   workspaceContextCache.set(root, ctx);
   return ctx;
 }
 
 export async function runMCPServer(): Promise<void> {
   const initialCtx = getWorkspaceContext();
+  await initialCtx.ready;
 
   const server = new Server(
     {
@@ -571,6 +658,11 @@ export async function runMCPServer(): Promise<void> {
     const startTime = performance.now();
     const pathHint = extractPathHint(args as Record<string, any>);
     const ctx = getWorkspaceContext(pathHint);
+    await ctx.ready;
+    await ctx.watcher.flush();
+    if (ctx.repo.getMeta("sync_error")) throw new Error(`Workspace index synchronization failed: ${ctx.repo.getMeta("sync_error")}`);
+    ctx.config = ConfigLoader.load(undefined, ctx.root);
+    ctx.evaluator.getResolver().setRepository(ctx.repo);
 
     const activeSession = SessionManager.getActiveSession(ctx.root);
     const sessionPayload = activeSession
@@ -772,7 +864,7 @@ export async function runMCPServer(): Promise<void> {
         metrics: { bytes_out: bytesOut, lines_out: linesOut },
         session: sessionPayload,
         status: (response as { isError?: boolean } | undefined)?.isError ? "error" : "success",
-      });
+      }, ctx.root);
 
       return response;
     } catch (err) {
@@ -790,7 +882,7 @@ export async function runMCPServer(): Promise<void> {
           message: errorInstance.message,
           stack: errorInstance.stack,
         },
-      });
+      }, ctx.root);
 
       return {
         isError: true,
@@ -806,84 +898,10 @@ export async function runMCPServer(): Promise<void> {
 
   const transport = new StdioServerTransport();
 
-  // In-process transparent background watcher for auto-syncing codebase changes
-  let fsWatcher: FSWatcher | null = null;
-  let debounceTimer: NodeJS.Timeout | null = null;
-  const SUPPORTED_EXTENSIONS = new Set([".ts", ".js", ".tsx", ".jsx", ".php", ".py", ".go"]);
-  const IGNORED_SEGMENTS = new Set([
-    "node_modules",
-    ".git",
-    ".septum",
-    ".strata",
-    "dist",
-    ".output",
-    ".nuxt",
-    ".next",
-    ".cache",
-    "coverage",
-    ".turbo",
-  ]);
-
-  try {
-    const bgPipeline = initialCtx.pipeline;
-    const watchRoot = initialCtx.root;
-
-    fsWatcher = watch(watchRoot, { recursive: true }, (_event, filename) => {
-      if (!filename) return;
-
-      const norm = filename.replace(/\\/g, "/");
-      const parts = norm.split("/");
-      if (parts.some((p) => IGNORED_SEGMENTS.has(p))) return;
-
-      const ext = extname(norm).toLowerCase();
-      if (!SUPPORTED_EXTENSIONS.has(ext)) return;
-
-      if (debounceTimer) clearTimeout(debounceTimer);
-      debounceTimer = setTimeout(async () => {
-        try {
-          const freshConfig = ConfigLoader.load(undefined, watchRoot);
-          const targetPath = resolve(watchRoot, filename);
-          const relPath = relative(watchRoot, targetPath).replace(/\\/g, "/");
-          if (!existsSync(targetPath)) {
-            if (typeof (initialCtx.repo as any).deleteFileByPath === "function") {
-              (initialCtx.repo as any).deleteFileByPath(relPath);
-            } else if (typeof initialCtx.repo.deleteFile === "function") {
-              initialCtx.repo.deleteFile(relPath);
-            }
-            return;
-          }
-          const updated = await bgPipeline.ingestFile(targetPath, freshConfig);
-          if (updated) {
-            console.error(
-              `[Septum Watcher] Auto-synced modified file '${filename}' via incremental delta sync.`
-            );
-          }
-        } catch (err: unknown) {
-          const msg = err instanceof Error ? err.message : String(err);
-          console.error(`[Septum Watcher Warning] Background auto-sync failed: ${msg}`);
-        }
-      }, 300);
-    });
-
-    fsWatcher.on("error", (err: Error) => {
-      console.error(`[Septum Watcher] File watcher error: ${err.message}`);
-    });
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    console.error(`[Septum Watcher Warning] Could not start filesystem watcher: ${msg}`);
-  }
-
   const cleanup = () => {
-    if (debounceTimer) clearTimeout(debounceTimer);
-    if (fsWatcher) {
-      try {
-        fsWatcher.close();
-      } catch {
-        // Ignore watcher close errors during shutdown
-      }
-    }
     for (const ctx of workspaceContextCache.values()) {
       try {
+        ctx.watcher.close();
         ctx.db.close();
       } catch (err) {
         // Ignore close error during shutdown
@@ -896,16 +914,9 @@ export async function runMCPServer(): Promise<void> {
   process.on("SIGINT", cleanup);
   process.on("SIGTERM", cleanup);
   process.on("beforeExit", () => {
-    if (debounceTimer) clearTimeout(debounceTimer);
-    if (fsWatcher) {
-      try {
-        fsWatcher.close();
-      } catch {
-        // Ignore watcher close errors
-      }
-    }
     for (const ctx of workspaceContextCache.values()) {
       try {
+        ctx.watcher.close();
         ctx.db.close();
       } catch {
         // Ignore close error

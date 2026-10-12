@@ -15,6 +15,10 @@ export function handleGetDomainCatalog(
 ) {
   const targetRoot = args.workspace_path || workspaceRoot || (repo as any)?.projectRoot || process.cwd();
   const domainName = args.domain ?? args.name;
+  const indexStatus = {
+    unsupported_files: JSON.parse(repo.getMeta("unsupported_files") || "[]"),
+    watcher_mode: repo.getMeta("watcher_mode") || "manual",
+  };
 
   if (!domainName) {
     const allDomains = repo.getAllDomains();
@@ -55,6 +59,7 @@ export function handleGetDomainCatalog(
         : repo.getAllVerticalSlices().length;
 
     const macroMap = {
+      index_status: indexStatus,
       telescope_view: {
         project_type: projectType,
         framework,
@@ -129,7 +134,7 @@ export function handleGetDomainCatalog(
     content: [
       {
         type: "text" as const,
-        text: JSON.stringify(catalog, null, 2),
+        text: JSON.stringify({ ...catalog, index_status: indexStatus }, null, 2),
       },
     ],
   };
