@@ -115,11 +115,11 @@ describe("Multi-Root Workspace Resolution & WorkspaceRoot Propagation", () => {
     expect(Array.isArray(violations)).toBe(true);
   });
 
-  it("handleCheckBoundary passes through without crashing when workspaceRoot is supplied", () => {
+  it("handleCheckBoundary passes through without crashing when workspaceRoot is supplied", async () => {
     const resolver = new ModuleResolver(tempWorkspace1, repo);
     const evaluator = new BoundaryEvaluator(repo, resolver);
 
-    const result = handleCheckBoundary(
+    const result = await handleCheckBoundary(
       evaluator,
       mockConfig,
       { file_path: "packages/orders/Service.php" },

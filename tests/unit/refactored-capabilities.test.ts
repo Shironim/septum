@@ -323,12 +323,12 @@ class InvoiceRepository {
   });
 
   describe("4. check-boundary Repo-Wide Audit & Circular Dependency Detection", () => {
-    it("should perform repo-wide boundary audit when called with empty args", () => {
+    it("should perform repo-wide boundary audit when called with empty args", async () => {
       repo.upsertDomain("core", mockConfig.domains.core);
       repo.upsertDomain("types", mockConfig.domains.types);
 
       const evaluator = new BoundaryEvaluator(repo);
-      const res = handleCheckBoundary(evaluator, mockConfig, {}, repo);
+      const res = await handleCheckBoundary(evaluator, mockConfig, {}, repo);
       const body = JSON.parse(res.content[0].text);
 
       expect(body.status).toBe("approved");
@@ -338,7 +338,7 @@ class InvoiceRepository {
       expect(body.circular_dependencies).toEqual([]);
     });
 
-    it("should detect circular dependencies and report them accurately", () => {
+    it("should detect circular dependencies and report them accurately", async () => {
       const circConfig: ValidatedSeptumConfig = {
         version: "1.0",
         settings: {
@@ -406,7 +406,7 @@ class InvoiceRepository {
       ]);
 
       const evaluator = new BoundaryEvaluator(repo);
-      const res = handleCheckBoundary(evaluator, circConfig, {}, repo);
+      const res = await handleCheckBoundary(evaluator, circConfig, {}, repo);
       const body = JSON.parse(res.content[0].text);
 
       expect(body.status).toBe("rejected");

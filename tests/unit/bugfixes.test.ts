@@ -189,7 +189,7 @@ describe("Septum Bugfixes Regression Suite (SP-1 to SP-7)", () => {
       expect(body.warning).toBeDefined();
       expect(body.warning).toContain("was not found in Septum index");
       expect(body.impact_summary.total_dependents).toBe(0);
-      expect(body.impact_summary.risk_level).toBe("low");
+      expect(body.impact_summary.risk_level).toBe("unknown");
     });
 
     it("should return found_in_index: true when symbol exists in database", () => {
@@ -402,14 +402,14 @@ import (
   });
 
   describe("SP-15: CheckBoundary Batch Evaluation Unindexed Warning", () => {
-    it("should include unindexed notice in batch mode when domain catalog has 0 domains", () => {
+    it("should include unindexed notice in batch mode when domain catalog has 0 domains", async () => {
       const evaluator = new BoundaryEvaluator(repo);
       const emptyConfig: ValidatedSeptumConfig = {
         ...mockConfig,
         domains: {},
       };
 
-      const res = handleCheckBoundary(
+      const res = await handleCheckBoundary(
         evaluator,
         emptyConfig,
         { file_paths: ["src/file1.ts", "src/file2.ts"] },
