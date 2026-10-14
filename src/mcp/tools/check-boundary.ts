@@ -26,8 +26,21 @@ export async function handleCheckBoundary(
   const featureKey = args.feature_key;
 
   const syncState = repo?.getMeta("sync_state");
-  if (syncState === "running" || syncState === "error") {
-    return { content: [{ type: "text" as const, text: JSON.stringify({status: "unknown", sync_state: syncState, message: "Boundary audit is incomplete because workspace synchronization has not completed."}) }] };
+  const syncError = repo?.getMeta("sync_error");
+  if (!syncState || syncState === "running" || syncState === "error" || syncState !== "complete" || syncError) {
+    return {
+      content: [
+        {
+          type: "text" as const,
+          text: JSON.stringify({
+            status: "unknown",
+            sync_state: syncState || "unindexed",
+            sync_error: syncError || undefined,
+            message: "Boundary audit is incomplete because workspace synchronization has not completed.",
+          }),
+        },
+      ],
+    };
   }
   const skipped = JSON.parse(repo?.getMeta("skipped_files") || "[]") as {path: string; reason: string}[];
   const unsupported = JSON.parse(repo?.getMeta("unsupported_files") || "[]") as string[];

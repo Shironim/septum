@@ -147,7 +147,7 @@ function recordCatalogAccess(domain: string, projectRoot: string = process.cwd()
   try {
     const septumDir = path.resolve(projectRoot, ".septum");
     if (!fs.existsSync(septumDir)) {
-      fs.mkdirSync(septumDir, { recursive: true });
+      return;
     }
     const logPath = path.join(septumDir, "catalog_access.json");
     let log: { domains?: Record<string, string>; features?: Record<string, string> } = {};

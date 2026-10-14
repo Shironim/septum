@@ -11,13 +11,14 @@ export async function handleDomainTool(
   repo: SeptumRepository,
   config: ValidatedSeptumConfig,
   args: DomainToolArgs,
-  workspaceRoot?: string
+  workspaceRoot?: string,
+  signal?: AbortSignal
 ) {
   const action = args.action || "catalog";
 
   switch (action) {
     case "register":
-      return await handleRegisterDomain(repo, config, args, workspaceRoot);
+      return await handleRegisterDomain(repo, config, args, workspaceRoot, signal);
 
     case "topology":
       return handleGetEnvironmentTopology(

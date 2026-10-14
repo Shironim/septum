@@ -217,6 +217,10 @@ export async function runMCPServer(): Promise<void> {
                 type: "boolean",
                 description: "Force re-detection from codebase files, ignoring cached status (action='topology').",
               },
+              workspace_path: {
+                type: "string",
+                description: "Explicit workspace root path. Specifies the target project root in multi-root environments.",
+              },
             },
             required: [],
           },
@@ -269,6 +273,10 @@ export async function runMCPServer(): Promise<void> {
                 type: "number",
                 description: "Maximum results to return (default: 10 for locate, 30 for hotspots).",
               },
+              workspace_path: {
+                type: "string",
+                description: "Explicit workspace root path. Specifies the target project root in multi-root environments.",
+              },
             },
             required: [],
           },
@@ -290,6 +298,10 @@ export async function runMCPServer(): Promise<void> {
                 minimum: 1,
                 maximum: 8,
                 description: "Maximum depth to trace (default: 5, min: 1, max: 8). Use 6-8 for deep Event/Job/Queue traces.",
+              },
+              workspace_path: {
+                type: "string",
+                description: "Explicit workspace root path. Specifies the target project root in multi-root environments.",
               },
             },
             required: ["query"],
@@ -328,6 +340,10 @@ export async function runMCPServer(): Promise<void> {
               feature_key: {
                 type: "string",
                 description: "Optional feature key to validate touchpoints against.",
+              },
+              workspace_path: {
+                type: "string",
+                description: "Explicit workspace root path. Specifies the target project root in multi-root environments.",
               },
             },
             required: [],
@@ -381,6 +397,10 @@ export async function runMCPServer(): Promise<void> {
                 default: false,
                 description: "Force release session (action='release').",
               },
+              workspace_path: {
+                type: "string",
+                description: "Explicit workspace root path. Specifies the target project root in multi-root environments.",
+              },
             },
             required: [],
           },
@@ -389,11 +409,12 @@ export async function runMCPServer(): Promise<void> {
     };
   });
 
-  server.setRequestHandler(CallToolRequestSchema, async (request) => {
+  server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
     const { name, arguments: args } = request.params;
     const startTime = performance.now();
     let lease: WorkspaceLease | undefined;
     try {
+    extra?.signal?.throwIfAborted();
     const schema = TOOL_SCHEMAS[name as keyof typeof TOOL_SCHEMAS];
     if (!schema) throw new Error(`Unknown tool: '${name}'`);
     const validated = schema.safeParse(args ?? {});
@@ -401,7 +422,17 @@ export async function runMCPServer(): Promise<void> {
     const record = (validated.data ?? {}) as Record<string, any>;
     const raw = (args ?? {}) as Record<string, any>;
     const workspacePath = record.workspace_path ?? raw.workspace_path ?? raw.workspacePath ?? raw.workspace ?? raw.project_root ?? raw.projectRoot;
-    const root = resolveServerWorkspace({workspacePath, filePath: workspacePath ? undefined : extractPathHint(args), fallbackRoot:manager.lastRoot});
+    const knownRoots = manager.activeRoots;
+    if (manager.initialRoot && !knownRoots.includes(manager.initialRoot)) {
+      knownRoots.unshift(manager.initialRoot);
+    }
+    const fallbackRoot = manager.initialRoot || manager.lastRoot;
+    const root = resolveServerWorkspace({
+      workspacePath,
+      filePath: workspacePath ? undefined : extractPathHint(args),
+      fallbackRoot,
+      knownRoots,
+    });
 
     if (!isWorkspaceInitialized(root)) {
       if (name === "septum_domain" && (!record.action || record.action === "catalog")) {
@@ -445,10 +476,12 @@ export async function runMCPServer(): Promise<void> {
       }
     }
 
+    extra?.signal?.throwIfAborted();
     lease = manager.acquire(root);
     const ctx = lease.context;
     await ctx.ready;
-    await ctx.watcher.flush();
+    extra?.signal?.throwIfAborted();
+    await ctx.watcher.flush(true, extra?.signal);
     if (ctx.repo.getMeta("sync_error")) throw new Error(`Workspace index synchronization failed: ${ctx.repo.getMeta("sync_error")}`);
     ctx.config = ConfigLoader.load(undefined, ctx.root);
     ctx.evaluator.getResolver().setRepository(ctx.repo);
@@ -473,7 +506,7 @@ export async function runMCPServer(): Promise<void> {
             ],
           };
         }
-        return await handleDomainTool(ctx.repo, ctx.config, parsed.data, ctx.root);
+        return await handleDomainTool(ctx.repo, ctx.config, parsed.data, ctx.root, extra?.signal);
       } else if (name === "septum_symbol") {
         const parsed = SymbolToolSchema.safeParse(args ?? {});
         if (!parsed.success) {
@@ -529,6 +562,7 @@ export async function runMCPServer(): Promise<void> {
             ],
           };
         }
+        extra?.signal?.throwIfAborted();
         return await handleFeatureTool(ctx.repo, ctx.config, parsed.data, ctx.root);
       } else {
         throw new Error(`Unknown tool: '${name}'`);
@@ -536,7 +570,7 @@ export async function runMCPServer(): Promise<void> {
     };
 
     try {
-      const response = await manager.runTool(executeTool);
+      const response = await manager.runTool(executeTool, extra?.signal);
       const durationMs = Math.round(performance.now() - startTime);
 
       let bytesOut = 0;
@@ -627,16 +661,20 @@ export async function runMCPServer(): Promise<void> {
   await server.connect(transport);
   try {
     const initialRoot = resolveServerWorkspace({initial:true});
+    manager.initialRoot = initialRoot;
+    manager.lastRoot = initialRoot;
     if (isWorkspaceInitialized(initialRoot)) {
       const initial = manager.acquire(initialRoot);
       try { await initial.context.ready; } finally { initial.release(); }
-    } else {
-      manager.lastRoot = initialRoot;
     }
     if (process.env.SEPTUM_MEMORY_DIAGNOSTICS === "1") {
       memoryTimer = setInterval(() => {
         const sample = { ...process.memoryUsage(), workspaces: manager.size, watches: manager.watchCount, pending_paths: manager.pendingPaths, sync_duration_ms: manager.syncDurationMs };
-        SeptumTelemetry.recordMemorySample(sample, manager.lastRoot);
+        if (manager.lastRoot && isWorkspaceInitialized(manager.lastRoot)) {
+          SeptumTelemetry.recordMemorySample(sample, manager.lastRoot);
+        } else {
+          console.error(`[Septum Memory] ${JSON.stringify({timestamp: new Date().toISOString(), event: "memory_sample", metrics: sample})}`);
+        }
       }, 60_000);
       memoryTimer.unref();
     }

@@ -9,5 +9,6 @@ export const RESOURCE_LIMITS = Object.freeze({
   sourceBytes: 2 * 1024 * 1024,
   batchFiles: 50,
   batchBytes: 1024 * 1024,
+  maxQueuePending: 50,
   shutdownMs: 5000,
 });

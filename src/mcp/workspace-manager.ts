@@ -7,34 +7,52 @@ import { SeptumDatabase } from '../core/database/client.ts';
 import { SeptumRepository } from '../core/database/repository.ts';
 import { BoundaryEvaluator } from '../core/boundary/evaluator.ts';
 import { ModuleResolver } from '../core/resolver/module-resolver.ts';
-import { findProjectRoot, isAppHostDirectory, PROJECT_ROOT_MARKERS, setLastKnownProjectRoot } from '../core/resolver/path-resolver.ts';
+import { findProjectRoot, isAppHostDirectory, isPathContained, PROJECT_ROOT_MARKERS, setLastKnownProjectRoot } from '../core/resolver/path-resolver.ts';
 import { IngestionPipeline } from '../core/ingestion/pipeline.ts';
 import { RESOURCE_LIMITS } from '../core/resources/limits.ts';
 import { SerialWorkQueue } from '../core/resources/work-queue.ts';
 import { WatchBudget, WorkspaceWatcher } from './workspace-watcher.ts';
 
-export function resolveServerWorkspace(options: {workspacePath?: string; filePath?: string; fallbackRoot?: string; initial?: boolean; cwd?: string} = {}): string {
+export function resolveServerWorkspace(options: {workspacePath?: string; filePath?: string; fallbackRoot?: string; knownRoots?: string[]; initial?: boolean; cwd?: string} = {}): string {
   const cwd = options.cwd || process.cwd();
   const explicit = options.workspacePath || (!options.filePath ? process.env.SEPTUM_WORKSPACE_ROOT || process.env.WORKSPACE_ROOT : undefined);
   let root: string;
-  if (explicit) root = resolve(cwd, explicit);
-  else if (options.filePath && (isAbsolute(options.filePath) || /[\\/]/.test(options.filePath))) root = findProjectRoot(resolve(options.fallbackRoot || cwd, options.filePath));
-  else if (options.fallbackRoot) root = options.fallbackRoot;
-  else {
+  if (explicit) {
+    root = resolve(cwd, explicit);
+  } else if (options.filePath && (isAbsolute(options.filePath) || /[\\/]/.test(options.filePath))) {
+    const absTarget = resolve(options.fallbackRoot || cwd, options.filePath);
+    // SV-04: Prefer known/registered workspace roots that already contain this file before falling back to nested markers
+    const containingKnown = options.knownRoots?.find(known => isPathContained(absTarget, known));
+    if (containingKnown && isWorkspaceInitialized(containingKnown)) {
+      root = containingKnown;
+    } else {
+      root = findProjectRoot(absTarget);
+    }
+  } else if (options.fallbackRoot) {
+    root = options.fallbackRoot;
+  } else {
     if (!PROJECT_ROOT_MARKERS.some(marker => existsSync(join(cwd, marker)))) throw new Error('No project marker in CWD. Set SEPTUM_WORKSPACE_ROOT to an explicit workspace directory.');
     root = cwd;
   }
   root = realpathSync(root);
   if (!statSync(root).isDirectory() || root === dirname(root) || root === realpathSync(homedir()) || isAppHostDirectory(root)) throw new Error(`Unsafe Septum serve workspace: ${root}`);
+
+  // SV-04: Validate file-workspace consistency when both are present
+  if (options.workspacePath && options.filePath && isAbsolute(options.filePath)) {
+    if (!isPathContained(options.filePath, root)) {
+      throw new Error(`File '${options.filePath}' does not belong to workspace '${root}'.`);
+    }
+  }
+
   setLastKnownProjectRoot(root);
   return root;
 }
 
 export function isWorkspaceInitialized(root: string): boolean {
   try {
+    // SV-03: Pure .septum directory without config or db is uninitialized
     return existsSync(join(root, "septum.config.json")) ||
-           existsSync(join(root, ".septum", "septum.db")) ||
-           existsSync(join(root, ".septum"));
+           existsSync(join(root, ".septum", "septum.db"));
   } catch {
     return false;
   }
@@ -61,7 +79,9 @@ export class WorkspaceManager {
   private closed = false;
   private closing: Promise<void> | null = null;
   private idleTimer: ReturnType<typeof setInterval>;
+  initialRoot?: string;
   lastRoot?: string;
+  get activeRoots(): string[] { return [...this.contexts.keys()]; }
   constructor(private readonly now: () => number = Date.now) {
     this.idleTimer = setInterval(() => { void this.expireIdle().catch(error => console.error(`[Septum Cleanup Warning] ${String(error)}`)); }, 60_000);
     this.idleTimer.unref();
@@ -122,8 +142,8 @@ export class WorkspaceManager {
     await Promise.all(expired.map(entry => this.dispose(entry)));
   }
 
-  runTool<T>(work: () => Promise<T>): Promise<T> {
-    return this.queue.run(() => { if (this.closed) throw new Error("Septum server is shutting down"); return work(); });
+  runTool<T>(work: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+    return this.queue.run(() => { if (this.closed) throw new Error("Septum server is shutting down"); return work(); }, signal);
   }
 
   close(): Promise<void> {

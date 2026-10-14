@@ -71,8 +71,9 @@ export class SeptumTelemetry {
       const logPath = this.getLogPath(workspaceRoot);
       const logDir = dirname(logPath);
 
+      // SV-03: Do not auto-scaffold .septum directory for telemetry if workspace has not been initialized
       if (!existsSync(logDir)) {
-        mkdirSync(logDir, { recursive: true });
+        return;
       }
 
       // Check for rotation if file exceeds 2MB

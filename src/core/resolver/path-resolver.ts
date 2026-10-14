@@ -1,5 +1,5 @@
 import { existsSync, statSync, realpathSync } from "node:fs";
-import { dirname, isAbsolute, join, normalize, resolve } from "node:path";
+import { dirname, isAbsolute, join, normalize, relative, resolve } from "node:path";
 
 export const PROJECT_ROOT_MARKERS = [
   "package.json",
@@ -146,4 +146,55 @@ export function resolveWorkspaceRoot(pathHint?: string): string {
 
   // Fallback if inside app host directory: keep looking in lastKnown or return cwd
   return canonicalizePath(cwd);
+}
+
+/**
+ * Verifies that candidatePath is strictly contained within workspaceRoot.
+ * Resolves symlinks (realpath) if the path exists, and checks ancestor realpath if not yet created.
+ */
+export function isPathContained(candidatePath: string, workspaceRoot: string): boolean {
+  if (!candidatePath || !workspaceRoot) return false;
+  try {
+    const canonicalWorkspace = canonicalizePath(workspaceRoot);
+    const resolvedTarget = isAbsolute(candidatePath) ? normalize(candidatePath) : resolve(canonicalWorkspace, candidatePath);
+
+    // Lexical containment
+    const relLexical = relative(canonicalWorkspace, resolvedTarget).replace(/\\/g, "/");
+    if (relLexical === ".." || relLexical.startsWith("../") || isAbsolute(relLexical)) {
+      return false;
+    }
+
+    // Realpath / symlink containment
+    if (existsSync(resolvedTarget)) {
+      const realTarget = realpathSync(resolvedTarget);
+      const relReal = relative(canonicalWorkspace, realTarget).replace(/\\/g, "/");
+      if (relReal === ".." || relReal.startsWith("../") || isAbsolute(relReal)) {
+        return false;
+      }
+    } else {
+      let cur = dirname(resolvedTarget);
+      while (!existsSync(cur)) {
+        const parent = dirname(cur);
+        if (parent === cur) break;
+        cur = parent;
+      }
+      if (existsSync(cur)) {
+        const realCur = realpathSync(cur);
+        const relCur = relative(canonicalWorkspace, realCur).replace(/\\/g, "/");
+        if (relCur === ".." || relCur.startsWith("../") || isAbsolute(relCur)) {
+          return false;
+        }
+      }
+    }
+
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function assertPathContained(candidatePath: string, workspaceRoot: string, contextDescription = "Path"): void {
+  if (!isPathContained(candidatePath, workspaceRoot)) {
+    throw new Error(`${contextDescription} '${candidatePath}' escapes workspace boundary '${workspaceRoot}'.`);
+  }
 }

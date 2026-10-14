@@ -137,19 +137,23 @@ export class WorkspaceWatcher {
     this.timer = setTimeout(() => { this.timer = null; void this.flush(false).catch(error => this.recordError(error)); }, RESOURCE_LIMITS.debounceMs);
   }
 
-  async flush(forceVerify = true): Promise<void> {
+  async flush(forceVerify = true, signal?: AbortSignal): Promise<void> {
     if (this.closed) return;
+    signal?.throwIfAborted();
     if (this.timer) { clearTimeout(this.timer); this.timer = null; }
     if (this.flushing) {
       await this.flushing;
-      if (forceVerify || this.pending.size || this.reconcile) return this.flush(forceVerify);
+      signal?.throwIfAborted();
+      if (forceVerify || this.pending.size || this.reconcile) return this.flush(forceVerify, signal);
       return;
     }
-    const verify = (forceVerify && this.mode === 'polling') || Date.now() - this.lastVerify >= RESOURCE_LIMITS.verifyMs;
+    // SV-07: forceVerify forces verification in both native and polling modes
+    const verify = forceVerify || this.mode === 'polling' || Date.now() - this.lastVerify >= RESOURCE_LIMITS.verifyMs;
     const poll = this.mode === 'polling';
     if (!poll && !verify && !this.reconcile && !this.pending.size && !this.repo.getMeta('sync_error')) return;
     this.flushing = this.queue.run(async () => {
       await this.ready;
+      signal?.throwIfAborted();
       this.abort.signal.throwIfAborted();
       const config = this.loadConfig();
       if (poll || verify || this.reconcile || this.repo.getMeta('sync_error')) {
@@ -164,6 +168,7 @@ export class WorkspaceWatcher {
         sourceEvents = true;
         const paths = [...this.pending]; this.pending.clear();
         for (const filename of paths) {
+          signal?.throwIfAborted();
           this.abort.signal.throwIfAborted();
           const target = resolve(this.root, filename);
           if (existsSync(target)) await this.pipeline.ingestFile(target, config);
@@ -177,7 +182,7 @@ export class WorkspaceWatcher {
         }
       }
       if (sourceEvents || this.repo.getMeta('slices_dirty') === '1') await this.pipeline.run(config, {signal: this.abort.signal});
-    });
+    }, signal);
     try { await this.flushing; }
     finally { this.flushing = null; }
     // A directory event during sync must not be lost behind the coalesced flush.
