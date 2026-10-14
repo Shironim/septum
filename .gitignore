@@ -67,3 +67,6 @@ report*.txt
 # Septum local database and cache
 .septum/*.db*
 .verity/
+
+# Strata AST cache
+.strata/
