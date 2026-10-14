@@ -20,22 +20,15 @@ description: Framework-agnostic codebase discovery, multi-language AST symbol & 
 
 ---
 
-## 2. Referensi Cepat 12 Tool MCP Septum (Standardized \`snake_case\` Contracts)
+## 2. Referensi Cepat 5 Unified Tools MCP Septum (Standardized \`snake_case\` Contracts)
 
 | Tool MCP | Parameter Utama (\`snake_case\`) | Fungsi & Kapan Digunakan |
 |---|---|---|
-| **\`septum_get_domain_catalog\`** | \`{ domain?, detail_level?: "compact"\\|"full", archetype_filter?, file_filter? }\` | Tanpa \`domain\`: menampilkan *Macro Semantic Map* seluruh proyek. Dengan \`domain\`: menampilkan daftar file, \`connections\` (\`imports_from\`, \`imported_by_count\`), dan simbol di domain tersebut (\`compact\` default < 400 token). |
-| **\`septum_locate_symbol\`** | \`{ query, domain?, limit?: 10 }\` | Mencari lokasi file dan baris (\`line_start\`-\`line_end\`) dari class, fungsi, method (\`Class::method\`), struct, atau konstanta. |
-| **\`septum_get_symbol\`** | \`{ symbol, domain?, include_dependencies?: true }\` | Mengekstrak detail kontrak simbol: signature, \`exact_range\`, \`dependencies_injected\`, \`outbound_calls\`, \`sibling_methods\`, dan \`connected_files\`. |
-| **\`septum_get_symbol_impact\`** | \`{ symbol }\` | Menghitung *blast radius* (\`inbound_callers\`, \`total_dependents\`, \`risk_level\`) termasuk pelacakan *named imports* lintas file sebelum mengubah signature. |
-| **\`septum_trace_vertical_slice\`** | \`{ query, max_depth?: 5 }\` | Menelusuri alur eksekusi end-to-end (\`Ingress ➔ Validation ➔ Controller ➔ Service ➔ Repository ➔ Entity\`). \`max_depth\` default \`5\`, rentang \`1..8\` (gunakan \`6..8\` untuk deep trace Event/Job/Queue). |
-| **\`septum_check_boundary\`** | \`{ file_path?, file_paths?, proposed_imports?, feature_key?, scope?: "file"\\|"all"\\|"staged"\\|"domain", domain? }\` | **Pre-Write:** memvalidasi \`proposed_imports\` pada \`file_path\`. **Macro Audit:** panggil dengan \`{ scope: "all" }\` atau \`{ scope: "staged" }\` untuk mengaudit seluruh batas domain & *circular dependencies*. |
-| **\`septum_get_symbol_hotspots\`** | \`{ domain?, min_lines?: 30, min_nesting?, kind?, limit?: 30, sort_by?: "risk_score" }\` | Mengidentifikasi fungsi/class paling kompleks berdasarkan \`risk_score\` (\`line_count\` $\\times$ \`nesting_depth\`). |
-| **\`septum_get_feature_context\`** | \`{ feature_key? }\` | Mengambil konteks fitur aktif (\`allowed_touchpoints\`, \`reuse_symbols\`, input/output contract). |
-| **\`septum_clear_feature_context\`** | \`{}\` | Melepaskan kunci sesi fitur aktif di \`.septum/session.json\`. |
-| **\`septum_register_domain\`** | \`{ domain, root, description?, allowed_dependencies?, forbidden_dependencies?, archetypes?, ingest_now?: true }\` | Mendaftarkan atau memperbarui bounded-context domain langsung ke SQLite SSOT (\`.septum/septum.db\`). |
-| **\`septum_register_feature\`** | \`{ feature_key, domain, description?, allowed_touchpoints?, reuse_symbols?, input_contract?, output_contract? }\` | Mendaftarkan kontrak fitur baru ke SQLite SSOT dan mengaktifkan sesi *touchpoint lock*. |
-| **\`septum_get_environment_topology\`** | \`{ resolve?, resolveNode?, refresh? }\` | Memetakan 6-layer topologi infrastruktur (\`EDGE\`, \`GATEWAY\`, \`HOST\`, \`RUNTIME\`, \`STORAGE\`, \`TELEMETRY\`) beserta invarian lintas-layer. |
+| **\`septum_domain\`** | \`{ action?: "catalog"\\|"register"\\|"topology", domain?, detail_level?: "compact"\\|"full", archetype_filter?, file_filter?, root?, allowed_dependencies?, forbidden_dependencies?, ingest_now?, resolve?, resolve_node? }\` | Mengelola arsitektur makro, topologi domain, pendaftaran bounded-context, dan plane infrastruktur 6-layer. Default \`action: "catalog"\` (< 400 token). |
+| **\`septum_symbol\`** | \`{ action?: "locate"\\|"inspect"\\|"impact"\\|"hotspots", query?, symbol?, domain?, include_dependencies?: true, min_lines?: 30, min_nesting?, sort_by?: "risk_score", limit?: 10 }\` | Unified Symbol Engine: mencari simbol (\`locate\`), inspeksi detail kontrak & signature (\`inspect\`), hitung blast radius & pemanggil (\`impact\`), atau isolasi fungsi kompleks & SRP smell (\`hotspots\`). |
+| **\`septum_slice\`** | \`{ query, max_depth?: 5 }\` | Menelusuri alur eksekusi end-to-end (\`Ingress ➔ Validation ➔ Controller ➔ Service ➔ Repository ➔ Entity\`). \`max_depth\` default \`5\`, rentang \`1..8\` (gunakan \`6..8\` untuk deep trace Event/Job/Queue). |
+| **\`septum_boundary\`** | \`{ scope?: "file"\\|"all"\\|"staged"\\|"domain", file_path?, file_paths?, proposed_imports?, feature_key?, domain? }\` | Pre-flight boundary check memvalidasi \`proposed_imports\` sebelum menulis file, serta audit repo-wide atau git-staged untuk mencegah pelanggaran batas domain dan *circular dependency*. |
+| **\`septum_feature\`** | \`{ action?: "get"\\|"lock"\\|"release", feature_key?, domain?, allowed_touchpoints?, reuse_symbols?, force? }\` | Mengelola konteks fitur: ambil detail fitur (\`get\`), kunci sesi touchpoint di \`.septum/session.json\` (\`lock\`), atau lepaskan kunci sesi (\`release\`). |
 
 ---
 
@@ -47,8 +40,8 @@ description: Framework-agnostic codebase discovery, multi-language AST symbol & 
 Gunakan alur 4 langkah ini saat merancang domain baru, melakukan *re-mapping* arsitektur, atau mengunci kontrak fitur:
 
 ### Langkah 1: Topological & Connectivity Scan (Maksimal 2 Tool Call)
-1. Panggil \`septum_get_domain_catalog({})\` untuk memeriksa *Telescope View* dan daftar domain yang terdaftar.
-2. Panggil \`septum_get_domain_catalog({ domain: "<target>", detail_level: "compact" })\` untuk memetakan file, simbol yang sudah ada, dan koneksi \`imports_from\` / \`imported_by_count\`.
+1. Panggil \`septum_domain({ action: "catalog" })\` untuk memeriksa *Telescope View* dan daftar domain yang terdaftar.
+2. Panggil \`septum_domain({ action: "catalog", domain: "<target>", detail_level: "compact" })\` untuk memetakan file, simbol yang sudah ada, dan koneksi \`imports_from\` / \`imported_by_count\`.
 
 ### Langkah 2: Perumusan Kontrak Domain & Anti-Duplikasi Simbol
 * **\`domain\` & \`root\`:** Nama domain dan direktori kanonikalnya.
@@ -56,10 +49,10 @@ Gunakan alur 4 langkah ini saat merancang domain baru, melakukan *re-mapping* ar
 * **\`reuse_symbols\`:** Daftar class, service, repository, atau konstanta eksisting yang **wajib digunakan kembali** agar agen tidak membuat kode duplikat.
 
 ### Langkah 3: Registrasi Deterministik ke SQLite SSOT
-1. Gunakan \`septum_register_domain({ domain, root, allowed_dependencies, forbidden_dependencies, ingest_now: true })\` untuk menyimpan batas domain.
-2. Gunakan \`septum_register_feature({ feature_key, domain, allowed_touchpoints, reuse_symbols })\` untuk mengunci fokus pengerjaan fitur.
+1. Gunakan \`septum_domain({ action: "register", domain, root, allowed_dependencies, forbidden_dependencies, ingest_now: true })\` untuk menyimpan batas domain.
+2. Gunakan \`septum_feature({ action: "lock", feature_key, domain, allowed_touchpoints, reuse_symbols })\` untuk mengunci fokus pengerjaan fitur.
 
 ### Langkah 4: Verifikasi Boundary & Siklus Dependensi
-Jalankan \`septum_check_boundary({ scope: "all" })\` (atau CLI \`septum check --staged\`) untuk memastikan 0 pelanggaran batas domain dan 0 *circular dependency*.
+Jalankan \`septum_boundary({ scope: "all" })\` (atau CLI \`septum check --staged\`) untuk memastikan 0 pelanggaran batas domain dan 0 *circular dependency*.
 `;
 

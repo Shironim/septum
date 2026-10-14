@@ -10,7 +10,7 @@ describe("Agentic Scaffolding Templates", () => {
   it("should contain valid frontmatter and content for septum-map skill", () => {
     expect(SEPTUM_MAP_SKILL_TEMPLATE).toContain("name: septum-map");
     expect(SEPTUM_MAP_SKILL_TEMPLATE.toLowerCase()).toContain("framework-agnostic");
-    expect(SEPTUM_MAP_SKILL_TEMPLATE).toContain("septum_get_domain_catalog");
+    expect(SEPTUM_MAP_SKILL_TEMPLATE).toContain("septum_domain");
   });
 
   it("should configure PreToolUse interceptors on write_to_file and replace_file_content", () => {
@@ -21,8 +21,8 @@ describe("Agentic Scaffolding Templates", () => {
   });
 
   it("should provide prescriptive boundary rules for AI agents", () => {
-    expect(SEPTUM_RULES_TEMPLATE).toContain("septum_get_domain_catalog");
-    expect(SEPTUM_RULES_TEMPLATE).toContain("septum_check_boundary");
+    expect(SEPTUM_RULES_TEMPLATE).toContain("septum_domain");
+    expect(SEPTUM_RULES_TEMPLATE).toContain("septum_boundary");
     expect(SEPTUM_RULES_TEMPLATE).toContain("allowed_touchpoints");
   });
 

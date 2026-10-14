@@ -186,7 +186,7 @@ USAGE:
 COMMANDS:
   Catalog & Ingestion:
     init                  Initialize configuration, gitignore, pre-commit hook, and catalog
-                          Flags: -f, --force
+                          Flags: -f, --force (regenerate Septum-owned hooks & harness artifacts; preserves DB, domain policies, and user hooks)
     ingest                Full AST scan and synchronization to SQLite database
     sync                  Incremental fast synchronization of modified files
                           Flags: --json

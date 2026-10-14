@@ -308,15 +308,21 @@ export class TopologyDetector {
 
   /**
    * Discovers project topology and persists domains and macro metadata directly into SQLite SSOT.
+   * If a domain is already registered, its existing root and policy are preserved on repeat init,
+   * while new domains discovered from the codebase are added.
    */
   public static discoverAndPersist(
     repo: SeptumRepository,
-    projectRoot: string = process.cwd()
+    projectRoot: string = process.cwd(),
+    forceResetPolicies: boolean = false
   ): Record<string, DomainConfig> {
     const topology = this.detect(projectRoot);
 
     for (const [name, config] of Object.entries(topology.domains)) {
-      repo.upsertDomain(name, config);
+      const existing = repo.domains.getDomainByName(name);
+      if (!existing || forceResetPolicies) {
+        repo.upsertDomain(name, config);
+      }
     }
 
     // Persist Macro Metadata SSOT
@@ -324,18 +330,30 @@ export class TopologyDetector {
     repo.setMeta("architecture_style", topology.architectureStyle);
     repo.setMeta("framework", topology.framework);
     repo.setMeta("language", topology.language);
+
+    const allRecords = repo.domains.getAllDomains();
     repo.setMeta(
       "macro_summary",
       JSON.stringify({
         projectType: topology.projectType,
         framework: topology.framework,
         architectureStyle: topology.architectureStyle,
-        domainsCount: Object.keys(topology.domains).length,
-        domains: Object.keys(topology.domains),
+        domainsCount: allRecords.length,
+        domains: allRecords.map((r) => r.name),
       })
     );
 
-    return topology.domains;
+    const result: Record<string, DomainConfig> = {};
+    for (const record of allRecords) {
+      result[record.name] = {
+        root: record.root_path,
+        allowed_dependencies: JSON.parse(record.allowed_deps_json || "[]"),
+        forbidden_dependencies: JSON.parse(record.forbidden_deps_json || "[]"),
+        archetypes: JSON.parse(record.archetypes_json || "{}"),
+      };
+    }
+
+    return result;
   }
 
   private static detectMonorepo(projectRoot: string): boolean {

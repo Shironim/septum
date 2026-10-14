@@ -41,6 +41,8 @@ export async function handleCheckCommand(
       if (unsupported.length > 0) {
         throw new Error(`Cannot complete boundary audit: unsupported source files: ${unsupported.join(", ")}`);
       }
+      const skipped = JSON.parse(repo.getMeta("skipped_files") || "[]") as {path: string}[];
+      if (skipped.length) throw new Error(`Cannot complete boundary audit: files exceed resource limits: ${skipped.map(file => file.path).join(", ")}`);
       violations = evaluator.auditCodebase(config);
     }
 

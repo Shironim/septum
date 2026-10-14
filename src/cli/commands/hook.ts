@@ -7,8 +7,14 @@ import { SeptumRepository } from "../../core/database/repository.ts";
 import { ASTParserEngine } from "../../core/parser/tree-sitter.ts";
 import { SessionManager } from "../../core/session/session-manager.ts";
 
+interface ToolCallInfo {
+  name?: string;
+  args?: Record<string, unknown>;
+}
+
 export interface ToolPayload {
   tool_name?: string;
+  toolCall?: ToolCallInfo;
   tool_input?: {
     TargetFile?: string;
     file_path?: string;
@@ -30,14 +36,47 @@ export interface ToolPayload {
   CodeContent?: string;
 }
 
+let configuredExitCode = 1;
+
 export async function handleHookCommand(args: string[]): Promise<void> {
   const subHook = args[1] || "pre-write";
+  if (args.includes("--exit-code-2") || args.includes("--claude") || args.includes("--cursor")) {
+    configuredExitCode = 2;
+  }
 
   if (subHook === "pre-write") {
     await runPreWriteHook();
   } else {
     process.exit(0);
   }
+}
+
+function blockHook(db: SeptumDatabase | null, reason: string): never {
+  if (db) {
+    try {
+      db.close();
+    } catch {
+      // ignore
+    }
+  }
+
+  // Print readable error to stderr for humans and Claude/Cursor/Codex
+  console.error(reason);
+
+  // Print JSON contract to stdout for Antigravity hook engine
+  try {
+    process.stdout.write(
+      JSON.stringify({
+        decision: "deny",
+        reason: reason.trim(),
+      }) + "\n"
+    );
+  } catch {
+    // ignore
+  }
+
+  // Exit code: 1 by default (Unix standard), or 2 if specified for Claude Code / Cursor hooks
+  process.exit(configuredExitCode);
 }
 
 async function runPreWriteHook(): Promise<void> {
@@ -62,7 +101,11 @@ async function runPreWriteHook(): Promise<void> {
   }
 
   const toolInput: Record<string, any> =
-    payload.tool_input || payload.arguments || (payload as Record<string, any>) || {};
+    payload.tool_input ||
+    payload.arguments ||
+    payload.toolCall?.args ||
+    (payload as Record<string, any>) ||
+    {};
   const targetFile: string | undefined =
     toolInput.TargetFile || toolInput.file_path || toolInput.filePath || toolInput.path;
   const chunkContent = Array.isArray(toolInput.ReplacementChunks)
@@ -115,15 +158,14 @@ async function runPreWriteHook(): Promise<void> {
       }
 
       if (!hasConsulted) {
-        console.error(
+        blockHook(
+          db,
           `\n[SEPTUM GATE 3 VIOLATION - Mandatory Consultation Required]\n` +
             `✕ Operation blocked: You are attempting to write to domain '${sourceDomain}' (${targetFile}) ` +
             `without inspecting its authoritative symbol & file-connection catalog first.\n` +
-            `▶ REQUIRED ACTION: Call tool 'septum_get_domain_catalog({ domain: "${sourceDomain}", detail_level: "compact" })' ` +
-            `or 'septum_get_feature_context' before writing code.\n`
+            `▶ REQUIRED ACTION: Call tool 'septum_domain({ action: "catalog", domain: "${sourceDomain}", detail_level: "compact" })' ` +
+            `or 'septum_feature({ action: "get" })' before writing code.\n`
         );
-        db.close();
-        process.exit(1);
       }
     }
 
@@ -145,14 +187,13 @@ async function runPreWriteHook(): Promise<void> {
       );
 
       if (touchpointViolations.length > 0) {
-        console.error(
+        blockHook(
+          db,
           `\n[SEPTUM GATE 1 VIOLATION - Scope Touchpoint Lock]\n` +
             `✕ Operation blocked: File '${targetFile}' is outside the declared allowed_touchpoints for feature '${activeFeatureKey}'.\n` +
             `▶ REASON: ${touchpointViolations[0].message}\n` +
             `▶ REQUIRED ACTION: Only modify files declared in allowed_touchpoints for this feature.\n`
         );
-        db.close();
-        process.exit(1);
       }
     }
 
@@ -176,7 +217,8 @@ async function runPreWriteHook(): Promise<void> {
 
       if (boundaryViolations.length > 0) {
         const v = boundaryViolations[0];
-        console.error(
+        blockHook(
+          db,
           `\n[SEPTUM GATE 2 VIOLATION - Forbidden Cross-Domain Import]\n` +
             `✕ Operation blocked: Proposed code imports forbidden domain '${v.target_domain}' from '${v.source_domain}'.\n` +
             `▶ OFFENDING IMPORT: ${v.imported_target}\n` +
@@ -184,12 +226,17 @@ async function runPreWriteHook(): Promise<void> {
             `▶ MESSAGE: ${v.message}\n` +
             `▶ REQUIRED ACTION: Decouple this dependency. Use an authorized Interface, Event, or Shared Kernel.\n`
         );
-        db.close();
-        process.exit(1);
       }
     }
 
     db.close();
+
+    // If running in Antigravity or standard JSON IPC mode, emit allow decision
+    try {
+      process.stdout.write(JSON.stringify({ decision: "allow" }) + "\n");
+    } catch {
+      // ignore
+    }
     process.exit(0);
   } catch (err) {
     db.close();

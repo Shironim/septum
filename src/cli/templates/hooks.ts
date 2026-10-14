@@ -6,7 +6,7 @@ export const SEPTUM_HOOKS_CONFIG = {
         "hooks": [
           {
             "type": "command",
-            "command": "sh -c 'HOOK=\"$(git rev-parse --show-toplevel 2>/dev/null)/.agents/hooks/septum-pre-write.sh\"; if [ -f \"$HOOK\" ]; then exec \"$HOOK\"; else exit 0; fi'",
+            "command": "sh -c 'ROOT=\"$(git rev-parse --show-toplevel 2>/dev/null || pwd)\"; if [ -f \"$ROOT/.gemini/hooks/septum-pre-write.sh\" ]; then exec \"$ROOT/.gemini/hooks/septum-pre-write.sh\"; elif [ -f \"$ROOT/.agents/hooks/septum-pre-write.sh\" ]; then exec \"$ROOT/.agents/hooks/septum-pre-write.sh\"; else exit 0; fi'",
             "timeout": 10,
           },
         ],
@@ -18,7 +18,7 @@ export const SEPTUM_HOOKS_CONFIG = {
         "hooks": [
           {
             "type": "command",
-            "command": "sh -c 'HOOK=\"$(git rev-parse --show-toplevel 2>/dev/null)/.agents/hooks/septum-post-write.sh\"; if [ -f \"$HOOK\" ]; then exec \"$HOOK\"; else exit 0; fi'",
+            "command": "sh -c 'ROOT=\"$(git rev-parse --show-toplevel 2>/dev/null || pwd)\"; if [ -f \"$ROOT/.gemini/hooks/septum-post-write.sh\" ]; then exec \"$ROOT/.gemini/hooks/septum-post-write.sh\"; elif [ -f \"$ROOT/.agents/hooks/septum-post-write.sh\" ]; then exec \"$ROOT/.agents/hooks/septum-post-write.sh\"; else exit 0; fi'",
             "timeout": 15,
           },
         ],
@@ -38,13 +38,13 @@ fi
 
 # Delegate directly to Septum's active 3-gate hook engine
 if command -v bun >/dev/null 2>&1 && [ -f "$ROOT_DIR/bin/septum.ts" ]; then
-  exec bun run "$ROOT_DIR/bin/septum.ts" hook pre-write
+  exec bun run "$ROOT_DIR/bin/septum.ts" hook pre-write "$@"
 elif command -v septum >/dev/null 2>&1; then
-  exec septum hook pre-write
+  exec septum hook pre-write "$@"
 elif [ -f "$ROOT_DIR/node_modules/.bin/septum" ]; then
-  exec "$ROOT_DIR/node_modules/.bin/septum" hook pre-write
+  exec "$ROOT_DIR/node_modules/.bin/septum" hook pre-write "$@"
 elif command -v bunx >/dev/null 2>&1; then
-  exec bunx septum hook pre-write
+  exec bunx septum hook pre-write "$@"
 fi
 
 exit 0
