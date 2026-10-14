@@ -143,13 +143,7 @@ export function handleGetFeatureContext(
     }
   }
 
-  // Record Active Feature Session Lease (.septum/session.json)
-  SessionManager.saveActiveSession(workspaceRoot, {
-    feature_key: featureKey,
-    domain: featureConfig.domain,
-    touchpoints: featureConfig.allowed_touchpoints ?? [],
-    locked_at: new Date().toISOString(),
-  });
+  // MCP-14: handleGetFeatureContext is strictly read-only and does not mutate session leases
 
   // Deterministically fetch signatures, methods, and properties for reuse_symbols from SQLite
   const reuseSymbolsWithMeta: FeatureContextResponse["reuse_symbols"] = [];

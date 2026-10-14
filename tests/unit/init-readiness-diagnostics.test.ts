@@ -113,17 +113,17 @@ describe("F2-08: Readiness, Hook Status & Enforcement Diagnostics", () => {
       });
 
       // 1. Test in default warn mode: exitCode should NOT be set to 1
-      process.exitCode = undefined;
+      process.exitCode = 0;
       repo.setMeta("settings_json", JSON.stringify({ enforcement: "warn" }));
       db.close();
 
       // In check with strict=false, violations log warnings but do not fail process
       // We test handleCheckCommand with strict=false
       await handleCheckCommand({ staged: false, strict: false });
-      expect(process.exitCode).toBeUndefined();
+      expect(process.exitCode).toBe(0);
 
       // 2. Test in strict mode: exitCode MUST be set to 1 to block commits
-      process.exitCode = undefined;
+      process.exitCode = 0;
       const dbStrict = new SeptumDatabase(dbPath);
       const repoStrict = new SeptumRepository(dbStrict.raw);
       repoStrict.setMeta("settings_json", JSON.stringify({ enforcement: "strict" }));
@@ -140,7 +140,8 @@ describe("F2-08: Readiness, Hook Status & Enforcement Diagnostics", () => {
       // When strict is enabled and violations or unindexed files occur, exitCode is 1
       expect(process.exitCode).toBe(1);
     } finally {
-      process.exitCode = origExitCode;
+      // Bun keeps a previous nonzero value when assigned undefined.
+      process.exitCode = origExitCode ?? 0;
       process.chdir(origCwd);
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }

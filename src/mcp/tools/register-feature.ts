@@ -18,12 +18,34 @@ export async function handleRegisterFeature(
     throw new Error("Missing required arguments: 'feature_key' and 'domain' are required.");
   }
 
+  // MCP-15: Validate domain is registered in DB or config
+  const registeredDomain = repo.getDomainByName(domain);
+  const configDomain = Object.keys(config.domains || {}).find(
+    (d) => d.toLowerCase() === domain.toLowerCase()
+  );
+  if (!registeredDomain && !configDomain) {
+    throw new Error(`Domain '${domain}' is not registered. Cannot lock feature to an unknown domain.`);
+  }
+  const canonicalDomain = registeredDomain?.name || configDomain || domain;
+
   const rawTouchpoints = args.allowed_touchpoints ?? [];
   const allowedTouchpoints = Array.isArray(rawTouchpoints)
     ? rawTouchpoints
     : typeof rawTouchpoints === "string"
     ? [rawTouchpoints]
     : [];
+
+  // MCP-15: Validate supported touchpoint glob patterns (exact, /*, /**)
+  for (const tp of allowedTouchpoints) {
+    const normalized = tp.replace(/\\/g, "/");
+    if (normalized.includes("*")) {
+      if (!normalized.endsWith("/*") && !normalized.endsWith("/**") && normalized !== "*" && normalized !== "**") {
+        throw new Error(
+          `Unsupported touchpoint glob pattern '${tp}'. Septum touchpoints support exact paths, '/*', and '/**'.`
+        );
+      }
+    }
+  }
 
   const rawReuse = args.reuse_symbols;
   const reuseSymbols: string[] = Array.isArray(rawReuse)
@@ -33,7 +55,7 @@ export async function handleRegisterFeature(
     : [];
 
   const featureConfig = {
-    domain,
+    domain: canonicalDomain,
     description: args.description || `Feature: ${featureKey}`,
     allowed_touchpoints: allowedTouchpoints,
     reuse_symbols: reuseSymbols,
@@ -41,31 +63,26 @@ export async function handleRegisterFeature(
     output_contract: args.output_contract || {},
   };
 
-  // Record Active Feature Session Lease (.septum/session.json)
   SessionManager.saveActiveSession(workspaceRoot, {
     feature_key: featureKey,
-    domain,
+    domain: canonicalDomain,
     touchpoints: featureConfig.allowed_touchpoints,
     locked_at: new Date().toISOString(),
-  });
-
-  if (!config.features) {
-    config.features = {};
-  }
-  config.features[featureKey] = featureConfig;
-
-  if (typeof (repo as any)?.upsertFeature === "function") {
-    (repo as any).upsertFeature(featureKey, featureConfig);
-  } else if (typeof repo?.setMeta === "function") {
-    try {
+  }, SessionManager.getOwnerId(), {
+    repo,
+    save: () => {
       const existingRaw = repo.getMeta("features_json");
       const featuresMap = existingRaw ? JSON.parse(existingRaw) : {};
       featuresMap[featureKey] = featureConfig;
       repo.setMeta("features_json", JSON.stringify(featuresMap));
-    } catch {
-      // Ignore meta persistence errors on mock repositories
-    }
+    },
+  });
+
+  // 3. Update in-memory config only after both SQLite and session lease succeeded
+  if (!config.features) {
+    config.features = {};
   }
+  config.features[featureKey] = featureConfig;
 
 
 
@@ -79,7 +96,7 @@ export async function handleRegisterFeature(
             message: `Feature '${featureKey}' successfully registered in SQLite SSOT and session lease established.`,
             feature_key: featureKey,
             feature: featureKey,
-            domain,
+            domain: canonicalDomain,
             touchpoints: featureConfig.allowed_touchpoints,
             reuse_symbols: featureConfig.reuse_symbols,
           },

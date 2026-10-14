@@ -26,14 +26,23 @@ export async function handleRegisterDomain(
   const domainConfig = {
     root: args.root,
     description: args.description || `Domain: ${domainName}`,
-    allowed_dependencies: args.allowed_dependencies || [],
-    forbidden_dependencies: args.forbidden_dependencies || [],
-    archetypes: args.archetypes || {},
+    allowed_dependencies: args.allowed_dependencies,
+    forbidden_dependencies: args.forbidden_dependencies,
+    archetypes: args.archetypes,
   };
 
   const domainId = repo.domains.upsertDomain(domainName, domainConfig);
+  const stored = repo.domains.getDomainByName(domainName);
+  const canonicalName = stored?.name || domainName;
+  const finalConfig = {
+    root: stored?.root_path || domainConfig.root,
+    description: domainConfig.description,
+    allowed_dependencies: stored ? JSON.parse(stored.allowed_deps_json || "[]") : (domainConfig.allowed_dependencies || []),
+    forbidden_dependencies: stored ? JSON.parse(stored.forbidden_deps_json || "[]") : (domainConfig.forbidden_dependencies || []),
+    archetypes: stored ? JSON.parse(stored.archetypes_json || "{}") : (domainConfig.archetypes || {}),
+  };
 
-  config.domains[domainName] = domainConfig;
+  config.domains[canonicalName] = finalConfig;
 
   let ingestionMetrics: IngestionMetrics | null = null;
   if (args.ingest_now) {
@@ -48,13 +57,13 @@ export async function handleRegisterDomain(
         text: JSON.stringify(
           {
             status: "success",
-            message: `Domain '${domainName}' successfully registered in SQLite SSOT.${
+            message: `Domain '${canonicalName}' successfully registered in SQLite SSOT.${
               args.ingest_now ? " Initial ingestion completed." : ""
             }`,
             domain_id: domainId,
-            domain: domainName,
-            name: domainName,
-            config: domainConfig,
+            domain: canonicalName,
+            name: canonicalName,
+            config: finalConfig,
             ...(ingestionMetrics ? { ingestion_metrics: ingestionMetrics } : {}),
           },
           null,

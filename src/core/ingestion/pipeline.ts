@@ -305,7 +305,8 @@ export class IngestionPipeline {
       catch (error) { if (error instanceof SourceFileLimitError) semanticInputChanged = input.hash !== "file_too_large"; else throw error; }
       if (semanticInputChanged) break;
     }
-    if (this.repo.getMeta("semantic_inventory") !== inventoryRevision || semanticInputChanged || filesUpdated > 0 || removedFiles > 0 || this.repo.getMeta("slices_dirty") === "1" || this.repo.getMeta("semantic_revision") !== semanticRevision) {
+    const extractorRevision = "1"; // Bump when extractor or inferred-chain semantics change.
+    if (this.repo.getMeta("semantic_extractor_revision") !== extractorRevision || this.repo.getMeta("semantic_inventory") !== inventoryRevision || semanticInputChanged || filesUpdated > 0 || removedFiles > 0 || this.repo.getMeta("slices_dirty") === "1" || this.repo.getMeta("semantic_revision") !== semanticRevision) {
       const extracted = await collectSourceSkips(projectRoot, async () => {
         const detectedTopology = TopologyDetector.detect(projectRoot);
         const semanticSlices = await SemanticSliceExtractorRegistry.extractAllSlices(projectRoot, detectedTopology.framework);
@@ -317,6 +318,7 @@ export class IngestionPipeline {
         for (const slice of extracted.value) this.repo.upsertVerticalSlice(slice);
         this.repo.setMeta("slices_dirty", "");
         this.repo.setMeta("semantic_revision", semanticRevision);
+        this.repo.setMeta("semantic_extractor_revision", extractorRevision);
         this.repo.setMeta("semantic_inventory", inventoryRevision);
         this.repo.setMeta("semantic_inputs", JSON.stringify(extracted.inputs));
         this.repo.setMeta("semantic_skipped_files", JSON.stringify(extracted.skipped));

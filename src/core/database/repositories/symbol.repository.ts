@@ -1,10 +1,12 @@
 import * as fs from "node:fs";
+import * as path from "node:path";
 import type { Database } from "bun:sqlite";
 import type {
   DomainRecord,
   ExtractedSymbol,
   FileRecord,
   GetSymbolDetailsResponse,
+  FileConnectionsSummary,
   ResolvedOutboundCall,
   SymbolComplexitySmell,
   SymbolKind,
@@ -312,7 +314,7 @@ export class SymbolRepository {
 
   public getSymbolDetails(
     symbolQuery: string,
-    options: { domain?: string; includeDependencies?: boolean } = {}
+    options: { domain?: string; includeDependencies?: boolean; workspaceRoot?: string } = {}
   ): GetSymbolDetailsResponse | null {
     const trimmed = symbolQuery.trim();
     if (!trimmed) return null;
@@ -382,140 +384,149 @@ export class SymbolRepository {
 
     // 2. Dependencies Injected (from signature type-hints and constructor)
     const dependenciesInjected = new Set<string>();
-    const extractTypeHints = (sig: string) => {
-      const paramMatch = sig.match(/\(([^)]*)\)/);
-      if (paramMatch && paramMatch[1]) {
-        const params = paramMatch[1].split(",");
-        const primitiveTypes = new Set([
-          "int", "string", "bool", "boolean", "float", "array", "iterable",
-          "callable", "void", "mixed", "object", "null", "never", "any", "number", "unknown"
-        ]);
-        for (const p of params) {
-          const parts = p.trim().replace(/^\?/, "").split(/\s+/);
-          if (parts.length >= 2) {
-            const rawType = parts[0].replace(/\[\]$/, "").replace(/^[\\$]/, "");
-            if (rawType && !primitiveTypes.has(rawType.toLowerCase()) && !rawType.startsWith("$")) {
-              dependenciesInjected.add(rawType);
+    const outboundCalls = new Set<string>();
+    const resolvedOutboundCalls: ResolvedOutboundCall[] = [];
+    let connectedFiles: FileConnectionsSummary = { imports_from: [], imported_by_count: 0 };
+
+    const shouldIncludeDeps = options.includeDependencies !== false;
+
+    if (shouldIncludeDeps) {
+      const extractTypeHints = (sig: string) => {
+        const paramMatch = sig.match(/\(([^)]*)\)/);
+        if (paramMatch && paramMatch[1]) {
+          const params = paramMatch[1].split(",");
+          const primitiveTypes = new Set([
+            "int", "string", "bool", "boolean", "float", "array", "iterable",
+            "callable", "void", "mixed", "object", "null", "never", "any", "number", "unknown"
+          ]);
+          for (const p of params) {
+            const parts = p.trim().replace(/^\?/, "").split(/\s+/);
+            if (parts.length >= 2) {
+              const rawType = parts[0].replace(/\[\]$/, "").replace(/^[\\$]/, "");
+              if (rawType && !primitiveTypes.has(rawType.toLowerCase()) && !rawType.startsWith("$")) {
+                dependenciesInjected.add(rawType);
+              }
             }
           }
         }
+      };
+
+      extractTypeHints(row.signature);
+
+      // Also check constructor injection if this is a method
+      if (containerName) {
+        const ctor = this.db
+          .query<{ signature: string }, [number, string, string]>(
+            "SELECT signature FROM symbols WHERE file_id = ? AND (name = ? OR name LIKE ?) LIMIT 1"
+          )
+          .get(row.file_id, `${containerName}::__construct`, `%::__construct`);
+        if (ctor) {
+          extractTypeHints(ctor.signature);
+        }
       }
-    };
 
-    extractTypeHints(row.signature);
+      // 3. Outbound Calls (inspected from physical source file lines if accessible)
+      try {
+        const fullPath = options.workspaceRoot
+          ? path.resolve(options.workspaceRoot, row.file_path)
+          : row.file_path;
+        if (fs.existsSync(fullPath)) {
+          const fileContent = fs.readFileSync(fullPath, "utf-8");
+          const lines = fileContent.split(/\r?\n/);
+          const start = Math.max(0, row.line_start - 1);
+          const end = Math.min(lines.length, row.line_end);
+          const rawSlice = lines.slice(start, end).join("\n");
+          const sanitizedSlice = stripCommentsAndStrings(rawSlice);
 
-    // Also check constructor injection if this is a method
-    if (containerName) {
-      const ctor = this.db
-        .query<{ signature: string }, [number, string, string]>(
-          "SELECT signature FROM symbols WHERE file_id = ? AND (name = ? OR name LIKE ?) LIMIT 1"
-        )
-        .get(row.file_id, `${containerName}::__construct`, `%::__construct`);
-      if (ctor) {
-        extractTypeHints(ctor.signature);
-      }
-    }
-
-    // 3. Outbound Calls (inspected from physical source file lines if accessible)
-    const outboundCalls = new Set<string>();
-    try {
-      if (fs.existsSync(row.file_path)) {
-        const fileContent = fs.readFileSync(row.file_path, "utf-8");
-        const lines = fileContent.split(/\r?\n/);
-        const start = Math.max(0, row.line_start - 1);
-        const end = Math.min(lines.length, row.line_end);
-        const rawSlice = lines.slice(start, end).join("\n");
-        const sanitizedSlice = stripCommentsAndStrings(rawSlice);
-
-        // Match Static invocations: ClassName::methodName(
-        const staticCalls = sanitizedSlice.matchAll(/([A-Z][a-zA-Z0-9_]+)::([a-zA-Z0-9_]+)\s*\(/g);
-        for (const m of staticCalls) {
-          if (m[1] !== "self" && m[1] !== "parent" && m[1] !== "static") {
-            outboundCalls.add(`${m[1]}::${m[2]}`);
+          // Match Static invocations: ClassName::methodName(
+          const staticCalls = sanitizedSlice.matchAll(/([A-Z][a-zA-Z0-9_]+)::([a-zA-Z0-9_]+)\s*\(/g);
+          for (const m of staticCalls) {
+            if (m[1] !== "self" && m[1] !== "parent" && m[1] !== "static") {
+              outboundCalls.add(`${m[1]}::${m[2]}`);
+            }
           }
-        }
 
-        // Match PHP property calls: $this->property->method(
-        const propCalls = sanitizedSlice.matchAll(/\$this->([a-zA-Z0-9_]+)->([a-zA-Z0-9_]+)\s*\(/g);
-        for (const m of propCalls) {
-          const propName = m[1];
-          const methodName = m[2];
-          const inferredClass = propName.charAt(0).toUpperCase() + propName.slice(1);
-          outboundCalls.add(`${inferredClass}::${methodName}`);
-        }
-
-        // Match TS/JS property calls: this.property.method(
-        const tsPropCalls = sanitizedSlice.matchAll(/\bthis\.([a-zA-Z0-9_]+)\.([a-zA-Z0-9_]+)\s*\(/g);
-        for (const m of tsPropCalls) {
-          const propName = m[1];
-          const methodName = m[2];
-          if (propName !== "db") {
+          // Match PHP property calls: $this->property->method(
+          const propCalls = sanitizedSlice.matchAll(/\$this->([a-zA-Z0-9_]+)->([a-zA-Z0-9_]+)\s*\(/g);
+          for (const m of propCalls) {
+            const propName = m[1];
+            const methodName = m[2];
             const inferredClass = propName.charAt(0).toUpperCase() + propName.slice(1);
             outboundCalls.add(`${inferredClass}::${methodName}`);
           }
+
+          // Match TS/JS property calls: this.property.method(
+          const tsPropCalls = sanitizedSlice.matchAll(/\bthis\.([a-zA-Z0-9_]+)\.([a-zA-Z0-9_]+)\s*\(/g);
+          for (const m of tsPropCalls) {
+            const propName = m[1];
+            const methodName = m[2];
+            if (propName !== "db") {
+              const inferredClass = propName.charAt(0).toUpperCase() + propName.slice(1);
+              outboundCalls.add(`${inferredClass}::${methodName}`);
+            }
+          }
         }
+      } catch {
+        // Graceful fallback if file not physically accessible
       }
-    } catch {
-      // Graceful fallback if file not physically accessible
-    }
 
-    const depRepo = new DependencyRepository(this.db);
-    const connectedFiles = depRepo.getFileConnections(row.file_path);
+      const depRepo = new DependencyRepository(this.db);
+      connectedFiles = depRepo.getFileConnections(row.file_path);
 
-    // 4. Resolve Outbound Calls to target symbol line ranges
-    const resolvedOutboundCalls: ResolvedOutboundCall[] = [];
-    const lookupStmt = this.db.query<
-      {
-        name: string;
-        line_start: number;
-        line_end: number;
-        line_count: number;
-        file_path: string;
-        domain_name: string;
-      },
-      [string, string, string, string]
-    >(`
-      SELECT 
-        s.name, 
-        s.line_start, 
-        s.line_end, 
-        s.line_count, 
-        f.path AS file_path, 
-        d.name AS domain_name
-      FROM symbols s
-      JOIN files f ON s.file_id = f.id
-      JOIN domains d ON f.domain_id = d.id
-      WHERE (s.name = ? OR s.name LIKE ? OR s.name LIKE ?)
-      ORDER BY CASE WHEN s.name = ? THEN 1 ELSE 2 END, s.line_start ASC
-      LIMIT 1
-    `);
+      // 4. Resolve Outbound Calls to target symbol line ranges
+      const lookupStmt = this.db.query<
+        {
+          name: string;
+          line_start: number;
+          line_end: number;
+          line_count: number;
+          file_path: string;
+          domain_name: string;
+        },
+        [string, string, string, string]
+      >(`
+        SELECT
+          s.name,
+          s.line_start,
+          s.line_end,
+          s.line_count,
+          f.path AS file_path,
+          d.name AS domain_name
+        FROM symbols s
+        JOIN files f ON s.file_id = f.id
+        JOIN domains d ON f.domain_id = d.id
+        WHERE (s.name = ? OR s.name LIKE ? OR s.name LIKE ?)
+        ORDER BY CASE WHEN s.name = ? THEN 1 ELSE 2 END, s.line_start ASC
+        LIMIT 1
+      `);
 
-    for (const call of outboundCalls) {
-      try {
-        const target = lookupStmt.get(call, `%::${call}`, `${call}::%`, call);
-        if (target) {
-          resolvedOutboundCalls.push({
-            symbol: call,
-            target_file: target.file_path,
-            target_range: {
-              start_line: target.line_start,
-              end_line: target.line_end,
-              total_lines: target.line_count,
-            },
-            domain: target.domain_name,
-            is_resolved: true,
-          });
-        } else {
+      for (const call of outboundCalls) {
+        try {
+          const target = lookupStmt.get(call, `%::${call}`, `${call}::%`, call);
+          if (target) {
+            resolvedOutboundCalls.push({
+              symbol: call,
+              target_file: target.file_path,
+              target_range: {
+                start_line: target.line_start,
+                end_line: target.line_end,
+                total_lines: target.line_count,
+              },
+              domain: target.domain_name,
+              is_resolved: true,
+            });
+          } else {
+            resolvedOutboundCalls.push({
+              symbol: call,
+              is_resolved: false,
+            });
+          }
+        } catch {
           resolvedOutboundCalls.push({
             symbol: call,
             is_resolved: false,
           });
         }
-      } catch {
-        resolvedOutboundCalls.push({
-          symbol: call,
-          is_resolved: false,
-        });
       }
     }
 

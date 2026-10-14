@@ -6,7 +6,7 @@ export function handleGetSymbolImpact(
   repo: SeptumRepository,
   _config: ValidatedSeptumConfig,
   args: GetSymbolImpactArgs,
-  _workspaceRoot?: string
+  workspaceRoot?: string
 ) {
   const symbol = (args.symbol || (args as unknown as Record<string, unknown>).query || "").toString().trim();
   if (!symbol) {
@@ -15,7 +15,10 @@ export function handleGetSymbolImpact(
     );
   }
 
-  const impact = repo.getSymbolImpact(symbol);
+  const impact = repo.getSymbolImpact(symbol, {
+    domain: args.domain,
+    workspaceRoot: workspaceRoot || args.workspace_path,
+  });
 
   return {
     content: [

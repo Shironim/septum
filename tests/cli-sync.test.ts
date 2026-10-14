@@ -1,12 +1,24 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
-import { existsSync, rmSync, mkdirSync } from "node:fs";
+import { existsSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { handleSyncCommand } from "../src/cli/commands/sync.ts";
-import { handleInitCommand } from "../src/cli/commands/init.ts";
 
 describe("septum sync command", () => {
-  it("runs sync command without errors against active repository", async () => {
-    // Should execute incremental sync cleanly
-    await expect(handleSyncCommand({ json: true })).resolves.toBeUndefined();
+  const tempFixture = join(import.meta.dir, "temp-sync-fixture");
+
+  beforeEach(() => {
+    rmSync(tempFixture, { recursive: true, force: true });
+    mkdirSync(join(tempFixture, "src"), { recursive: true });
+    mkdirSync(join(tempFixture, ".septum"), { recursive: true });
+    writeFileSync(join(tempFixture, "package.json"), JSON.stringify({ name: "sync-fixture" }));
+    writeFileSync(join(tempFixture, "src", "index.ts"), "export const hello = 'world';\n");
+  });
+
+  afterEach(() => {
+    rmSync(tempFixture, { recursive: true, force: true });
+  });
+
+  it("runs sync command without errors against isolated disposable fixture", async () => {
+    await expect(handleSyncCommand({ json: true, workspaceRoot: tempFixture })).resolves.toBeUndefined();
   });
 });

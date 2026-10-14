@@ -158,10 +158,9 @@ describe("Dynamic Feature Registration & Auto-Derive Fallback", () => {
       expect(data.allowed_touchpoints).toContain("resources/js/Pages/Penjualan/Index.vue");
       expect(data.reuse_symbols.some((s: any) => s.name.includes("PenjualanController"))).toBe(true);
 
-      // Verify active session was leased
+      // Inferred get only retrieves context; activation requires explicit lock.
       const session = SessionManager.getActiveSession(tempDir);
-      expect(session).not.toBeNull();
-      expect(session?.feature_key).toBe("penjualan");
+      expect(session).toBeNull();
     });
 
     it("should return actionable not_found guidance if feature not found and cannot be auto-derived", () => {

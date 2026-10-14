@@ -5,7 +5,7 @@ export const CURRENT_SCHEMA_VERSION = 4;
 export const TABLE_STATEMENTS = [
   `CREATE TABLE IF NOT EXISTS domains (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL UNIQUE,
+    name TEXT NOT NULL UNIQUE COLLATE NOCASE,
     root_path TEXT NOT NULL,
     allowed_deps_json TEXT NOT NULL DEFAULT '[]',
     forbidden_deps_json TEXT NOT NULL DEFAULT '[]',

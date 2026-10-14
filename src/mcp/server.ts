@@ -486,7 +486,13 @@ export async function runMCPServer(): Promise<void> {
     ctx.config = ConfigLoader.load(undefined, ctx.root);
     ctx.evaluator.getResolver().setRepository(ctx.repo);
 
-    const activeSession = SessionManager.getActiveSession(ctx.root);
+    let activeSession = null;
+    let sessionCorruptError: Error | null = null;
+    try {
+      activeSession = SessionManager.getActiveSession(ctx.root);
+    } catch (err: any) {
+      sessionCorruptError = err instanceof Error ? err : new Error(String(err));
+    }
     const sessionPayload = activeSession
       ? { feature_key: activeSession.feature_key, domain: activeSession.domain }
       : null;
@@ -536,6 +542,17 @@ export async function runMCPServer(): Promise<void> {
         }
         return handleSliceTool(ctx.repo, ctx.config, parsed.data, ctx.root);
       } else if (name === "septum_boundary") {
+        if (sessionCorruptError) {
+          return {
+            isError: true,
+            content: [
+              {
+                type: "text",
+                text: `[Septum Session Error] Active feature session in '.septum/session.json' is corrupted or invalid: ${sessionCorruptError.message}. Release it explicitly with 'septum_feature({action: "release", force: true})' before evaluating boundaries.`,
+              },
+            ],
+          };
+        }
         const parsed = BoundaryToolSchema.safeParse(args ?? {});
         if (!parsed.success) {
           return {
@@ -558,6 +575,17 @@ export async function runMCPServer(): Promise<void> {
               {
                 type: "text",
                 text: `[Septum Validation Error] Invalid arguments for ${name}: ${parsed.error.message}`,
+              },
+            ],
+          };
+        }
+        if (sessionCorruptError && (parsed.data.action !== "release" || !parsed.data.force)) {
+          return {
+            isError: true,
+            content: [
+              {
+                type: "text",
+                text: `[Septum Session Error] Active feature session in '.septum/session.json' is corrupted or invalid: ${sessionCorruptError.message}. Release it explicitly with 'septum_feature({action: "release", force: true})'.`,
               },
             ],
           };

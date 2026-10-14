@@ -15,6 +15,7 @@ import { GoExtractor } from "../../src/core/parser/extractors/go.ts";
 import { GetEnvironmentTopologySchema } from "../../src/mcp/schemas.ts";
 import { handleCheckBoundary } from "../../src/mcp/tools/check-boundary.ts";
 import { handleGetFeatureContext } from "../../src/mcp/tools/get-feature-context.ts";
+import { handleRegisterFeature } from "../../src/mcp/tools/register-feature.ts";
 import { IngestionPipeline } from "../../src/core/ingestion/pipeline.ts";
 
 describe("Septum Bugfixes Regression Suite (SP-1 to SP-7)", () => {
@@ -168,6 +169,7 @@ describe("Septum Bugfixes Regression Suite (SP-1 to SP-7)", () => {
         archetypes: {},
       });
 
+      fs.mkdirSync(path.join(tempDir, ".septum"), { recursive: true });
       handleGetDomainCatalog(repo, mockConfig, { domain: "billing" }, tempDir);
 
       const auditFile = path.join(tempDir, ".septum", "catalog_access.json");
@@ -403,6 +405,7 @@ import (
 
   describe("SP-15: CheckBoundary Batch Evaluation Unindexed Warning", () => {
     it("should include unindexed notice in batch mode when domain catalog has 0 domains", async () => {
+      repo.setMeta("sync_state", "complete");
       const evaluator = new BoundaryEvaluator(repo);
       const emptyConfig: ValidatedSeptumConfig = {
         ...mockConfig,
@@ -422,10 +425,19 @@ import (
     });
   });
 
-  describe("SP-16: handleGetFeatureContext Workspace Root Session Lease", () => {
-    it("should save active session inside specified workspaceRoot instead of process.cwd()", () => {
+  describe("SP-16: handleRegisterFeature Workspace Root Session Lease", () => {
+    it("should save active session inside specified workspaceRoot instead of process.cwd()", async () => {
+      repo.upsertDomain("orders", { root: "src/domains/orders" });
       const configWithFeature: ValidatedSeptumConfig = {
         ...mockConfig,
+        domains: {
+          orders: {
+            root: "src/domains/orders",
+            allowed_dependencies: [],
+            forbidden_dependencies: [],
+            archetypes: {},
+          },
+        },
         features: {
           "order-checkout": {
             domain: "orders",
@@ -435,7 +447,12 @@ import (
         },
       };
 
-      handleGetFeatureContext(repo, configWithFeature, { feature: "order-checkout" }, tempDir);
+      await handleRegisterFeature(
+        repo,
+        configWithFeature,
+        { feature_key: "order-checkout", domain: "orders", allowed_touchpoints: ["src/domains/orders/checkout.ts"] },
+        tempDir
+      );
 
       const sessionFile = path.join(tempDir, ".septum", "session.json");
       expect(fs.existsSync(sessionFile)).toBe(true);

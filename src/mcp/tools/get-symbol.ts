@@ -7,7 +7,7 @@ export function handleGetSymbol(
   repo: SeptumRepository,
   _config: ValidatedSeptumConfig,
   args: GetSymbolArgs,
-  _workspaceRoot?: string
+  workspaceRoot?: string
 ) {
   const symbol = (args.symbol || (args as unknown as Record<string, unknown>).query || "").toString().trim();
   if (!symbol) {
@@ -19,6 +19,7 @@ export function handleGetSymbol(
   const details = repo.getSymbolDetails(symbol, {
     domain: args.domain,
     includeDependencies: args.include_dependencies,
+    workspaceRoot: workspaceRoot || args.workspace_path,
   });
 
   if (details) {

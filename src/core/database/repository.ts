@@ -56,8 +56,9 @@ export class SeptumRepository {
     this.environment = new EnvironmentRepository(db);
   }
 
-  public runInTransaction<T>(fn: () => T): T {
-    return this.db.transaction(fn)();
+  public runInTransaction<T>(fn: () => T, immediate = false): T {
+    const transaction = this.db.transaction(fn);
+    return immediate ? transaction.immediate() : transaction();
   }
 
   public checkpoint(): void {
@@ -255,13 +256,16 @@ export class SeptumRepository {
 
   public getSymbolDetails(
     symbolQuery: string,
-    options: { domain?: string; includeDependencies?: boolean } = {}
+    options: { domain?: string; includeDependencies?: boolean; workspaceRoot?: string } = {}
   ): GetSymbolDetailsResponse | null {
     return this.symbols.getSymbolDetails(symbolQuery, options);
   }
 
-  public getSymbolImpact(symbolName: string): GetSymbolImpactResponse {
-    return this.dependencies.getSymbolImpact(symbolName);
+  public getSymbolImpact(
+    symbolName: string,
+    options: { domain?: string; workspaceRoot?: string } = {}
+  ): GetSymbolImpactResponse {
+    return this.dependencies.getSymbolImpact(symbolName, options);
   }
 
   public getFileInboundImpact(filePath: string): {

@@ -3,6 +3,7 @@ import { auditStagedFiles } from "../../core/boundary/staged-auditor.ts";
 import type { BoundaryEvaluator } from "../../core/boundary/evaluator.ts";
 import type { ValidatedSeptumConfig } from "../../core/config/schema.ts";
 import type { SeptumRepository } from "../../core/database/repository.ts";
+import { SessionManager } from "../../core/session/session-manager.ts";
 import type { BoundaryViolation } from "../../types/index.ts";
 import { CheckBoundarySchema, type CheckBoundaryArgs } from "../schemas.ts";
 
@@ -23,7 +24,29 @@ export async function handleCheckBoundary(
   }
   const root = workspaceRoot || args.workspace_path || process.cwd();
   const proposedImports = args.proposed_imports ?? [];
-  const featureKey = args.feature_key;
+
+  const activeSession = SessionManager.getActiveSession(root);
+
+  let effectiveFeatureKey = args.feature_key;
+  if (activeSession) {
+    if (args.feature_key && args.feature_key !== activeSession.feature_key) {
+      throw new Error(
+        `Active feature lock is '${activeSession.feature_key}' (owner: ${activeSession.owner_id}). Cannot check boundaries for different feature '${args.feature_key}' while another feature is locked.`
+      );
+    }
+    effectiveFeatureKey = activeSession.feature_key;
+    if (!config.features) config.features = {};
+    if (!config.features[activeSession.feature_key]) {
+      config.features[activeSession.feature_key] = {
+        domain: activeSession.domain,
+        description: `Active session: ${activeSession.feature_key}`,
+        allowed_touchpoints: activeSession.touchpoints,
+        reuse_symbols: [],
+        input_contract: {},
+        output_contract: {},
+      };
+    }
+  }
 
   const syncState = repo?.getMeta("sync_state");
   const syncError = repo?.getMeta("sync_error");
@@ -78,9 +101,9 @@ export async function handleCheckBoundary(
       args.scope ?? (args.staged ? "staged" : args.domain ? "domain" : "all");
 
     if (effectiveScope === "staged") {
-      const { files: stagedFiles, violations: stagedViolations } = await auditStagedFiles(evaluator, config, root, featureKey, repo);
+      const { files: stagedFiles, violations: stagedViolations } = await auditStagedFiles(evaluator, config, root, effectiveFeatureKey, repo);
 
-      if (stagedFiles.length === 0) {
+      if (stagedFiles.length === 0 && stagedViolations.length === 0) {
         return {
           content: [
             {
@@ -147,6 +170,25 @@ export async function handleCheckBoundary(
     }
 
     // Scope: "all" or "domain"
+    if (args.feature_key) {
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify(
+              {
+                status: "rejected",
+                scope: effectiveScope,
+                message: `Scope '${effectiveScope}' is an architectural audit across domains and does not support feature touchpoint validation ('feature_key'). Feature scopes only apply to 'file', 'batch', or 'staged'.`,
+              },
+              null,
+              2
+            ),
+          },
+        ],
+      };
+    }
+
     let violations = evaluator.auditCodebase(config);
     if (args.domain) {
       const targetDom = args.domain.toLowerCase();
@@ -203,7 +245,7 @@ export async function handleCheckBoundary(
   // Multi-file batch evaluation
   if (filesToCheck.length > 1) {
     const results = filesToCheck.map((filePath) => {
-      const violations = evaluator.evaluate(filePath, proposedImports, featureKey, config);
+      const violations = evaluator.evaluate(filePath, proposedImports, effectiveFeatureKey, config);
       const impact = repo?.getFileInboundImpact(filePath);
       return {
         file: filePath,
@@ -249,7 +291,7 @@ export async function handleCheckBoundary(
 
   // Single file evaluation (backward-compatible output)
   const singleFile = filesToCheck[0];
-  const violations = evaluator.evaluate(singleFile, proposedImports, featureKey, config);
+  const violations = evaluator.evaluate(singleFile, proposedImports, effectiveFeatureKey, config);
   const impact = repo?.getFileInboundImpact(singleFile);
 
   if (violations.length > 0) {

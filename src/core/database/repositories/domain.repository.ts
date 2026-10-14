@@ -21,50 +21,103 @@ export class DomainRepository {
   constructor(private db: Database) {}
 
   public upsertDomain(name: string, config: DomainConfig): number {
-    const normalizedName = name.trim();
-    const existing = this.getDomainByName(normalizedName);
+    return this.db.transaction(() => {
+      const normalizedName = name.trim();
+      let existing = this.getDomainByName(normalizedName);
 
-    // Merge dependencies and archetypes if existing and incoming is empty
-    let allowed = config.allowed_dependencies ?? [];
-    let forbidden = config.forbidden_dependencies ?? [];
-    let archetypes = config.archetypes ?? {};
+      // MCP-13: If duplicates exist with different casing, consolidate into canonical primary row
+      if (existing) {
+        const allMatching = this.db
+          .query<DomainRecord, [string]>("SELECT * FROM domains WHERE LOWER(name) = LOWER(?) ORDER BY id ASC")
+          .all(normalizedName);
+        if (allMatching.length > 1) {
+          const primary = allMatching[0];
+          const fields = [
+            ["allowed_dependencies", "allowed_deps_json"],
+            ["forbidden_dependencies", "forbidden_deps_json"],
+            ["archetypes", "archetypes_json"],
+          ] as const;
+          for (const [field, column] of fields) {
+            if (config[field] !== undefined) continue;
+            const values = allMatching.map(row => {
+              const parsed = JSON.parse(row[column]);
+              return JSON.stringify(Array.isArray(parsed) ? [...parsed].sort() : Object.entries(parsed).sort());
+            });
+            if (new Set(values).size > 1) {
+              throw new Error(`Conflicting legacy domain '${normalizedName}': provide '${field}' explicitly before consolidating case variants.`);
+            }
+          }
+          for (let i = 1; i < allMatching.length; i++) {
+            const duplicate = allMatching[i];
+            this.db.query("UPDATE files SET domain_id = ? WHERE domain_id = ?").run(primary.id, duplicate.id);
+            this.db.query("UPDATE vertical_slices SET domain_id = ? WHERE domain_id = ?").run(primary.id, duplicate.id);
+            this.db.query("DELETE FROM domains WHERE id = ?").run(duplicate.id);
+          }
+          existing = primary;
+        }
+      }
 
-    if (existing) {
-      if (allowed.length === 0 && existing.allowed_deps_json && existing.allowed_deps_json !== "[]") {
+      const targetName = existing ? existing.name : normalizedName;
+
+      // MCP-12: Distinguish absent (undefined -> preserve) from explicit empty ([] -> clear)
+      let allowed: string[];
+      if (config.allowed_dependencies !== undefined) {
+        allowed = config.allowed_dependencies;
+      } else if (existing?.allowed_deps_json) {
         try {
           allowed = JSON.parse(existing.allowed_deps_json);
-        } catch {}
+        } catch {
+          allowed = [];
+        }
+      } else {
+        allowed = [];
       }
-      if (forbidden.length === 0 && existing.forbidden_deps_json && existing.forbidden_deps_json !== "[]") {
+
+      let forbidden: string[];
+      if (config.forbidden_dependencies !== undefined) {
+        forbidden = config.forbidden_dependencies;
+      } else if (existing?.forbidden_deps_json) {
         try {
           forbidden = JSON.parse(existing.forbidden_deps_json);
-        } catch {}
+        } catch {
+          forbidden = [];
+        }
+      } else {
+        forbidden = [];
       }
-      if (Object.keys(archetypes).length === 0 && existing.archetypes_json && existing.archetypes_json !== "{}") {
+
+      let archetypes: Record<string, string>;
+      if (config.archetypes !== undefined) {
+        archetypes = config.archetypes;
+      } else if (existing?.archetypes_json) {
         try {
           archetypes = JSON.parse(existing.archetypes_json);
-        } catch {}
+        } catch {
+          archetypes = {};
+        }
+      } else {
+        archetypes = {};
       }
-    }
 
-    const allowedJson = JSON.stringify(allowed);
-    const forbiddenJson = JSON.stringify(forbidden);
-    const archetypesJson = JSON.stringify(archetypes);
+      const allowedJson = JSON.stringify(allowed);
+      const forbiddenJson = JSON.stringify(forbidden);
+      const archetypesJson = JSON.stringify(archetypes);
 
-    const query = `
-      INSERT INTO domains (name, root_path, allowed_deps_json, forbidden_deps_json, archetypes_json)
-      VALUES (?, ?, ?, ?, ?)
-      ON CONFLICT(name) DO UPDATE SET
-        root_path = excluded.root_path,
-        allowed_deps_json = excluded.allowed_deps_json,
-        forbidden_deps_json = excluded.forbidden_deps_json,
-        archetypes_json = excluded.archetypes_json,
-        updated_at = CURRENT_TIMESTAMP
-    `;
-    this.db.query(query).run(normalizedName, config.root, allowedJson, forbiddenJson, archetypesJson);
+      const query = `
+        INSERT INTO domains (name, root_path, allowed_deps_json, forbidden_deps_json, archetypes_json)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(name) DO UPDATE SET
+          root_path = excluded.root_path,
+          allowed_deps_json = excluded.allowed_deps_json,
+          forbidden_deps_json = excluded.forbidden_deps_json,
+          archetypes_json = excluded.archetypes_json,
+          updated_at = CURRENT_TIMESTAMP
+      `;
+      this.db.query(query).run(targetName, config.root, allowedJson, forbiddenJson, archetypesJson);
 
-    const record = this.getDomainByName(normalizedName);
-    return record?.id ?? 0;
+      const record = this.getDomainByName(targetName);
+      return record?.id ?? 0;
+    }).immediate();
   }
 
   public getDomainByName(name: string): DomainRecord | null {

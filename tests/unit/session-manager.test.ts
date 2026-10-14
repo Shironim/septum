@@ -72,27 +72,20 @@ describe("Active Feature Session Manager", () => {
     expect(SessionManager.getActiveSession(testDir)).toBeNull();
   });
 
-  it("handleGetFeatureContext automatically sets session lease and clear releases it", () => {
-    // Override cwd temporarily for the test
-    const originalCwd = process.cwd;
-    process.cwd = () => testDir;
+  it("feature get preserves another owner's active lease and release protects ownership", () => {
+    SessionManager.saveActiveSession(testDir, { feature_key: "other", domain: "auth", touchpoints: [], locked_at: "unchanged" }, "other-owner");
+    const before = SessionManager.getActiveSession(testDir);
+    const res = handleGetFeatureContext(repo, mockConfig, { feature_key: "login_flow" }, testDir);
+    const payload = JSON.parse(res.content[0].text);
+    expect(payload.feature_key).toBe("login_flow");
+    expect(payload.feature).toBe("login_flow");
 
-    try {
-      const res = handleGetFeatureContext(repo, mockConfig, { feature_key: "login_flow" });
-      const payload = JSON.parse(res.content[0].text);
-      expect(payload.feature_key).toBe("login_flow");
-      expect(payload.feature).toBe("login_flow");
+    const session = SessionManager.getActiveSession(testDir);
+    expect(session).toEqual(before);
+    expect(() => handleClearFeatureContext(testDir)).toThrow(/owner/);
 
-      const session = SessionManager.getActiveSession(testDir);
-      expect(session).not.toBeNull();
-      expect(session?.feature_key).toBe("login_flow");
-      expect(session?.touchpoints).toContain("src/auth/LoginController.ts");
-
-      const cleared = handleClearFeatureContext(testDir);
-      expect(cleared).toBe(true);
-      expect(SessionManager.getActiveSession(testDir)).toBeNull();
-    } finally {
-      process.cwd = originalCwd;
-    }
+    const cleared = handleClearFeatureContext(testDir, true);
+    expect(cleared).toBe(true);
+    expect(SessionManager.getActiveSession(testDir)).toBeNull();
   });
 });

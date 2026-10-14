@@ -118,6 +118,7 @@ describe("Multi-Root Workspace Resolution & WorkspaceRoot Propagation", () => {
   it("handleCheckBoundary passes through without crashing when workspaceRoot is supplied", async () => {
     const resolver = new ModuleResolver(tempWorkspace1, repo);
     const evaluator = new BoundaryEvaluator(repo, resolver);
+    repo.setMeta("sync_state", "complete");
 
     const result = await handleCheckBoundary(
       evaluator,

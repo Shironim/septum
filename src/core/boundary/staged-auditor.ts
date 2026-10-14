@@ -46,5 +46,5 @@ export async function auditStagedFiles(
   const staged = new Set([...files, ...deleted]);
   const baseline = (repo?.getAllDependenciesWithDomains() || []).filter(dependency => !staged.has(dependency.source_file));
   violations.push(...evaluator.detectCircularDependencies(config, [...baseline, ...stagedDependencies], staged));
-  return { files, violations };
+  return { files: Array.from(staged), violations };
 }

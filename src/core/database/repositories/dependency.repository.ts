@@ -1,5 +1,5 @@
 import * as fs from "node:fs";
-import { dirname, join, posix } from "node:path";
+import { dirname, join, posix, resolve } from "node:path";
 import type { Database } from "bun:sqlite";
 import type {
   ExtractedDependency,
@@ -249,7 +249,10 @@ export class DependencyRepository {
     );
   }
 
-  public getSymbolImpact(symbolQuery: string): GetSymbolImpactResponse {
+  public getSymbolImpact(
+    symbolQuery: string,
+    options: { domain?: string; workspaceRoot?: string } = {}
+  ): GetSymbolImpactResponse {
     const trimmed = symbolQuery.trim();
     if (!trimmed) {
       return {
@@ -277,15 +280,75 @@ export class DependencyRepository {
       targetMethod = parts[1];
     }
 
-    // 1. Look up target symbol in symbols joined with files to find its defining file_path & stem
-    const targetSymRows = this.db
-      .query<{ name: string; file_path: string }, [string, string, string, string]>(
-        `SELECT s.name, f.path AS file_path
-         FROM symbols s
-         JOIN files f ON s.file_id = f.id
-         WHERE s.name = ? OR s.name = ? OR s.name LIKE ? OR s.name LIKE ?`
-      )
-      .all(trimmed, targetContainer, `${targetContainer}::%`, `%::${targetContainer}`);
+    // 1. Look up target symbol in symbols joined with files and optionally domains
+    let targetSymRows: Array<{ name: string; file_path: string }>;
+    if (targetMethod) {
+      let methodSql = `
+        SELECT s.name, s.signature, f.path AS file_path
+        FROM symbols s
+        JOIN files f ON s.file_id = f.id
+      `;
+      const methodParams: any[] = [];
+      if (options.domain) {
+        methodSql += ` JOIN domains dom ON f.domain_id = dom.id WHERE LOWER(dom.name) = LOWER(?) AND `;
+        methodParams.push(options.domain);
+      } else {
+        methodSql += ` WHERE `;
+      }
+      methodSql += ` (s.name = ? OR s.name = ? OR (s.name = ? AND s.kind = 'method')) `;
+      methodParams.push(trimmed, `${targetContainer}::${targetMethod}`, targetMethod);
+      targetSymRows = this.db.query<{ name: string; signature: string; file_path: string }, any[]>(methodSql).all(...methodParams)
+        .filter(row => {
+          if (row.name !== targetMethod) return true;
+          // Go indexes bare method names; the receiver in its signature proves identity.
+          const receiver = row.signature.match(/^func\s*\(\s*(?:[A-Za-z_]\w*\s+)?\*?([A-Za-z_]\w*)(?:\[[^\]]+\])?\s*\)/);
+          return receiver?.[1] === targetContainer;
+        });
+
+      if (targetSymRows.length === 0) {
+        return {
+          target_symbol: trimmed,
+          found_in_index: false,
+          warning: `Symbol '${trimmed}' was not found in Septum index${options.domain ? ` for domain '${options.domain}'` : ""}. Method does not exist.`,
+          impact_summary: {
+            total_dependents: 0,
+            risk_level: "unknown",
+            affected_files_count: 0,
+          },
+          inbound_callers: [],
+        };
+      }
+    } else {
+      let containerSql = `
+        SELECT s.name, f.path AS file_path
+        FROM symbols s
+        JOIN files f ON s.file_id = f.id
+      `;
+      const containerParams: any[] = [];
+      if (options.domain) {
+        containerSql += ` JOIN domains dom ON f.domain_id = dom.id WHERE LOWER(dom.name) = LOWER(?) AND `;
+        containerParams.push(options.domain);
+      } else {
+        containerSql += ` WHERE `;
+      }
+      containerSql += ` (s.name = ? OR s.name = ? OR s.name LIKE ? OR s.name LIKE ?) `;
+      containerParams.push(trimmed, targetContainer, `${targetContainer}::%`, `%::${targetContainer}`);
+      targetSymRows = this.db.query<{ name: string; file_path: string }, any[]>(containerSql).all(...containerParams);
+
+      if (targetSymRows.length === 0) {
+        return {
+          target_symbol: trimmed,
+          found_in_index: false,
+          warning: `Symbol '${trimmed}' was not found in Septum index${options.domain ? ` for domain '${options.domain}'` : ""}.`,
+          impact_summary: {
+            total_dependents: 0,
+            risk_level: "unknown",
+            affected_files_count: 0,
+          },
+          inbound_callers: [],
+        };
+      }
+    }
 
     const definingFiles = new Set<string>(
       targetSymRows.map((r) => r.file_path.replace(/\\/g, "/"))
@@ -415,8 +478,9 @@ export class DependencyRepository {
     if (targetMethod) {
       for (const filePath of uniqueCallerFiles) {
         try {
-          if (fs.existsSync(filePath)) {
-            const content = fs.readFileSync(filePath, "utf-8");
+          const fullPath = options.workspaceRoot ? resolve(options.workspaceRoot, filePath) : filePath;
+          if (fs.existsSync(fullPath)) {
+            const content = fs.readFileSync(fullPath, "utf-8");
             const lines = content.split(/\r?\n/);
             for (let i = 0; i < lines.length; i++) {
               const line = lines[i];

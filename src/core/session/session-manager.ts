@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
+import type { SeptumRepository } from "../database/repository.ts";
 import type { ActiveFeatureSession } from "../../types/index.ts";
 import { SeptumDatabase } from "../database/client.ts";
 
@@ -11,7 +12,8 @@ export class SessionManager {
     return process.env.SEPTUM_SESSION_ID || `process:${process.pid}`;
   }
 
-  private static mutate<T>(workspaceRoot: string, fn: () => T): T {
+  private static mutate<T>(workspaceRoot: string, fn: () => T, repo?: SeptumRepository): T {
+    if (repo) return repo.runInTransaction(fn, true);
     const db = new SeptumDatabase(join(workspaceRoot, ".septum/septum.db"));
     try {
       // Serialize ownership checks with writes across CLI and MCP processes.
@@ -24,7 +26,8 @@ export class SessionManager {
   public static saveActiveSession(
     workspaceRoot: string,
     session: ActiveFeatureSession,
-    ownerId: string = SessionManager.getOwnerId()
+    ownerId: string = SessionManager.getOwnerId(),
+    persistence?: { repo: SeptumRepository; save: () => void }
   ): void {
     SessionManager.mutate(workspaceRoot, () => {
       const current = SessionManager.getActiveSession(workspaceRoot);
@@ -37,18 +40,28 @@ export class SessionManager {
       const temporaryPath = `${sessionPath}.${randomUUID()}.tmp`;
       try {
         writeFileSync(temporaryPath, JSON.stringify({ ...session, owner_id: ownerId }, null, 2), "utf-8");
+        // Metadata and ownership use one write lock; a failed rename rolls back SQLite.
+        persistence?.save();
         renameSync(temporaryPath, sessionPath);
       } finally {
         rmSync(temporaryPath, { force: true });
       }
-    });
+    }, persistence?.repo);
   }
 
   public static getActiveSession(workspaceRoot: string): ActiveFeatureSession | null {
     const sessionPath = join(workspaceRoot, SessionManager.SESSION_FILE);
     if (!existsSync(sessionPath)) return null;
-    const parsed = JSON.parse(readFileSync(sessionPath, "utf-8")) as ActiveFeatureSession;
-    if (parsed && typeof parsed.feature_key === "string" && typeof parsed.domain === "string" && Array.isArray(parsed.touchpoints)) return parsed;
+    let parsed: any;
+    try {
+      parsed = JSON.parse(readFileSync(sessionPath, "utf-8")) as ActiveFeatureSession;
+    } catch (e: any) {
+      throw new Error(`Corrupted active feature session JSON in '${sessionPath}': ${e.message}. Release it explicitly with 'septum feature clear --force' or 'septum_feature({action: "release", force: true})'.`);
+    }
+    if (parsed && typeof parsed.feature_key === "string" && parsed.feature_key.trim() &&
+        typeof parsed.domain === "string" && parsed.domain.trim() &&
+        Array.isArray(parsed.touchpoints) && parsed.touchpoints.every((tp: unknown) => typeof tp === "string") &&
+        (parsed.owner_id === undefined || typeof parsed.owner_id === "string")) return parsed;
     throw new Error(`Invalid active feature session in '${sessionPath}'. Release it explicitly with 'septum feature clear --force'.`);
   }
 
@@ -65,7 +78,7 @@ export class SessionManager {
         const current = SessionManager.getActiveSession(workspaceRoot);
         if (current?.owner_id !== ownerId) throw new Error("Only the active session owner can release it. Use 'septum feature clear --force' for explicit recovery.");
       }
-      rmSync(sessionPath);
+      rmSync(sessionPath, { force: true });
       return true;
     });
   }

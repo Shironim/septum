@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
-import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { SeptumTelemetry } from "../src/core/telemetry/telemetry.ts";
 
@@ -9,6 +9,7 @@ describe("SeptumTelemetry Engine", () => {
 
   beforeEach(() => {
     rmSync(testDir, { recursive: true, force: true });
+    mkdirSync(join(testDir, ".septum"), { recursive: true });
   });
 
   afterEach(() => {

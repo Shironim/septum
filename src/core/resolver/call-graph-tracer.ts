@@ -415,7 +415,7 @@ export class CallGraphTracer {
           fileSymbols[0];
 
         const symbolDisplay = mainSymbol
-          ? `${mainSymbol.name}${mainSymbol.kind === "class" ? "::execute" : ""}`
+          ? mainSymbol.name
           : resolvedFile.path.split("/").pop()?.replace(/\.[^.]+$/, "") || "Module";
 
         // Prevent adding duplicate stages if already present, or add as refinement
@@ -429,7 +429,7 @@ export class CallGraphTracer {
             symbol: symbolDisplay,
             file: resolvedFile.path,
             line: mainSymbol?.line_start || 1,
-            description: `${stage.toUpperCase()}: ${symbolDisplay}`,
+            description: `${stage.toUpperCase()} (dependency): ${symbolDisplay}`,
           });
         }
 

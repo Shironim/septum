@@ -1,6 +1,7 @@
 import { readOptionalSourceFile } from "../../resources/source-files.ts";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { blankCommentsAndStrings } from "../boundary-tracker.ts";
 import type { SemanticSliceExtractor, VerticalSliceCandidate } from "./semantic-extractor.interface.ts";
 
 export class McpCliSemanticExtractor implements SemanticSliceExtractor {
@@ -48,8 +49,10 @@ export class McpCliSemanticExtractor implements SemanticSliceExtractor {
           const content = readOptionalSourceFile(fullPath, "utf-8");
           const baseName = path.basename(file, path.extname(file));
           const snakeBase = baseName.replace(/-/g, "_");
-          const toolIdentifier =
-            registeredTools.get(snakeBase) || `${toolPrefix}_${snakeBase}`;
+
+          // MCP-07: Only create ingress slices for whitelisted public MCP tools
+          const toolIdentifier = registeredTools.get(snakeBase) || registeredTools.get(`${toolPrefix}_${snakeBase}`);
+          if (!toolIdentifier) continue;
 
           // Detect handler function (both sync and async) and its 1-indexed line number
           const handlerMatch = /export\s+(?:async\s+)?function\s+([a-zA-Z0-9_]+)/.exec(content);
@@ -259,16 +262,52 @@ export class McpCliSemanticExtractor implements SemanticSliceExtractor {
 
     try {
       const content = readOptionalSourceFile(serverPath, "utf-8");
-      const nameRegex = /name:\s*['"]([a-zA-Z0-9_-]+)['"]/g;
-      let match: RegExpExecArray | null;
-      while ((match = nameRegex.exec(content)) !== null) {
-        const fullToolName = match[1];
-        const normalized = fullToolName.replace(/-/g, "_");
-        map.set(normalized, fullToolName);
-        const withoutPrefix = normalized.replace(/^[a-z0-9]+_/, "");
-        if (withoutPrefix) {
-          map.set(withoutPrefix, fullToolName);
+      const masked = blankCommentsAndStrings(content);
+      const scan = (start: number, namesInArray: boolean) => {
+        let depth = 0;
+        const names: string[] = [];
+        const property = /\b([A-Za-z_]\w*)\s*:\s*(['"])?/y;
+        for (let i = start; i < masked.length; i++) {
+          const ch = masked[i];
+          if ("[{(".includes(ch)) depth++;
+          else if ("]})".includes(ch)) {
+            if (--depth === 0) break;
+          }
+          if (depth !== (namesInArray ? 2 : 1) || (i > 0 && /\w/.test(masked[i - 1]))) continue;
+          property.lastIndex = i;
+          const match = property.exec(masked);
+          if (!match) continue;
+          if (!namesInArray) names.push(match[1]);
+          else if (match[1] === "name" && match[2]) {
+            const quoteStart = i + match[0].lastIndexOf(match[2]);
+            const quoteEnd = masked.indexOf(match[2], quoteStart + 1);
+            const name = content.slice(quoteStart + 1, quoteEnd);
+            if (/^[A-Za-z0-9_-]+$/.test(name)) names.push(name);
+          }
         }
+        // Unbalanced declarations are not evidence of public registration.
+        if (depth !== 0) return;
+        for (const fullToolName of names) {
+          const normalized = fullToolName.replace(/-/g, "_");
+          map.set(normalized, fullToolName);
+          const withoutPrefix = normalized.replace(/^[a-z0-9]+_/, "");
+          if (withoutPrefix) map.set(withoutPrefix, fullToolName);
+        }
+      };
+      const listCall = /setRequestHandler\s*\(\s*ListToolsRequestSchema\b/.exec(masked);
+      if (listCall) {
+        const callStart = masked.indexOf("(", listCall.index);
+        let depth = 1;
+        let end = callStart + 1;
+        for (; end < masked.length && depth; end++) {
+          if (masked[end] === "(") depth++;
+          else if (masked[end] === ")") depth--;
+        }
+        const tools = /\btools\s*:\s*\[/.exec(masked.slice(callStart, end));
+        if (tools && depth === 0) scan(callStart + tools.index + tools[0].length - 1, true);
+      } else {
+        const schemas = /\bTOOL_SCHEMAS\s*=\s*\{/.exec(masked);
+        if (schemas) scan(schemas.index + schemas[0].length - 1, false);
       }
     } catch {}
     return map;

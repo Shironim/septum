@@ -388,6 +388,7 @@ export const GetSymbolImpactSchema = z.preprocess(
   z.object({
     symbol: z.string().min(1, "symbol is required"),
     query: z.string().optional(),
+    domain: z.string().optional(),
     workspace_path: z.string().optional(),
   })
 );

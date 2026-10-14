@@ -18,8 +18,8 @@ export class EnvironmentDetector {
   ): EnvironmentTopology {
     // 1. Fetch any previously verified layers and nodes from SQLite SSOT
     const savedLayers: Partial<Record<EnvironmentLayer, EnvironmentLayerInfo>> =
-      repo && !forceRefresh ? repo.environment.getAllLayers() : {};
-    const savedNodes = repo && !forceRefresh ? repo.environment.getAllNodes() : [];
+      repo ? repo.environment.getAllLayers() : {};
+    const savedNodes = repo ? repo.environment.getAllNodes() : [];
     const savedNodeMap = new Map(savedNodes.map((n) => [n.id, n]));
 
     // 2. Perform root file-based heuristic inspection for each of the 6 layers
@@ -31,19 +31,28 @@ export class EnvironmentDetector {
     const detectedTelemetry = this.inspectTelemetryLayer(workspaceRoot);
 
     // 3. Merge layers: Database verified layers take precedence
-    const layers: Record<EnvironmentLayer, EnvironmentLayerInfo> = {
-      edge: savedLayers.edge?.status === "VERIFIED" ? savedLayers.edge : detectedEdge,
-      gateway: savedLayers.gateway?.status === "VERIFIED" ? savedLayers.gateway : detectedGateway,
-      host: savedLayers.host?.status === "VERIFIED" ? savedLayers.host : detectedHost,
-      runtime: savedLayers.runtime?.status === "VERIFIED" ? savedLayers.runtime : detectedRuntime,
-      storage: savedLayers.storage?.status === "VERIFIED" ? savedLayers.storage : detectedStorage,
-      telemetry: savedLayers.telemetry?.status === "VERIFIED" ? savedLayers.telemetry : detectedTelemetry,
+    const resolveLayer = (layerKey: EnvironmentLayer, detected: EnvironmentLayerInfo): EnvironmentLayerInfo => {
+      const saved = savedLayers[layerKey];
+      if (saved && saved.status === "VERIFIED") {
+        return saved;
+      }
+      return detected;
     };
 
-    // 4. Save layers to SQLite if not already stored
+    const layers: Record<EnvironmentLayer, EnvironmentLayerInfo> = {
+      edge: resolveLayer("edge", detectedEdge),
+      gateway: resolveLayer("gateway", detectedGateway),
+      host: resolveLayer("host", detectedHost),
+      runtime: resolveLayer("runtime", detectedRuntime),
+      storage: resolveLayer("storage", detectedStorage),
+      telemetry: resolveLayer("telemetry", detectedTelemetry),
+    };
+
+    // 4. Save layers to SQLite if not already stored (refresh only non-VERIFIED layers)
     if (repo) {
       for (const layerKey of Object.keys(layers) as EnvironmentLayer[]) {
-        if (!savedLayers[layerKey] || forceRefresh) {
+        const saved = savedLayers[layerKey];
+        if (!saved || (forceRefresh && saved.status !== "VERIFIED")) {
           repo.environment.saveLayer(layers[layerKey]);
         }
       }
@@ -231,7 +240,8 @@ export class EnvironmentDetector {
     // 7. Save detected nodes to SQLite SSOT
     if (repo) {
       for (const node of finalNodes) {
-        if (!savedNodeMap.has(node.id) || forceRefresh) {
+        const saved = savedNodeMap.get(node.id);
+        if (!saved || (forceRefresh && saved.status !== "VERIFIED")) {
           repo.environment.saveNode(node);
         }
       }

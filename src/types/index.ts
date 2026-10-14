@@ -358,6 +358,7 @@ export interface GetSymbolDetailsResponse {
 }
 
 export interface GetSymbolImpactArgs {
+  domain?: string;
   symbol: string;
   query?: string;
   workspace_path?: string;

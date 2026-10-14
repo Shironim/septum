@@ -42,6 +42,7 @@ export async function handleSymbolTool(
         {
           symbol,
           query: symbol,
+          domain: args.domain,
         },
         workspaceRoot
       );
