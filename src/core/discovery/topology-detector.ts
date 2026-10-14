@@ -126,28 +126,62 @@ export class TopologyDetector {
     if (isMonorepo) {
       architectureStyle = "monorepo-workspaces";
       const workspaceDirs = ["apps", "packages", "modules"];
-      const appDomains: string[] = [];
-      const packageDomains: string[] = [];
+      interface WorkspaceCandidate {
+        parent: string;
+        sub: string;
+        relRoot: string;
+      }
+      const candidates: WorkspaceCandidate[] = [];
 
       for (const parent of workspaceDirs) {
         const fullParent = path.join(projectRoot, parent);
         if (fs.existsSync(fullParent) && fs.statSync(fullParent).isDirectory()) {
           const subs = this.getSubdirectories(fullParent);
           for (const sub of subs) {
-            const relRoot = path.join(parent, sub);
-            const domainName = sub.toLowerCase();
-            if (parent === "apps") appDomains.push(domainName);
-            else packageDomains.push(domainName);
-
-            domains[domainName] = {
-              root: relRoot,
-              description: `Monorepo ${parent} package: ${sub}`,
-              allowed_dependencies: parent === "apps" ? packageDomains : [],
-              forbidden_dependencies: parent !== "apps" ? appDomains : [],
-              archetypes: this.inferDefaultArchetypes(path.join(projectRoot, relRoot)),
-            };
+            candidates.push({ parent, sub, relRoot: path.join(parent, sub) });
           }
         }
+      }
+
+      // Detect collisions across workspace subdirectories
+      const nameCounts = new Map<string, number>();
+      for (const c of candidates) {
+        const lower = c.sub.toLowerCase();
+        nameCounts.set(lower, (nameCounts.get(lower) || 0) + 1);
+      }
+
+      const appDomains: string[] = [];
+      const packageDomains: string[] = [];
+      const items: Array<{ domainName: string; parent: string; sub: string; relRoot: string }> = [];
+
+      for (const c of candidates) {
+        const lower = c.sub.toLowerCase();
+        let domainName = (nameCounts.get(lower) || 0) > 1
+          ? `${c.parent}-${lower}`
+          : lower;
+
+        let uniqueName = domainName;
+        let counter = 2;
+        while (items.some((it) => it.domainName === uniqueName)) {
+          uniqueName = `${domainName}-${counter++}`;
+        }
+
+        if (c.parent === "apps") {
+          appDomains.push(uniqueName);
+        } else {
+          packageDomains.push(uniqueName);
+        }
+        items.push({ domainName: uniqueName, parent: c.parent, sub: c.sub, relRoot: c.relRoot });
+      }
+
+      for (const item of items) {
+        domains[item.domainName] = {
+          root: item.relRoot,
+          description: `Monorepo ${item.parent} package: ${item.sub}`,
+          allowed_dependencies: item.parent === "apps" ? packageDomains : [],
+          forbidden_dependencies: item.parent !== "apps" ? appDomains : [],
+          archetypes: this.inferDefaultArchetypes(path.join(projectRoot, item.relRoot)),
+        };
       }
     }
 

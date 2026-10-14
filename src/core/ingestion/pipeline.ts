@@ -1,8 +1,9 @@
 import { shouldIgnoreSourcePath } from "../resources/ignore.ts";
 import { RESOURCE_LIMITS } from "../resources/limits.ts";
 import { readSourceFile, SourceFileLimitError, collectSourceSkips, type SkippedSourceFile, type SourceReadFingerprint } from "../resources/source-files.ts";
-import { existsSync, readdirSync, readFileSync, statSync, lstatSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync, lstatSync, realpathSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { isPathContained, resolveWorkspaceRoot } from "../resolver/path-resolver.ts";
 import type { ParsedFileAST } from "../../types/index.ts";
 import type { ValidatedSeptumConfig } from "../config/schema.ts";
 import type { SeptumRepository } from "../database/repository.ts";
@@ -64,7 +65,7 @@ export class IngestionPipeline {
     let removedFiles = 0;
 
     let domainNames = Object.keys(config.domains);
-    const projectRoot = this.customWorkspaceRoot || process.cwd();
+    const projectRoot = this.customWorkspaceRoot || resolveWorkspaceRoot();
 
     // Auto-discovery mode if no domains explicitly declared in config
     if (domainNames.length === 0) {
@@ -90,13 +91,26 @@ export class IngestionPipeline {
       const domainCfg = config.domains[domainName];
       const domainId = this.repo.upsertDomain(domainName, domainCfg);
       const workspaceRoot = this.resolveWorkspaceRoot(config, domainCfg.root);
+      // SV-02: Enforce workspace containment during ingestion (reject traversal/symlink escape)
+      if (!isPathContained(domainCfg.root, workspaceRoot)) {
+        throw new Error(`Domain root '${domainCfg.root}' for domain '${domainName}' escapes workspace boundary '${workspaceRoot}'.`);
+      }
       const absDomainRoot = resolve(workspaceRoot, domainCfg.root);
 
-      if (!existsSync(absDomainRoot)) {
-        removedFiles += this.repo.getAllFiles().filter(file => file.domain_id === domainId).length;
-        this.repo.files.deleteFilesNotInPaths(domainId, []);
-        if (removedFiles) this.repo.setMeta("slices_dirty", "1");
-        continue;
+      try {
+        const rootStat = statSync(absDomainRoot);
+        if (!rootStat.isDirectory()) {
+          throw new Error(`Domain root '${domainCfg.root}' is not a directory.`);
+        }
+      } catch (err: any) {
+        if (err?.code === "ENOENT") {
+          removedFiles += this.repo.getAllFiles().filter(file => file.domain_id === domainId).length;
+          this.repo.files.deleteFilesNotInPaths(domainId, []);
+          if (removedFiles) this.repo.setMeta("slices_dirty", "1");
+          continue;
+        }
+        // SV-01: Permission or I/O failure (EACCES, EPERM, EIO). Do NOT prune, propagate error!
+        throw new Error(`Failed to access domain root '${domainCfg.root}' for domain '${domainName}': ${err.message || err}`);
       }
 
       const childDomainRoots = domainNames
@@ -111,7 +125,8 @@ export class IngestionPipeline {
         absDomainRoot,
         workspaceRoot,
         config.settings.ignore_patterns,
-        childDomainRoots
+        childDomainRoots,
+        options.signal
       );
       const activeRelPaths = new Set<string>();
 
@@ -270,7 +285,7 @@ export class IngestionPipeline {
       .map(file => { const target = join(projectRoot, file); return existsSync(target) ? readSourceFile(target) : ""; });
     const semanticRevision = computeContentHash(JSON.stringify([config.domains, topologyInputs]));
     // Membership covers newly added semantic files outside registered domains.
-    const inventory = this.collectFiles(projectRoot, projectRoot, config.settings.ignore_patterns).map(({fullPath, relPath}) => {
+    const inventory = this.collectFiles(projectRoot, projectRoot, config.settings.ignore_patterns, [], options.signal).map(({fullPath, relPath}) => {
       const stat = statSync(fullPath);
       const fingerprint = `${stat.size}:${stat.mtimeMs}`;
       return `${relPath}:${fingerprint}`;
@@ -311,6 +326,15 @@ export class IngestionPipeline {
     skippedFiles.push(...JSON.parse(this.repo.getMeta("semantic_skipped_files") || "[]"));
     const durationMs = Math.round(performance.now() - startTime);
 
+    // Identify uncovered eligible source files outside registered domains
+    const indexedPaths = new Set(this.repo.getAllFiles().map((file) => file.path));
+    const allWorkspaceFiles = this.collectFiles(projectRoot, projectRoot, config.settings.ignore_patterns, [], options.signal);
+    const unsupportedSet = new Set(unsupportedFiles);
+    const skippedSet = new Set(skippedFiles.map((file) => file.path));
+    const uncoveredFiles = allWorkspaceFiles
+      .map((file) => file.relPath)
+      .filter((rel) => !indexedPaths.has(rel) && !unsupportedSet.has(rel) && !skippedSet.has(rel));
+
     // Update SSOT repo_meta watermark
     this.repo.runInTransaction(() => {
       this.repo.setMeta("last_sync", new Date().toISOString());
@@ -321,6 +345,7 @@ export class IngestionPipeline {
       this.repo.setMeta("dependencies_indexed", String(dependenciesIndexed));
       this.repo.setMeta("unsupported_files", JSON.stringify(unsupportedFiles));
       this.repo.setMeta("skipped_files", JSON.stringify([...new Map(skippedFiles.map(file => [file.path, file])).values()]));
+      this.repo.setMeta("uncovered_files", JSON.stringify(uncoveredFiles));
     });
 
     this.repo.checkpoint();
@@ -513,19 +538,39 @@ export class IngestionPipeline {
     dir: string,
     workspaceRoot: string,
     ignorePatterns: string[],
-    childDomainRoots: string[] = []
+    childDomainRoots: string[] = [],
+    signal?: AbortSignal
   ): Array<{ fullPath: string; relPath: string }> {
     const results: Array<{ fullPath: string; relPath: string }> = [];
 
+    // SV-02: Check if initial dir itself is an escaping symlink
+    try {
+      const dirLstat = lstatSync(dir);
+      if (dirLstat.isSymbolicLink()) {
+        const real = realpathSync(dir);
+        if (!isPathContained(real, workspaceRoot)) {
+          throw new Error(`Directory '${dir}' is a symlink escaping workspace boundary '${workspaceRoot}'.`);
+        }
+      }
+    } catch (err: any) {
+      if (err?.code !== "ENOENT") throw err;
+    }
+
     const walk = (currentDir: string) => {
+      signal?.throwIfAborted();
       let entries: string[] = [];
       try {
         entries = readdirSync(currentDir);
-      } catch {
-        return;
+      } catch (err: any) {
+        // SV-01: Do not swallow permission/IO errors; propagate so pipeline reports incomplete/error
+        if (err?.code === "ENOENT") {
+          return;
+        }
+        throw new Error(`Failed to read directory '${currentDir}': ${err.message || err}`);
       }
 
       for (const entry of entries) {
+        signal?.throwIfAborted();
         const fullPath = join(currentDir, entry);
         const relPath = relative(workspaceRoot, fullPath).replace(/\\/g, "/");
 
@@ -539,13 +584,34 @@ export class IngestionPipeline {
 
         try {
           const stat = lstatSync(fullPath);
+          if (stat.isSymbolicLink()) {
+            try {
+              const real = realpathSync(fullPath);
+              if (!isPathContained(real, workspaceRoot)) {
+                continue;
+              }
+              const targetStat = statSync(real);
+              if (targetStat.isDirectory()) {
+                continue;
+              } else if (targetStat.isFile() && this.isSourceFile(real)) {
+                results.push({ fullPath, relPath });
+              }
+            } catch {
+              continue;
+            }
+            continue;
+          }
+
           if (stat.isDirectory()) {
             walk(fullPath);
           } else if (stat.isFile() && this.isSourceFile(fullPath)) {
             results.push({ fullPath, relPath });
           }
-        } catch {
-          // ignore unreadable files
+        } catch (err: any) {
+          if (err?.code === "ENOENT") {
+            continue;
+          }
+          throw new Error(`Failed to stat path '${fullPath}': ${err.message || err}`);
         }
       }
     };
@@ -565,12 +631,12 @@ export class IngestionPipeline {
     if (config.settings.db_path && config.settings.db_path !== ":memory:") {
       const dbDir = dirname(resolve(config.settings.db_path));
       const candidate = basename(dbDir) === ".septum" ? dirname(dbDir) : dbDir;
-      const absDomainRoot = resolve(domainRoot);
+      const absDomainRoot = isAbsolute(domainRoot) ? domainRoot : resolve(candidate, domainRoot);
       if (absDomainRoot.startsWith(candidate)) {
         return candidate;
       }
     }
-    return process.cwd();
+    return resolveWorkspaceRoot();
   }
 
 
@@ -610,7 +676,7 @@ export class IngestionPipeline {
     const mtimeMs = stat.mtimeMs;
     const sizeBytes = stat.size;
 
-    const projectRoot = this.customWorkspaceRoot || process.cwd();
+    const projectRoot = this.customWorkspaceRoot || resolveWorkspaceRoot();
     const relPath = relative(projectRoot, fullPath).replace(/\\/g, "/");
 
     if (shouldIgnoreSourcePath(relPath, config.settings.ignore_patterns ?? [])) {

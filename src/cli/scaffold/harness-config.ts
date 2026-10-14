@@ -131,7 +131,12 @@ function writeJsonFile(filePath: string, data: unknown): void {
   fs.writeFileSync(filePath, JSON.stringify(data, null, 2) + "\n", "utf-8");
 }
 
-export function configureHarness(harnessId: string, cwd: string, force: boolean = false): string | null {
+export function configureHarness(
+  harnessId: string,
+  cwd: string = process.cwd(),
+  force: boolean = false,
+  outErrors?: string[]
+): string | null {
   switch (harnessId) {
     case "claude": {
       const configured: string[] = [];
@@ -141,6 +146,7 @@ export function configureHarness(harnessId: string, cwd: string, force: boolean 
       const mcpResult = readJsonConfigFile(configPath);
       if (mcpResult.status === "malformed") {
         console.error(`  ✕ Error: Malformed JSON in '.mcp.json': ${mcpResult.error}. Preserving existing file without modification.`);
+        if (outErrors) outErrors.push(`Malformed JSON in '.mcp.json': ${mcpResult.error}`);
       } else {
         const existing = mcpResult.status === "valid" ? mcpResult.data : {};
         const servers = (typeof existing.mcpServers === "object" && existing.mcpServers !== null && !Array.isArray(existing.mcpServers))
@@ -163,6 +169,7 @@ export function configureHarness(harnessId: string, cwd: string, force: boolean 
       const claudeResult = readJsonConfigFile(claudeSettingsPath);
       if (claudeResult.status === "malformed") {
         console.error(`  ✕ Error: Malformed JSON in '.claude/settings.json': ${claudeResult.error}. Preserving existing file without modification.`);
+        if (outErrors) outErrors.push(`Malformed JSON in '.claude/settings.json': ${claudeResult.error}`);
       } else {
         const claudeSettings = claudeResult.status === "valid" ? claudeResult.data : {};
         const claudeHooks = (typeof claudeSettings.hooks === "object" && claudeSettings.hooks !== null && !Array.isArray(claudeSettings.hooks))
@@ -170,9 +177,12 @@ export function configureHarness(harnessId: string, cwd: string, force: boolean 
           : {};
         const preToolHooks = Array.isArray(claudeHooks.PreToolUse) ? claudeHooks.PreToolUse : [];
 
-        const hasSeptumHook = preToolHooks.some((h: any) =>
-          JSON.stringify(h).includes("septum-pre-write")
-        );
+        const hasSeptumHook = preToolHooks.some((h: any) => {
+          if (Array.isArray(h?.hooks)) {
+            return h.hooks.some((hk: any) => typeof hk?.command === "string" && hk.command.includes("septum-pre-write"));
+          }
+          return typeof h?.command === "string" && h.command.includes("septum-pre-write");
+        });
         const canonicalHook = {
           matcher: "Write|Edit|NotebookEdit",
           hooks: [
@@ -190,11 +200,23 @@ export function configureHarness(harnessId: string, cwd: string, force: boolean 
           writeJsonFile(claudeSettingsPath, claudeSettings);
           console.log("  ✓ Configured Claude Code lifecycle boundary guard: '.claude/settings.json'.");
         } else if (force) {
-          const nonSeptumHooks = preToolHooks.filter((h: any) =>
-            !JSON.stringify(h).includes("septum-pre-write")
-          );
-          nonSeptumHooks.push(canonicalHook);
-          claudeHooks.PreToolUse = nonSeptumHooks;
+          const cleanedHooks: any[] = [];
+          for (const h of preToolHooks) {
+            if (Array.isArray(h?.hooks)) {
+              const userHooks = h.hooks.filter((hk: any) =>
+                !(typeof hk?.command === "string" && hk.command.includes("septum-pre-write"))
+              );
+              if (userHooks.length > 0) {
+                cleanedHooks.push({ ...h, hooks: userHooks });
+              }
+            } else if (typeof h?.command === "string" && h.command.includes("septum-pre-write")) {
+              // Dedicated single command hook, omit
+            } else if (!JSON.stringify(h).includes("septum-pre-write")) {
+              cleanedHooks.push(h);
+            }
+          }
+          cleanedHooks.push(canonicalHook);
+          claudeHooks.PreToolUse = cleanedHooks;
           claudeSettings.hooks = claudeHooks;
           writeJsonFile(claudeSettingsPath, claudeSettings);
           console.log("  ✓ Force-regenerated Claude Code lifecycle boundary guard: '.claude/settings.json' (--force).");
@@ -213,6 +235,7 @@ export function configureHarness(harnessId: string, cwd: string, force: boolean 
       const mcpResult = readJsonConfigFile(configPath);
       if (mcpResult.status === "malformed") {
         console.error(`  ✕ Error: Malformed JSON in '.cursor/mcp.json': ${mcpResult.error}. Preserving existing file without modification.`);
+        if (outErrors) outErrors.push(`Malformed JSON in '.cursor/mcp.json': ${mcpResult.error}`);
       } else {
         const existing = mcpResult.status === "valid" ? mcpResult.data : {};
         const servers = (typeof existing.mcpServers === "object" && existing.mcpServers !== null && !Array.isArray(existing.mcpServers))
@@ -235,6 +258,7 @@ export function configureHarness(harnessId: string, cwd: string, force: boolean 
       const hooksResult = readJsonConfigFile(cursorHooksPath);
       if (hooksResult.status === "malformed") {
         console.error(`  ✕ Error: Malformed JSON in '.cursor/hooks.json': ${hooksResult.error}. Preserving existing file without modification.`);
+        if (outErrors) outErrors.push(`Malformed JSON in '.cursor/hooks.json': ${hooksResult.error}`);
       } else {
         const cursorHooksConfig = hooksResult.status === "valid" ? hooksResult.data : { version: 1, hooks: {} };
         cursorHooksConfig.version = cursorHooksConfig.version || 1;
@@ -243,9 +267,12 @@ export function configureHarness(harnessId: string, cwd: string, force: boolean 
           : {};
         const preToolUse = Array.isArray(cursorHooksConfig.hooks.preToolUse) ? cursorHooksConfig.hooks.preToolUse : [];
 
-        const hasSeptumHook = preToolUse.some((h: any) =>
-          JSON.stringify(h).includes("septum-pre-write")
-        );
+        const hasSeptumHook = preToolUse.some((h: any) => {
+          if (Array.isArray(h?.hooks)) {
+            return h.hooks.some((hk: any) => typeof hk?.command === "string" && hk.command.includes("septum-pre-write"));
+          }
+          return typeof h?.command === "string" && h.command.includes("septum-pre-write");
+        });
         const canonicalHook = {
           matcher: "Write|Edit",
           command:
@@ -258,11 +285,21 @@ export function configureHarness(harnessId: string, cwd: string, force: boolean 
           writeJsonFile(cursorHooksPath, cursorHooksConfig);
           console.log("  ✓ Configured Cursor IDE lifecycle boundary guard: '.cursor/hooks.json'.");
         } else if (force) {
-          const nonSeptumHooks = preToolUse.filter((h: any) =>
-            !JSON.stringify(h).includes("septum-pre-write")
-          );
-          nonSeptumHooks.push(canonicalHook);
-          cursorHooksConfig.hooks.preToolUse = nonSeptumHooks;
+          const cleanedHooks: any[] = [];
+          for (const h of preToolUse) {
+            if (Array.isArray(h?.hooks)) {
+              const remaining = h.hooks.filter((hk: any) =>
+                !(typeof hk?.command === "string" && hk.command.includes("septum-pre-write"))
+              );
+              if (remaining.length > 0) cleanedHooks.push({ ...h, hooks: remaining });
+            } else if (typeof h?.command === "string" && h.command.includes("septum-pre-write")) {
+              // Dedicated single command hook, omit
+            } else if (!JSON.stringify(h).includes("septum-pre-write")) {
+              cleanedHooks.push(h);
+            }
+          }
+          cleanedHooks.push(canonicalHook);
+          cursorHooksConfig.hooks.preToolUse = cleanedHooks;
           writeJsonFile(cursorHooksPath, cursorHooksConfig);
           console.log("  ✓ Force-regenerated Cursor IDE lifecycle boundary guard: '.cursor/hooks.json' (--force).");
         }
@@ -277,6 +314,7 @@ export function configureHarness(harnessId: string, cwd: string, force: boolean 
       const result = readJsonConfigFile(configPath);
       if (result.status === "malformed") {
         console.error(`  ✕ Error: Malformed JSON in 'opencode.json': ${result.error}. Preserving existing file without modification.`);
+        if (outErrors) outErrors.push(`Malformed JSON in 'opencode.json': ${result.error}`);
         return null;
       }
       const existing = result.status === "valid" ? result.data : {};
@@ -312,6 +350,7 @@ export function configureHarness(harnessId: string, cwd: string, force: boolean 
       const hooksResult = readJsonConfigFile(codexHooksPath);
       if (hooksResult.status === "malformed") {
         console.error(`  ✕ Error: Malformed JSON in '.codex/hooks.json': ${hooksResult.error}. Preserving existing file without modification.`);
+        if (outErrors) outErrors.push(`Malformed JSON in '.codex/hooks.json': ${hooksResult.error}`);
       } else {
         const codexHooksConfig = hooksResult.status === "valid" ? hooksResult.data : { hooks: {} };
         codexHooksConfig.hooks = (typeof codexHooksConfig.hooks === "object" && codexHooksConfig.hooks !== null && !Array.isArray(codexHooksConfig.hooks))
@@ -319,9 +358,12 @@ export function configureHarness(harnessId: string, cwd: string, force: boolean 
           : {};
         const preToolUse = Array.isArray(codexHooksConfig.hooks.PreToolUse) ? codexHooksConfig.hooks.PreToolUse : [];
 
-        const hasSeptumHook = preToolUse.some((h: any) =>
-          JSON.stringify(h).includes("septum-pre-write")
-        );
+        const hasSeptumHook = preToolUse.some((h: any) => {
+          if (Array.isArray(h?.hooks)) {
+            return h.hooks.some((hk: any) => typeof hk?.command === "string" && hk.command.includes("septum-pre-write"));
+          }
+          return typeof h?.command === "string" && h.command.includes("septum-pre-write");
+        });
         const canonicalHook = {
           matcher: "Write|Edit|Bash",
           hooks: [
@@ -338,11 +380,21 @@ export function configureHarness(harnessId: string, cwd: string, force: boolean 
           writeJsonFile(codexHooksPath, codexHooksConfig);
           console.log("  ✓ Configured Codex CLI lifecycle boundary guard: '.codex/hooks.json'.");
         } else if (force) {
-          const nonSeptumHooks = preToolUse.filter((h: any) =>
-            !JSON.stringify(h).includes("septum-pre-write")
-          );
-          nonSeptumHooks.push(canonicalHook);
-          codexHooksConfig.hooks.PreToolUse = nonSeptumHooks;
+          const cleanedHooks: any[] = [];
+          for (const h of preToolUse) {
+            if (Array.isArray(h?.hooks)) {
+              const remaining = h.hooks.filter((hk: any) =>
+                !(typeof hk?.command === "string" && hk.command.includes("septum-pre-write"))
+              );
+              if (remaining.length > 0) cleanedHooks.push({ ...h, hooks: remaining });
+            } else if (typeof h?.command === "string" && h.command.includes("septum-pre-write")) {
+              // Dedicated single command hook, omit
+            } else if (!JSON.stringify(h).includes("septum-pre-write")) {
+              cleanedHooks.push(h);
+            }
+          }
+          cleanedHooks.push(canonicalHook);
+          codexHooksConfig.hooks.PreToolUse = cleanedHooks;
           writeJsonFile(codexHooksPath, codexHooksConfig);
           console.log("  ✓ Force-regenerated Codex CLI lifecycle boundary guard: '.codex/hooks.json' (--force).");
         }
@@ -357,6 +409,7 @@ export function configureHarness(harnessId: string, cwd: string, force: boolean 
       const result = readJsonConfigFile(configPath);
       if (result.status === "malformed") {
         console.error(`  ✕ Error: Malformed JSON in '.pi/mcp.json': ${result.error}. Preserving existing file without modification.`);
+        if (outErrors) outErrors.push(`Malformed JSON in '.pi/mcp.json': ${result.error}`);
         return null;
       }
       const existing = result.status === "valid" ? result.data : {};
@@ -379,6 +432,7 @@ export function configureHarness(harnessId: string, cwd: string, force: boolean 
       const yamlResult = readYamlConfigFile(configPath);
       if (yamlResult.status === "malformed") {
         console.error(`  ✕ Error: Malformed YAML in '.goose/config.yaml': ${yamlResult.error}. Preserving existing file without modification.`);
+        if (outErrors) outErrors.push(`Malformed YAML in '.goose/config.yaml': ${yamlResult.error}`);
         return null;
       }
       const dir = path.dirname(configPath);
@@ -407,7 +461,7 @@ export function configureHarness(harnessId: string, cwd: string, force: boolean 
 
     case "antigravity": {
       // Antigravity artifacts placed strictly in .gemini/
-      scaffoldAgentCustomizations(cwd, force);
+      scaffoldAgentCustomizations(cwd, force, outErrors);
 
       const geminiDir = path.join(cwd, ".gemini");
       if (!fs.existsSync(geminiDir)) {
@@ -417,6 +471,7 @@ export function configureHarness(harnessId: string, cwd: string, force: boolean 
       const result = readJsonConfigFile(mcpConfigPath);
       if (result.status === "malformed") {
         console.error(`  ✕ Error: Malformed JSON in '.gemini/mcp_config.json': ${result.error}. Preserving existing file without modification.`);
+        if (outErrors) outErrors.push(`Malformed JSON in '.gemini/mcp_config.json': ${result.error}`);
       } else {
         const existing = result.status === "valid" ? result.data : {};
         const servers = (typeof existing.mcpServers === "object" && existing.mcpServers !== null && !Array.isArray(existing.mcpServers))
@@ -455,12 +510,19 @@ export function appendTomlMcpServer(
   const formattedArgs = JSON.stringify(args);
   const block = `\n${tableHeader}\ncommand = "${command}"\nargs = ${formattedArgs}\n`;
 
-  const activeTableHeaderRegex = new RegExp(`^[ \\t]*\\[mcp_servers\\.${serverName}\\][ \\t]*(?:#.*)?$`, "m");
+  const mcpServersKeyPattern = `(?:"mcp_servers"|'mcp_servers'|mcp_servers)`;
+  const serverKeyPattern = `(?:"${serverName}"|'${serverName}'|${serverName})`;
+  const activeTableHeaderRegex = new RegExp(
+    `^[ \\t]*\\[[ \\t]*${mcpServersKeyPattern}[ \\t]*\\.[ \\t]*${serverKeyPattern}[ \\t]*\\][ \\t]*(?:#.*)?$`,
+    "m"
+  );
   const hasActiveTable = activeTableHeaderRegex.test(existingContent);
 
   if (hasActiveTable) {
     if (force) {
-      const sectionRegex = new RegExp(`(?:^|\\n)[ \\t]*\\[mcp_servers\\.${serverName}\\][ \\t]*(?:#.*)?\\r?\\n[\\s\\S]*?(?=\\r?\\n[ \\t]*\\[|$)`);
+      const sectionRegex = new RegExp(
+        `(?:^|\\n)[ \\t]*\\[[ \\t]*${mcpServersKeyPattern}[ \\t]*\\.[ \\t]*${serverKeyPattern}[ \\t]*\\][ \\t]*(?:#.*)?\\r?\\n[\\s\\S]*?(?=\\r?\\n[ \\t]*\\[|$)`
+      );
       if (sectionRegex.test(existingContent)) {
         const updated = existingContent.replace(
           sectionRegex,
@@ -486,29 +548,35 @@ export function ensureSharedHookScripts(cwd: string, force: boolean = false): { 
   const preWriteHook = path.join(hooksDir, "septum-pre-write.sh");
   if (!fs.existsSync(preWriteHook) || force) {
     fs.writeFileSync(preWriteHook, SEPTUM_PRE_WRITE_SCRIPT, "utf-8");
-    try {
+  }
+  try {
+    const stat = fs.statSync(preWriteHook);
+    if ((stat.mode & 0o111) === 0 || force) {
       fs.chmodSync(preWriteHook, 0o755);
-    } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : String(err);
-      console.warn(`  Notice: Could not set executable permission on '${preWriteHook}': ${message}`);
     }
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.warn(`  Notice: Could not set executable permission on '${preWriteHook}': ${message}`);
   }
 
   const postWriteHook = path.join(hooksDir, "septum-post-write.sh");
   if (!fs.existsSync(postWriteHook) || force) {
     fs.writeFileSync(postWriteHook, SEPTUM_POST_WRITE_SCRIPT, "utf-8");
-    try {
+  }
+  try {
+    const stat = fs.statSync(postWriteHook);
+    if ((stat.mode & 0o111) === 0 || force) {
       fs.chmodSync(postWriteHook, 0o755);
-    } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : String(err);
-      console.warn(`  Notice: Could not set executable permission on '${postWriteHook}': ${message}`);
     }
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.warn(`  Notice: Could not set executable permission on '${postWriteHook}': ${message}`);
   }
 
   return { preWrite: preWriteHook, postWrite: postWriteHook };
 }
 
-export function scaffoldAgentCustomizations(cwd: string, force: boolean = false): void {
+export function scaffoldAgentCustomizations(cwd: string, force: boolean = false, outErrors?: string[]): void {
   const geminiDir = path.join(cwd, ".gemini");
 
   // 1. Skill: .gemini/skills/septum-map/SKILL.md
@@ -562,13 +630,66 @@ export function scaffoldAgentCustomizations(cwd: string, force: boolean = false)
   const hooksResult = readJsonConfigFile(hooksJsonPath);
   if (hooksResult.status === "malformed") {
     console.error(`  ✕ Error: Malformed JSON in '.gemini/hooks.json': ${hooksResult.error}. Preserving existing file without modification.`);
+    if (outErrors) outErrors.push(`Malformed JSON in '.gemini/hooks.json': ${hooksResult.error}`);
     return;
   }
 
   const existingHooks = hooksResult.status === "valid" ? hooksResult.data : {};
-  const mergedHooks = force
-    ? { ...existingHooks, ...SEPTUM_HOOKS_CONFIG }
-    : { ...SEPTUM_HOOKS_CONFIG, ...existingHooks };
+  const mergedHooks: Record<string, any> = { ...existingHooks };
+
+  for (const [namespace, events] of Object.entries(SEPTUM_HOOKS_CONFIG)) {
+    if (!mergedHooks[namespace] || typeof mergedHooks[namespace] !== "object") {
+      mergedHooks[namespace] = { ...events };
+      continue;
+    }
+
+    const targetNs = { ...mergedHooks[namespace] };
+    const hasAnyHookArray = Array.isArray(targetNs.PreToolUse) || Array.isArray(targetNs.PostToolUse);
+
+    if (!force && !hasAnyHookArray && targetNs.user_override) {
+      // Explicit user override without hook arrays: preserve as-is
+      continue;
+    }
+
+    for (const [eventName, templateEntries] of Object.entries(events as Record<string, any[]>)) {
+      const existingEntries = Array.isArray(targetNs[eventName]) ? [...targetNs[eventName]] : [];
+      const isSeptumCommand = (cmd: unknown) =>
+        typeof cmd === "string" && (cmd.includes("septum-pre-write") || cmd.includes("septum-post-write"));
+
+      if (!force) {
+        // Normal mode: add template entry if not already present, preserving all existing user entries
+        const hasManagedHook = existingEntries.some((entry: any) => {
+          if (Array.isArray(entry?.hooks)) {
+            return entry.hooks.some((h: any) => isSeptumCommand(h?.command));
+          }
+          return isSeptumCommand(entry?.command);
+        });
+        if (!hasManagedHook) {
+          existingEntries.push(...templateEntries);
+        }
+      } else {
+        // Force mode: strip only Septum hook commands, preserve user commands/entries, then add canonical
+        const cleanedEntries: any[] = [];
+        for (const entry of existingEntries) {
+          if (Array.isArray(entry?.hooks)) {
+            const userHooks = entry.hooks.filter((h: any) => !isSeptumCommand(h?.command));
+            if (userHooks.length > 0) {
+              cleanedEntries.push({ ...entry, hooks: userHooks });
+            }
+          } else if (isSeptumCommand(entry?.command)) {
+            // Dedicated entry, omit
+          } else if (!JSON.stringify(entry).includes("septum-pre-write") && !JSON.stringify(entry).includes("septum-post-write")) {
+            cleanedEntries.push(entry);
+          }
+        }
+        cleanedEntries.push(...templateEntries);
+        targetNs[eventName] = cleanedEntries;
+        continue;
+      }
+      targetNs[eventName] = existingEntries;
+    }
+    mergedHooks[namespace] = targetNs;
+  }
 
   fs.writeFileSync(hooksJsonPath, JSON.stringify(mergedHooks, null, 2) + "\n", "utf-8");
   console.log("  ✓ Configured AI Agent lifecycle hooks: '.gemini/hooks.json'.");
