@@ -41,4 +41,12 @@ export class SeptumDatabase {
   public transaction<T>(fn: () => T): T {
     return this.db.transaction(fn)();
   }
+
+  public checkpoint(): void {
+    try {
+      this.db.run("PRAGMA wal_checkpoint(PASSIVE);");
+    } catch {
+      // Ignore if locked or busy
+    }
+  }
 }

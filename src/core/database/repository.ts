@@ -60,6 +60,14 @@ export class SeptumRepository {
     return this.db.transaction(fn)();
   }
 
+  public checkpoint(): void {
+    try {
+      this.db.run("PRAGMA wal_checkpoint(PASSIVE);");
+    } catch {
+      // Ignore if locked or busy
+    }
+  }
+
   // --- Domain Methods ---
   public upsertDomain(name: string, config: DomainConfig): number {
     return this.domains.upsertDomain(name, config);
