@@ -946,7 +946,7 @@ export const SymbolToolSchema = z.preprocess(
     symbol: z.string().optional(),
     domain: z.string().optional(),
     include_dependencies: z.boolean().optional().default(true),
-    limit: z.number().int().positive().optional().default(10),
+    limit: z.number().int().positive().optional(),
     min_lines: z.number().int().nonnegative().optional(),
     min_nesting: z.number().int().positive().optional(),
     kind: z.string().optional(),

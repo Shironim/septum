@@ -26,7 +26,7 @@ def setup(base, name):
       const db=new SeptumDatabase('.septum/septum.db'); const repo=new SeptumRepository(db.raw);
       repo.upsertDomain('orders',{{root:'src/orders',allowed_dependencies:['billing']}});
       repo.upsertDomain('billing',{{root:'src/billing'}}); db.close();''', root)
-    subprocess.run(['bun', 'run', str(CLI), 'ingest'], cwd=root, check=True, capture_output=True)
+    subprocess.run(['bun', 'run', str(CLI), 'sync'], cwd=root, check=True, capture_output=True)
     return root
 
 with tempfile.TemporaryDirectory(prefix='septum-mcp-regression-') as temporary:

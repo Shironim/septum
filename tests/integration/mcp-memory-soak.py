@@ -23,7 +23,7 @@ class Server:
   if not self.sel.select(30):raise AssertionError(f'{self.name} request timeout')
   result=json.loads(self.p.stdout.readline());assert 'error' not in result and not result.get('result',{}).get('isError'),result
   return result['result']
- def catalog(self,root):return self.request('tools/call',dict(name='septum_get_domain_catalog',arguments=dict(workspace_path=str(root))))
+ def catalog(self,root):return self.request('tools/call',dict(name='septum_domain',arguments=dict(action='catalog',workspace_path=str(root))))
  def sample(self,elapsed):
   status=pathlib.Path(f'/proc/{self.p.pid}/status').read_text();rss=int(next(x.split()[1] for x in status.splitlines() if x.startswith('VmRSS:')))*1024
   fds=list(pathlib.Path(f'/proc/{self.p.pid}/fd').iterdir());watches=0
@@ -50,6 +50,7 @@ with tempfile.TemporaryDirectory(prefix='septum-soak-fixture-') as temp:
  parent=pathlib.Path(temp);roots=[];exts=['ts','php','py','go','vue']
  for i in range(21):
   root=parent/str(i);(root/'src').mkdir(parents=True);(root/'package.json').write_text('{"name":"soak-fixture"}')
+  (root/'septum.config.json').write_text(json.dumps({'domains':{'core':{'root':'src'}}}))
   for j in range(500 if i==0 else 5):(root/'src'/f'f{j}.{exts[j%5]}').write_text(source(exts[j%5]))
   roots.append(root)
  ignored=roots[0]/'node_modules';ignored.mkdir()

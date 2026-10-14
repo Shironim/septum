@@ -71,7 +71,7 @@ export async function handleSymbolTool(
         {
           query: args.query || args.symbol || "",
           domain: args.domain,
-          limit: args.limit,
+          limit: args.limit ?? 10,
           workspace_path: args.workspace_path,
         },
         pipeline,

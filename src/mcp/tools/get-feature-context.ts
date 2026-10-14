@@ -8,8 +8,11 @@ import type { GetFeatureContextArgs } from "../schemas.ts";
 
 export type { GetFeatureContextArgs } from "../schemas.ts";
 
-export function handleClearFeatureContext(workspaceRoot: string = process.cwd()): boolean {
-  return SessionManager.clearActiveSession(workspaceRoot);
+export function handleClearFeatureContext(
+  workspaceRoot: string = process.cwd(),
+  force: boolean = false
+): boolean {
+  return SessionManager.clearActiveSession(workspaceRoot, undefined, force);
 }
 
 export function handleGetFeatureContext(

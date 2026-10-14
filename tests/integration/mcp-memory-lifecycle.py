@@ -2,7 +2,7 @@
 import json, pathlib, selectors, subprocess, tempfile
 REPO=pathlib.Path(__file__).resolve().parents[2]
 with tempfile.TemporaryDirectory(prefix='septum-lifecycle-') as temp:
- root=pathlib.Path(temp); (root/'src').mkdir(); (root/'package.json').write_text('{"name":"lifecycle"}'); (root/'src/a.ts').write_text('export function a() {}')
+root=pathlib.Path(temp); (root/'src').mkdir(); (root/'package.json').write_text('{"name":"lifecycle"}'); (root/'septum.config.json').write_text(json.dumps({'domains':{'core':{'root':'src'}}})); (root/'src/a.ts').write_text('export function a() {}')
  with tempfile.TemporaryFile(mode='w+') as log:
   p=subprocess.Popen(['bun','run',str(REPO/'bin/septum.ts'),'serve'],cwd=root,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=log,text=True)
   try:

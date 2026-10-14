@@ -62,7 +62,7 @@ def setup(base, name):
     bun_eval(root, """const db=new SeptumDatabase(); const repo=new SeptumRepository(db.raw);
       repo.upsertDomain('orders',{root:'src/orders',forbidden_dependencies:['billing']});
       repo.upsertDomain('billing',{root:'src/billing'}); db.close();""")
-    ingest = cli(SOURCE, root, 'ingest')
+    ingest = cli(SOURCE, root, 'sync')
     assert ingest['exit_code'] == 0, ingest
     # Seed a known execution slice to test adapter output, not route extraction.
     bun_eval(root, """const db=new SeptumDatabase(); const repo=new SeptumRepository(db.raw);
@@ -251,7 +251,7 @@ def audit(command, root):
     finally:
         result['server_exit_code'] = server.close()
     c, m = result['cli'], result['mcp']
-    catalogs_match = lambda a, b: c[a]['json'] == {k: v for k, v in m[b]['json'].items() if k != 'index_status'}
+    catalogs_match = lambda a, b: c.get(a, {}).get('json') is not None and c[a]['json'] == {k: v for k, v in m.get(b, {}).get('json', {}).items() if k != 'index_status'}
     result['equivalence_checks'] = {
         'compact_domain_catalog': catalogs_match('query_domain', 'domain_catalog'),
         'full_filtered_domain_catalog': catalogs_match('query_full', 'domain_full'),

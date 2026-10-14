@@ -35,7 +35,10 @@ export async function handleFeatureTool(
       );
 
     case "release": {
-      const cleared = handleClearFeatureContext(workspaceRoot || args.workspace_path || process.cwd());
+      const cleared = handleClearFeatureContext(
+        workspaceRoot || args.workspace_path || process.cwd(),
+        Boolean(args.force)
+      );
       return {
         content: [
           {
