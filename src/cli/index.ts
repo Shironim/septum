@@ -3,13 +3,9 @@ import { SessionManager } from "../core/session/session-manager.ts";
 import { SEPTUM_VERSION } from "../version.ts";
 import { handleCheckCommand } from "./commands/check.ts";
 import { handleHookCommand } from "./commands/hook.ts";
-import { handleIngestCommand } from "./commands/ingest.ts";
 import { handleInitCommand } from "./commands/init.ts";
 import { handleTopologyCommand } from "./commands/topology.ts";
-import { handleLocateCommand } from "./commands/locate.ts";
-import { handleQueryCommand } from "./commands/query.ts";
 import { handleServeCommand } from "./commands/serve.ts";
-import { handleSliceCommand } from "./commands/slice.ts";
 import { handleSyncCommand } from "./commands/sync.ts";
 
 export async function runCLI(argv: string[]): Promise<void> {
@@ -22,13 +18,8 @@ export async function runCLI(argv: string[]): Promise<void> {
         version: { type: "boolean", short: "v" },
         force: { type: "boolean", short: "f" },
         json: { type: "boolean" },
-        full: { type: "boolean" },
-        file: { type: "string" },
         strict: { type: "boolean" },
         staged: { type: "boolean" },
-        domain: { type: "string", short: "d" },
-        "max-depth": { type: "string" },
-        archetype: { type: "string", short: "a" },
         feature: { type: "string" },
       },
       allowPositionals: true,
@@ -61,52 +52,9 @@ export async function runCLI(argv: string[]): Promise<void> {
         break;
       }
 
-      case "ingest": {
-        await handleIngestCommand();
-        break;
-      }
-
       case "sync": {
         const json = Boolean(flags.json);
         await handleSyncCommand({ json });
-        break;
-      }
-
-      case "query": {
-        const domainName = positionals[1];
-        const archetype = typeof flags.archetype === "string" ? flags.archetype : undefined;
-        const jsonOutput = Boolean(flags.json);
-        const full = Boolean(flags.full);
-        const file = typeof flags.file === "string" ? flags.file : undefined;
-        await handleQueryCommand(domainName, archetype, { json: jsonOutput, full, file });
-        break;
-      }
-
-      case "locate": {
-        const query = positionals[1];
-        if (!query) {
-          console.error("Usage: septum locate <symbol-or-error> [--domain <domain>] [--json]");
-          process.exit(1);
-        }
-        const domain = typeof flags.domain === "string" ? flags.domain : undefined;
-        const json = Boolean(flags.json);
-        await handleLocateCommand(query, { domain, json });
-        break;
-      }
-
-      case "slice": {
-        const query = positionals[1];
-        if (!query) {
-          console.error("Usage: septum slice <route-or-intent> [-d|--max-depth <number>] [--json]");
-          process.exit(1);
-        }
-        const json = Boolean(flags.json);
-        const rawDepth = flags["max-depth"] ?? flags.domain;
-        const parsedDepth = rawDepth !== undefined ? Number(rawDepth) : 5;
-        const maxDepth = !Number.isNaN(parsedDepth)
-          ? Math.min(Math.max(Math.trunc(parsedDepth), 1), 8)
-          : 5;
-        await handleSliceCommand(query, { json, maxDepth });
         break;
       }
 
@@ -184,30 +132,21 @@ USAGE:
   septum [flags]
 
 COMMANDS:
-  Catalog & Ingestion:
+  Core Lifecycle & Indexing:
     init                  Initialize configuration, gitignore, pre-commit hook, and catalog
                           Flags: -f, --force (regenerate Septum-owned hooks & harness artifacts; preserves DB, domain policies, and user hooks)
-    ingest                Full AST scan and synchronization to SQLite database
-    sync                  Incremental fast synchronization of modified files
+    sync                  Codebase AST synchronization and catalog update (full or incremental)
                           Flags: --json
-
-  Structural Discovery:
-    query [domain]        Query structural catalog for a domain or whole project
-                          Flags: -a, --archetype <name>, --full, --file <filter>, --json
-    locate <query>        Locate symbol, class, interface, method, or error source
-                          Flags: -d, --domain <name>, --json
-    slice <route|intent>  Trace end-to-end vertical execution slice for route/intent
-                          Flags: -d, --max-depth <number>, --json
 
   Boundary & Enforcement:
     check                 Audit codebase for cross-domain boundary violations
-                          Flags: --strict, --staged, --feature <name>
+                          Flags: --strict, --staged, --feature <name>, --json
     feature [status|clear] View or release active feature context session lock
                           Flags: --force (explicit recovery of another owner's session)
     hook [subhook]        Internal pre-tool guardrail hook (e.g. pre-write)
 
   Environment & Topology:
-    topology [action]     Inspect 6-layer environment topology & distributed nodes
+    topology, env [action] Inspect 6-layer environment topology & distributed nodes
                           Subcommands: resolve <layer> <platform>, add-node, remove-node, clear
 
   Daemon & Protocol:
@@ -216,6 +155,5 @@ COMMANDS:
 GLOBAL FLAGS:
   -h, --help              Show this help message
   -v, --version           Show current version
-  --json                  Output formatted JSON metrics / results
 `);
 }

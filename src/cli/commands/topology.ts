@@ -1,61 +1,102 @@
+import { join } from "node:path";
 import { SeptumDatabase } from "../../core/database/client.ts";
 import { SeptumRepository } from "../../core/database/repository.ts";
 import { EnvironmentDetector } from "../../core/topology/environment-detector.ts";
 import type { EnvironmentLayer, TopologyNode } from "../../core/topology/types.ts";
+
+const VALID_LAYERS = new Set<EnvironmentLayer>([
+  "edge",
+  "gateway",
+  "host",
+  "runtime",
+  "storage",
+  "telemetry",
+]);
 
 export async function handleTopologyCommand(
   subcommand?: string,
   arg1?: string,
   arg2?: string,
   arg3?: string,
-  arg4?: string
+  arg4?: string,
+  workspaceRoot?: string
 ): Promise<void> {
-  const cwd = process.cwd();
-  const db = new SeptumDatabase();
+  const normalizedSub = subcommand?.trim().toLowerCase();
+
+  if (normalizedSub && normalizedSub !== "resolve" && normalizedSub !== "add-node" && normalizedSub !== "remove-node" && normalizedSub !== "clear") {
+    throw new Error(`Unknown topology subcommand: '${subcommand}'. Valid subcommands: resolve, add-node, remove-node, clear.`);
+  }
+
+  if (normalizedSub === "resolve") {
+    if (!arg1 || !arg2) {
+      throw new Error("Missing required arguments for 'topology resolve'. Usage: septum topology resolve <layer> <platform>");
+    }
+    const layerCandidate = arg1.trim().toLowerCase() as EnvironmentLayer;
+    if (!VALID_LAYERS.has(layerCandidate)) {
+      throw new Error(`Invalid environment layer '${arg1}'. Valid layers: ${Array.from(VALID_LAYERS).join(", ")}`);
+    }
+  } else if (normalizedSub === "add-node") {
+    if (!arg1 || !arg2 || !arg3) {
+      throw new Error("Missing required arguments for 'topology add-node'. Usage: septum topology add-node <id> <layer> <platform> [domain_or_ip]");
+    }
+    const layerCandidate = arg2.trim().toLowerCase() as EnvironmentLayer;
+    if (!VALID_LAYERS.has(layerCandidate)) {
+      throw new Error(`Invalid environment layer '${arg2}'. Valid layers: ${Array.from(VALID_LAYERS).join(", ")}`);
+    }
+  } else if (normalizedSub === "remove-node") {
+    if (!arg1) {
+      throw new Error("Missing required argument for 'topology remove-node'. Usage: septum topology remove-node <id>");
+    }
+  }
+
+  const cwd = workspaceRoot || process.cwd();
+  const dbPath = workspaceRoot ? join(workspaceRoot, ".septum/septum.db") : undefined;
+  const db = new SeptumDatabase(dbPath);
   const repo = new SeptumRepository(db.raw);
 
-  if (subcommand === "resolve" && arg1 && arg2) {
-    const layer = arg1.toLowerCase() as EnvironmentLayer;
-    const platform = arg2;
-    // Fix: Preserve existing constraints instead of overwriting with empty array
-    const existing = repo.environment.getLayer(layer);
-    repo.environment.saveLayer({
-      layer,
-      platform,
-      canonical_tag: EnvironmentDetector.matchCanonicalTag(platform),
-      status: "VERIFIED",
-      detected_from: ["CLI Manual Resolution"],
-      constraints: existing?.constraints && existing.constraints.length > 0 ? existing.constraints : [
-        `Configured manually as '${platform}'.`
-      ],
-    });
-    console.log(`[Septum Topology] Layer '${layer}' successfully verified as '${platform}' in SQLite SSOT.\n`);
-  } else if (subcommand === "add-node" && arg1 && arg2 && arg3) {
-    const nodeId = arg1;
-    const layer = arg2.toLowerCase() as EnvironmentLayer;
-    const platform = arg3;
-    const domainOrIp = arg4;
+  try {
+    if (normalizedSub === "resolve" && arg1 && arg2) {
+      const layer = arg1.trim().toLowerCase() as EnvironmentLayer;
+      const platform = arg2;
+      // Fix: Preserve existing constraints instead of overwriting with empty array
+      const existing = repo.environment.getLayer(layer);
+      repo.environment.saveLayer({
+        layer,
+        platform,
+        canonical_tag: EnvironmentDetector.matchCanonicalTag(platform),
+        status: "VERIFIED",
+        detected_from: ["CLI Manual Resolution"],
+        constraints: existing?.constraints && existing.constraints.length > 0 ? existing.constraints : [
+          `Configured manually as '${platform}'.`
+        ],
+      });
+      console.log(`[Septum Topology] Layer '${layer}' successfully verified as '${platform}' in SQLite SSOT.\n`);
+    } else if (normalizedSub === "add-node" && arg1 && arg2 && arg3) {
+      const nodeId = arg1;
+      const layer = arg2.trim().toLowerCase() as EnvironmentLayer;
+      const platform = arg3;
+      const domainOrIp = arg4;
 
-    const node: TopologyNode = {
-      id: nodeId,
-      layer,
-      name: nodeId,
-      platform,
-      canonical_tag: EnvironmentDetector.matchCanonicalTag(platform),
-      domain_or_ip: domainOrIp,
-      status: "VERIFIED",
-      detected_from: ["CLI Manual Node Resolution"],
-      constraints: [`Node added manually with platform '${platform}'.`],
-    };
-    repo.environment.saveNode(node);
-    console.log(`[Septum Topology] Node '${nodeId}' (${layer.toUpperCase()}) added to distributed topology graph.\n`);
-  } else if (subcommand === "remove-node" && arg1) {
-    repo.environment.deleteNode(arg1);
-    console.log(`[Septum Topology] Node '${arg1}' removed from distributed topology graph.\n`);
-  } else if (subcommand === "clear") {
-    repo.environment.clearAll();
-    console.log("[Septum Topology] Cleared environment topology and nodes in SQLite SSOT.\n");
-  }
+      const node: TopologyNode = {
+        id: nodeId,
+        layer,
+        name: nodeId,
+        platform,
+        canonical_tag: EnvironmentDetector.matchCanonicalTag(platform),
+        domain_or_ip: domainOrIp,
+        status: "VERIFIED",
+        detected_from: ["CLI Manual Node Resolution"],
+        constraints: [`Node added manually with platform '${platform}'.`],
+      };
+      repo.environment.saveNode(node);
+      console.log(`[Septum Topology] Node '${nodeId}' (${layer.toUpperCase()}) added to distributed topology graph.\n`);
+    } else if (normalizedSub === "remove-node" && arg1) {
+      repo.environment.deleteNode(arg1);
+      console.log(`[Septum Topology] Node '${arg1}' removed from distributed topology graph.\n`);
+    } else if (normalizedSub === "clear") {
+      repo.environment.clearAll();
+      console.log("[Septum Topology] Cleared environment topology and nodes in SQLite SSOT.\n");
+    }
 
   const topology = EnvironmentDetector.detect(cwd, repo);
 
@@ -113,7 +154,8 @@ export async function handleTopologyCommand(
     console.log("  septum topology add-node host:vps-worker host \"Ubuntu 24.04 (Dedicated Worker)\" 10.0.0.6");
   }
 
-  console.log("================================================================================\n");
-
-  db.close();
+    console.log("================================================================================\n");
+  } finally {
+    db.close();
+  }
 }
