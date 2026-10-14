@@ -1,3 +1,4 @@
+import { readOptionalSourceFile } from "../../../resources/source-files.ts";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type {
@@ -35,7 +36,7 @@ export class LaravelMigrationSchemaProvider implements StackSchemaProvider {
     for (const migFile of migrationFiles) {
       const fullPath = path.join(migrationsDir, migFile);
       try {
-        const content = fs.readFileSync(fullPath, "utf-8");
+        const content = readOptionalSourceFile(fullPath, "utf-8");
         this.extractColumnsFromMigration(content, tableName, fieldsMap);
       } catch {
         // Skip unreadable files
@@ -66,7 +67,7 @@ export class LaravelMigrationSchemaProvider implements StackSchemaProvider {
         : path.join(projectRoot, entityFilePath);
       if (fs.existsSync(fullEntityPath)) {
         try {
-          const content = fs.readFileSync(fullEntityPath, "utf-8");
+          const content = readOptionalSourceFile(fullEntityPath, "utf-8");
           const tableMatch = /protected\s+\$table\s*=\s*['"]([^'"]+)['"]/.exec(content);
           if (tableMatch) {
             return tableMatch[1];
@@ -120,7 +121,7 @@ export class LaravelMigrationSchemaProvider implements StackSchemaProvider {
     if (matched.length === 0) {
       for (const f of files) {
         try {
-          const content = fs.readFileSync(path.join(migrationsDir, f), "utf-8");
+          const content = readOptionalSourceFile(path.join(migrationsDir, f), "utf-8");
           if (
             content.includes(`Schema::create('${tableName}'`) ||
             content.includes(`Schema::create("${tableName}"`) ||

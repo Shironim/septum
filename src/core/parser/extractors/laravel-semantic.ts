@@ -1,3 +1,4 @@
+import { readOptionalSourceFile } from "../../resources/source-files.ts";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ExecutionChainNode, VerticalSliceRecord } from "../../../types/index.ts";
@@ -62,7 +63,7 @@ export class LaravelSemanticExtractor implements SemanticSliceExtractor {
     const parsedRoutes: ParsedRoute[] = [];
 
     for (const routeFile of routeFiles) {
-      const content = fs.readFileSync(routeFile, "utf-8");
+      const content = readOptionalSourceFile(routeFile, "utf-8");
       parsedRoutes.push(...this.parseRoutesContent(content));
     }
 
@@ -97,7 +98,7 @@ export class LaravelSemanticExtractor implements SemanticSliceExtractor {
 
       let behavioralInfo: import("../behavioral-analyzer.ts").MethodBehavioralSummary | null = null;
       if (controllerInfo.filePath && fs.existsSync(controllerInfo.filePath)) {
-        const controllerCode = fs.readFileSync(controllerInfo.filePath, "utf-8");
+        const controllerCode = readOptionalSourceFile(controllerInfo.filePath, "utf-8");
         const actionBody = this.extractActionBody(controllerCode, route.actionName);
         behavioralInfo = BehavioralAnalyzer.analyzeMethod(actionBody);
 
@@ -105,7 +106,7 @@ export class LaravelSemanticExtractor implements SemanticSliceExtractor {
         const requestClassName = this.detectFormRequestClass(controllerCode, route.actionName);
         if (requestClassName) {
           const reqFile = this.findClassFile("Requests", requestClassName);
-          const rules = reqFile && fs.existsSync(reqFile) ? this.extractValidationRules(fs.readFileSync(reqFile, "utf-8")) : {};
+          const rules = reqFile && fs.existsSync(reqFile) ? this.extractValidationRules(readOptionalSourceFile(reqFile, "utf-8")) : {};
           formRequestInfo = {
             className: requestClassName,
             filePath: reqFile ? path.relative(this.projectRoot, reqFile) : undefined,
@@ -117,7 +118,7 @@ export class LaravelSemanticExtractor implements SemanticSliceExtractor {
         const modelClassName = this.detectModelClass(controllerCode, route.actionName, actionBody);
         if (modelClassName) {
           const modFile = this.findClassFile("Models", modelClassName);
-          const modMetadata = modFile && fs.existsSync(modFile) ? this.extractModelMetadata(fs.readFileSync(modFile, "utf-8")) : { fillable: [], casts: {} };
+          const modMetadata = modFile && fs.existsSync(modFile) ? this.extractModelMetadata(readOptionalSourceFile(modFile, "utf-8")) : { fillable: [], casts: {} };
           modelInfo = {
             className: modelClassName,
             filePath: modFile ? path.relative(this.projectRoot, modFile) : undefined,
@@ -509,7 +510,7 @@ export class LaravelSemanticExtractor implements SemanticSliceExtractor {
 
     for (const c of candidates) {
       if (fs.existsSync(c)) {
-        const lines = fs.readFileSync(c, "utf-8").split("\n");
+        const lines = readOptionalSourceFile(c, "utf-8").split("\n");
         let targetLine = 1;
         for (let i = 0; i < lines.length; i++) {
           if (new RegExp(`function\\s+${actionName}\\s*\\(`, "i").test(lines[i])) {
@@ -814,7 +815,7 @@ export class LaravelSemanticExtractor implements SemanticSliceExtractor {
 
     for (const file of jobFiles) {
       const fullPath = path.join(jobsDir, file);
-      const content = fs.readFileSync(fullPath, "utf-8");
+      const content = readOptionalSourceFile(fullPath, "utf-8");
       const classMatch = content.match(/class\s+([A-Za-z0-9_]+)/);
       if (!classMatch) continue;
 
@@ -890,7 +891,7 @@ export class LaravelSemanticExtractor implements SemanticSliceExtractor {
 
     for (const file of files) {
       const fullPath = path.join(commandsDir, file);
-      const content = fs.readFileSync(fullPath, "utf-8");
+      const content = readOptionalSourceFile(fullPath, "utf-8");
       const classMatch = content.match(/class\s+([A-Za-z0-9_]+)/);
       if (!classMatch) continue;
 
@@ -969,7 +970,7 @@ export class LaravelSemanticExtractor implements SemanticSliceExtractor {
 
     for (const file of files) {
       const fullPath = path.join(listenersDir, file);
-      const content = fs.readFileSync(fullPath, "utf-8");
+      const content = readOptionalSourceFile(fullPath, "utf-8");
       const classMatch = content.match(/class\s+([A-Za-z0-9_]+)/);
       if (!classMatch) continue;
 

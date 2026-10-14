@@ -1,3 +1,4 @@
+import { readOptionalSourceFile } from "../resources/source-files.ts";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, normalize, relative, resolve } from "node:path";
 import type {
@@ -86,7 +87,7 @@ export class CallGraphTracer {
       if (!existsSync(fullPath)) continue;
 
       try {
-        const content = readFileSync(fullPath, "utf-8");
+        const content = readOptionalSourceFile(fullPath, "utf-8");
         const lines = content.split("\n");
 
         for (let i = 0; i < lines.length; i++) {

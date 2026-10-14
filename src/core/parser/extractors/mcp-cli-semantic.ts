@@ -1,3 +1,4 @@
+import { readOptionalSourceFile } from "../../resources/source-files.ts";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { SemanticSliceExtractor, VerticalSliceCandidate } from "./semantic-extractor.interface.ts";
@@ -18,7 +19,7 @@ export class McpCliSemanticExtractor implements SemanticSliceExtractor {
     const pkgPath = path.join(projectRoot, "package.json");
     if (fs.existsSync(pkgPath)) {
       try {
-        const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf-8"));
+        const pkg = JSON.parse(readOptionalSourceFile(pkgPath, "utf-8"));
         if (pkg.bin || pkg.dependencies?.["@modelcontextprotocol/sdk"]) {
           return true;
         }
@@ -44,7 +45,7 @@ export class McpCliSemanticExtractor implements SemanticSliceExtractor {
         for (const file of toolFiles) {
           const fullPath = path.join(mcpToolsDir, file);
           const relPath = path.relative(projectRoot, fullPath).replace(/\\/g, "/");
-          const content = fs.readFileSync(fullPath, "utf-8");
+          const content = readOptionalSourceFile(fullPath, "utf-8");
           const baseName = path.basename(file, path.extname(file));
           const snakeBase = baseName.replace(/-/g, "_");
           const toolIdentifier =
@@ -143,7 +144,7 @@ export class McpCliSemanticExtractor implements SemanticSliceExtractor {
         for (const file of commandFiles) {
           const fullPath = path.join(cliCommandsDir, file);
           const relPath = path.relative(projectRoot, fullPath).replace(/\\/g, "/");
-          const content = fs.readFileSync(fullPath, "utf-8");
+          const content = readOptionalSourceFile(fullPath, "utf-8");
           const commandName = path.basename(file, path.extname(file));
 
           const handlerMatch = /export\s+(?:async\s+)?function\s+([a-zA-Z0-9_]+)/.exec(content);
@@ -235,7 +236,7 @@ export class McpCliSemanticExtractor implements SemanticSliceExtractor {
     const pkgPath = path.join(projectRoot, "package.json");
     if (fs.existsSync(pkgPath)) {
       try {
-        const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf-8"));
+        const pkg = JSON.parse(readOptionalSourceFile(pkgPath, "utf-8"));
         const rawName = typeof pkg.name === "string" ? pkg.name.replace(/^@[^/]+\//, "") : "mcp";
         const toolPrefix = rawName.replace(/[^a-zA-Z0-9_]/g, "_").toLowerCase() || "mcp";
         let cliBinName = rawName;
@@ -257,7 +258,7 @@ export class McpCliSemanticExtractor implements SemanticSliceExtractor {
     if (!fs.existsSync(serverPath)) return map;
 
     try {
-      const content = fs.readFileSync(serverPath, "utf-8");
+      const content = readOptionalSourceFile(serverPath, "utf-8");
       const nameRegex = /name:\s*['"]([a-zA-Z0-9_-]+)['"]/g;
       let match: RegExpExecArray | null;
       while ((match = nameRegex.exec(content)) !== null) {

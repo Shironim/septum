@@ -1,4 +1,4 @@
-import { existsSync, statSync } from "node:fs";
+import { existsSync, statSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, join, normalize, resolve } from "node:path";
 
 export const PROJECT_ROOT_MARKERS = [
@@ -26,6 +26,7 @@ export function canonicalizePath(targetPath: string): string {
     return targetPath;
   }
   let abs = normalize(resolve(targetPath));
+  try { if (existsSync(abs)) abs = realpathSync(abs); } catch { /* Keep lexical paths for missing or inaccessible files. */ }
   if (process.platform === "win32") {
     abs = abs.replace(/^[a-zA-Z]:/, (m) => m.toUpperCase());
   }
@@ -104,7 +105,7 @@ export function findProjectRoot(fromPath: string): string {
     // Filesystem traversal error fallback
   }
 
-  return canonicalizePath(dirname(resolve(fromPath)));
+  return canonicalizePath(existsSync(fromPath) && statSync(fromPath).isDirectory() ? fromPath : dirname(resolve(fromPath)));
 }
 
 /**
@@ -117,7 +118,8 @@ export function findProjectRoot(fromPath: string): string {
 export function resolveWorkspaceRoot(pathHint?: string): string {
   if (pathHint && typeof pathHint === "string" && pathHint.trim()) {
     const trimmed = pathHint.trim().replace(/^['"]|['"]$/g, "");
-    const candidate = findProjectRoot(trimmed);
+    const absHint = resolve(trimmed);
+    const candidate = existsSync(absHint) && statSync(absHint).isDirectory() ? canonicalizePath(absHint) : findProjectRoot(trimmed);
     if (candidate && existsSync(candidate) && !isAppHostDirectory(candidate)) {
       setLastKnownProjectRoot(candidate);
       return candidate;

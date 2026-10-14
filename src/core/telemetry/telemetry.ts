@@ -56,6 +56,16 @@ export class SeptumTelemetry {
       console.error(`[Septum Telemetry SLOW_WARN] ${jsonLine}`);
     }
 
+    this.appendLog(jsonLine, workspaceRoot);
+  }
+
+  public static recordMemorySample(metrics: Record<string, number>, workspaceRoot: string = process.cwd()): void {
+    const jsonLine = JSON.stringify({timestamp: new Date().toISOString(), event: "memory_sample", metrics});
+    console.error(`[Septum Memory] ${jsonLine}`);
+    this.appendLog(jsonLine, workspaceRoot);
+  }
+
+  private static appendLog(jsonLine: string, workspaceRoot: string): void {
     // Sink 2: Append-only persistent file recorder in .septum/septum.log
     try {
       const logPath = this.getLogPath(workspaceRoot);

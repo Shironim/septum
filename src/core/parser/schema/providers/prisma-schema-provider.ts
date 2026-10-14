@@ -1,3 +1,4 @@
+import { readOptionalSourceFile } from "../../../resources/source-files.ts";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type {
@@ -38,7 +39,7 @@ export class PrismaSchemaProvider implements StackSchemaProvider {
     if (!schemaPath) return null;
 
     try {
-      const content = fs.readFileSync(schemaPath, "utf-8");
+      const content = readOptionalSourceFile(schemaPath, "utf-8");
       const modelRegex = new RegExp(`model\\s+${entitySymbol}\\s*\\{([^}]+)\\}`, "m");
       const match = modelRegex.exec(content);
       if (!match) return null;

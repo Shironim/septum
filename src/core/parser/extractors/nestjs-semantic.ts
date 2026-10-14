@@ -1,3 +1,4 @@
+import { readOptionalSourceFile } from "../../resources/source-files.ts";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { SemanticSliceExtractor, VerticalSliceCandidate } from "./semantic-extractor.interface.ts";
@@ -14,7 +15,7 @@ export class NestJsSemanticExtractor implements SemanticSliceExtractor {
     const pkgPath = path.join(projectRoot, "package.json");
     if (fs.existsSync(pkgPath)) {
       try {
-        const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf-8"));
+        const pkg = JSON.parse(readOptionalSourceFile(pkgPath, "utf-8"));
         const deps = { ...pkg.dependencies, ...pkg.devDependencies };
         if (deps["@nestjs/core"]) return true;
       } catch {}
@@ -32,7 +33,7 @@ export class NestJsSemanticExtractor implements SemanticSliceExtractor {
 
     for (const file of controllerFiles) {
       const relPath = path.relative(projectRoot, file).replace(/\\/g, "/");
-      const content = fs.readFileSync(file, "utf-8");
+      const content = readOptionalSourceFile(file, "utf-8");
 
       // Extract @Controller('prefix')
       const controllerMatch = /@Controller\s*\(\s*['"]?([^'")]*)['"]?\s*\)[\s\S]*?export\s+class\s+([A-Za-z0-9_]+)/.exec(
