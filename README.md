@@ -28,16 +28,26 @@ bun add -g septum
 
 ### 1. Initialize in Any Project
 
+Run `septum init` in your project root:
+
 ```bash
 septum init
 # or zero-install via bunx:
 bunx septum init
 ```
-*Auto-detects project topology (Monorepos, Laravel, Next.js, Go, NestJS), registers domains, and ingests AST symbols into `.septum/septum.db`.*
 
-### 2. Connect to AI Agent (MCP Server)
+Septum automatically:
+1. **Detects Architecture & Topology:** Discovers bounded domains across Monorepos, Laravel, Next.js, Go, NestJS, and more.
+2. **Builds AST Symbol SSOT:** Ingests symbols, interfaces, and dependencies into `.septum/septum.db`.
+3. **Scaffolds AI Agent Harnesses:** Interactively configures MCP servers, guardrail rules, and pre-write boundary hooks for your favorite agent environments:
+   - **Claude Code** (`.mcp.json`, `.claude/settings.json`)
+   - **Antigravity** (`.gemini/`)
+   - **Cursor** (`.cursor/mcp.json`, `.cursor/hooks.json`)
+   - **Opencode** (`opencode.json`)
 
-Add Septum to your MCP client (`mcp.json` or `claude_desktop_config.json`):
+### 2. Manual MCP Client Configuration (Optional)
+
+If your MCP client is not configured via `septum init`, add Septum manually (`mcp.json` or `claude_desktop_config.json`):
 
 ```json
 {
@@ -59,10 +69,10 @@ Add Septum to your MCP client (`mcp.json` or `claude_desktop_config.json`):
 |---|---|
 | `septum init [--force]` | Detect topology, scaffold boundary guards, and build initial catalog. `--force` regenerates Septum-owned hooks and harness artifacts while strictly preserving SQLite DB, manual domain policies, and user Git hooks |
 | `septum sync [--json]` | AST synchronization and catalog update into `.septum/septum.db` (full or incremental) |
-| `septum check --strict` | CI/CD gate: verify boundary integrity & fail on violations (`--staged` for git pre-commit) |
-| `septum feature [status|clear]` | View or release active feature lease and editing scope (`--force` for other owner's session) |
-| `septum hook [subhook]` | Internal pre-tool guardrail hook (e.g. pre-write) for AI agent tools |
-| `septum topology [action]` | Inspect 6-layer environment topology plane & distributed nodes (`env` alias available) |
+| `septum check [--strict] [--staged] [--feature <name>] [--json]` | CI/CD gate & pre-commit hook: verify boundary integrity & fail on cross-domain violations |
+| `septum feature [status|clear] [--force]` | View or release active feature lease and editing scope (`--force` for other owner's session) |
+| `septum hook [subhook]` | Internal pre-tool guardrail hook (e.g. pre-write, post-write) for AI agent tools |
+| `septum topology [subcommand]` | Inspect 6-layer environment topology plane & distributed nodes (`env` alias available). Subcommands: `resolve <layer> <platform>`, `add-node`, `remove-node`, `clear` |
 | `septum serve` | Launch stdio MCP server for AI coding agents |
 
 ---
@@ -71,29 +81,22 @@ Add Septum to your MCP client (`mcp.json` or `claude_desktop_config.json`):
 
 All tools expose typed schemas automatically via the Model Context Protocol:
 
-- **Self-Aware Environment Topology (`septum_get_environment_topology`):** Maps and verifies the 6-layer production architecture (Edge/WAF, Gateway/Web Server, Host, Runtime, Storage/Cache, Telemetry) and distributed entities with cross-layer invariants.
-- **Whole-Project Telescope (`septum_get_domain_catalog`):** Returns macro architecture maps in < 400 tokens.
-- **Omni-Trigger Vertical Slice Tracer (`septum_trace_vertical_slice`):** Traces execution chains across HTTP routes, queue jobs, console commands, and event listeners (*Ingress ➔ Validation ➔ Orchestration ➔ Domain ➔ Egress*).
-- **Pre-Flight Boundary Guard (`septum_check_boundary`):** Validates proposed edits and imports against bounded-context rules.
-- **Scope Locking (`septum_get_feature_context` / `septum_clear_feature_context`):** Locks active feature scope to eliminate context drift.
-- **Symbol & Blast Radius (`septum_locate_symbol`, `septum_get_symbol`, `septum_get_symbol_impact`):** Resolves call chains, signatures, and refactoring impact.
-- **God Function & Nesting Detector (`septum_get_symbol_hotspots`):** Surfaces oversized functions/methods ranked by physical lines, cyclomatic nesting depth, and composite risk score.
-- **Dynamic Topology (`septum_register_domain`):** Registers or updates domains and boundary rules on-the-fly.
-
----
-
-## Development & Contributing
-
-```bash
-# Clone and install dependencies
-git clone https://github.com/shironim/septum.git
-cd septum
-bun install
-
-# Run test suite & build
-bun test
-bun run build
-```
+- **Domain Catalog, Registration & Environment Topology (`septum_domain`):**
+  - `action: "catalog"`: Whole-project macro architecture map and file connections in < 400 tokens (`detail_level: "compact" | "full"`).
+  - `action: "register"`: Dynamically registers or updates bounded-context domains with allowed/forbidden dependencies and layer archetypes.
+  - `action: "topology"`: Maps and verifies the 6-layer production architecture (Edge/WAF, Gateway/Web Server, Host, Runtime, Storage/Cache, Telemetry) and distributed nodes with cross-layer invariants.
+- **Unified Symbol Engine (`septum_symbol`):**
+  - `action: "locate"`: Fast fuzzy search and error log resolution to pinpoint symbols across workspaces.
+  - `action: "inspect"`: Deep inspection of physical coordinates, declarations, and full typed signatures.
+  - `action: "impact"`: Refactoring blast radius, call graphs, and inbound/outbound dependency analysis.
+  - `action: "hotspots"`: God function and Single Responsibility Principle (SRP) detector ranked by physical lines, cyclomatic nesting depth, and composite risk score.
+- **Omni-Trigger Vertical Slice Tracer (`septum_slice`):**
+  - Traces end-to-end execution flow (*Ingress ➔ Validation ➔ Controller ➔ Service ➔ Repository ➔ Entity*) from route URIs, controller actions, or high-level intent across HTTP routes, queue jobs, console commands, and events up to 8 levels deep.
+- **Architecture Guard & Circular Dependency Gate (`septum_boundary`):**
+  - Validates proposed edits, additions, and imports against domain rules and feature touchpoints before files are modified on disk (`scope: "file"`).
+  - Audits staged files (`scope: "staged"`), domain boundaries (`scope: "domain"`), or the entire repository (`scope: "all"`) for cross-domain leaks and dependency cycles.
+- **Active Touchpoint & Scope Lock Engine (`septum_feature`):**
+  - Locks active feature task context, touchpoints, and contracts (`action: "lock"` / `action: "get"` / `action: "release"`) via `.septum/session.json` to eliminate AI context drift and unintended edits.
 
 ---
 
