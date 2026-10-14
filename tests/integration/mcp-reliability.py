@@ -58,7 +58,7 @@ with tempfile.TemporaryDirectory(prefix='septum-mcp-regression-') as temporary:
     def wait_symbols(root, expected):
         deadline = time.monotonic() + 5
         while True:
-            catalog = tool('septum_get_domain_catalog', {'domain': 'orders', 'workspace_path': str(root)})
+            catalog = tool('septum_domain', {'action': 'catalog', 'domain': 'orders', 'workspace_path': str(root)})
             names = {symbol['name'] for file in catalog['files'] for symbol in file['symbols']}
             if set(expected) <= names:
                 return
@@ -70,18 +70,43 @@ with tempfile.TemporaryDirectory(prefix='septum-mcp-regression-') as temporary:
                               'clientInfo': {'name': 'septum-regressions', 'version': '1'}})
         server.stdin.write(json.dumps({'jsonrpc': '2.0', 'method': 'notifications/initialized'}) + '\n')
         server.stdin.flush()
+        invalid_boundary_inputs = [
+            {'scope': scope, 'file_path': 'src/orders/Order.ts',
+             **({'domain': 'orders'} if scope == 'domain' else {})}
+            for scope in ['staged', 'all', 'domain']
+        ] + [
+            {'scope': scope, 'file_paths': ['src/orders/Order.ts'],
+             **({'domain': 'orders'} if scope == 'domain' else {})}
+            for scope in ['staged', 'all', 'domain']
+        ] + [
+            {'scope': 'file'}, {'scope': 'file', 'file_paths': []},
+            {'scope': 'file', 'domain': 'orders'}, {'scope': 'domain'},
+            {'scope': 'domain', 'domain': 'missing'},
+            {'scope': 'staged', 'domain': 'missing'},
+            {'staged': True, 'file_path': 'src/orders/Order.ts'},
+            {'scope': 'all', 'staged': True},
+            {'scope': 'all', 'domain': 'orders'},
+            {'scope': 'staged', 'proposed_imports': ['../billing/Invoice']},
+        ]
+        for invalid_args in invalid_boundary_inputs:
+            result = request('tools/call', {'name': 'septum_boundary',
+                             'arguments': {**invalid_args, 'workspace_path': str(a)}})
+            assert result.get('isError') is True, (invalid_args, result)
         args = {'file_path': 'src/orders/Order.ts', 'proposed_imports': ['../billing/Invoice'], 'workspace_path': str(a)}
-        assert tool('septum_check_boundary', args)['status'] == 'approved'
+        assert tool('septum_boundary', args)['status'] == 'approved'
         bun_eval('''import {Database} from 'bun:sqlite'; const db=new Database('.septum/septum.db');
           db.query('UPDATE domains SET forbidden_deps_json=? WHERE name=?').run('["billing"]','orders'); db.close();''', a)
-        assert tool('septum_check_boundary', args)['status'] == 'rejected', 'MCP must refresh externally updated rules'
+        assert tool('septum_boundary', args)['status'] == 'rejected', 'MCP must refresh externally updated rules'
         subprocess.run(['git', 'init', '-q'], cwd=a, check=True)
         (a / 'src/orders/Order.ts').write_text("import {invoice} from '../billing/Invoice';\nexport const order=invoice;\n")
         subprocess.run(['git', 'add', 'src'], cwd=a, check=True)
         (a / 'src/orders/Order.ts').write_text('export function oldOrder() {}\n')
-        staged = tool('septum_check_boundary', {'scope': 'staged', 'workspace_path': str(a)})
+        staged = tool('septum_boundary', {'scope': 'staged', 'workspace_path': str(a)})
         assert staged['status'] == 'rejected', 'MCP staged audit must inspect Git index blobs'
-        tool('septum_get_domain_catalog', {'domain': 'orders', 'workspace_path': str(b)})
+        filtered_staged = tool('septum_boundary', {'scope': 'staged', 'domain': 'orders', 'workspace_path': str(a)})
+        assert filtered_staged['scope'] == 'staged' and filtered_staged['status'] == 'rejected', \
+            'Domain filter must not turn a staged audit into a working-tree audit'
+        tool('septum_domain', {'action': 'catalog', 'domain': 'orders', 'workspace_path': str(b)})
         (b / 'src/orders/Order.ts').write_text('export function newOrder() {}\n')
         time.sleep(.04)
         (b / 'src/orders/Other.ts').write_text('export function newOther() {}\n')
@@ -89,7 +114,7 @@ with tempfile.TemporaryDirectory(prefix='septum-mcp-regression-') as temporary:
         (b / 'src/orders/Other.ts').unlink()
         deadline = time.monotonic() + 5
         while True:
-            catalog = tool('septum_get_domain_catalog', {'domain': 'orders', 'workspace_path': str(b)})
+            catalog = tool('septum_domain', {'action': 'catalog', 'domain': 'orders', 'workspace_path': str(b)})
             if not any(file['path'].endswith('Other.ts') for file in catalog['files']):
                 break
             assert time.monotonic() < deadline, 'Deleted file remained indexed'
@@ -98,17 +123,17 @@ with tempfile.TemporaryDirectory(prefix='septum-mcp-regression-') as temporary:
         unsupported.write_text('pub fn hello() {}')
         deadline = time.monotonic() + 5
         while True:
-            catalog = tool('septum_get_domain_catalog', {'domain': 'orders', 'workspace_path': str(b)})
+            catalog = tool('septum_domain', {'action': 'catalog', 'domain': 'orders', 'workspace_path': str(b)})
             if 'src/orders/hello.rs' in catalog['index_status']['unsupported_files']:
                 break
             assert time.monotonic() < deadline, 'Unsupported source file was not recorded'
             time.sleep(.075)
-        result = tool('septum_check_boundary', {'file_path': 'src/orders/hello.rs', 'workspace_path': str(b)})
+        result = tool('septum_boundary', {'file_path': 'src/orders/hello.rs', 'workspace_path': str(b)})
         assert result['status'] == 'unknown', 'Unsupported target must not receive approval'
         unsupported.unlink()
         deadline = time.monotonic() + 5
         while True:
-            result = tool('septum_check_boundary', {'scope': 'all', 'workspace_path': str(b)})
+            result = tool('septum_boundary', {'scope': 'all', 'workspace_path': str(b)})
             if result['status'] != 'unknown':
                 break
             assert time.monotonic() < deadline, 'Deleted unsupported file left stale diagnostics'
@@ -116,12 +141,12 @@ with tempfile.TemporaryDirectory(prefix='septum-mcp-regression-') as temporary:
         (b / 'src/orders').rename(b / 'src/renamed-orders')
         deadline = time.monotonic() + 5
         while True:
-            catalog = tool('septum_get_domain_catalog', {'domain': 'orders', 'workspace_path': str(b)})
+            catalog = tool('septum_domain', {'action': 'catalog', 'domain': 'orders', 'workspace_path': str(b)})
             if not catalog['files']:
                 break
             assert time.monotonic() < deadline, 'Renamed directory left stale catalog files'
             time.sleep(.075)
-        print('PASS: live rules, staged blobs, multi-workspace edits, file/directory reconciliation, unsupported diagnostics')
+        print('PASS: boundary scope validation, live rules, staged blobs with domain filters, multi-workspace edits, file/directory reconciliation, unsupported diagnostics')
     finally:
         server.terminate()
         _, stderr = server.communicate(timeout=5)
