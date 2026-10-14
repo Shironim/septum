@@ -122,9 +122,9 @@ export function handleGetEnvironmentTopology(
       output += `- ${q}\n`;
     }
     output += `\n*Untuk mengunci jawaban pengguna ke SQLite SSOT, panggil kembali tool ini dengan argumen:*\n`;
-    output += `\`septum_get_environment_topology(resolve: { layer: "<layer_name>", platform: "<platform_name>" })\`\n`;
+    output += `\`septum_domain(action: "topology", resolve: { layer: "<layer_name>", platform: "<platform_name>" })\`\n`;
     output += `*atau untuk entitas terdistribusi:*\n`;
-    output += `\`septum_get_environment_topology(resolveNode: { id: "<node_id>", layer: "<layer>", name: "<name>", platform: "<platform>", domain_or_ip: "<domain_or_ip>", role: "<role>" })\`\n`;
+    output += `\`septum_domain(action: "topology", resolve_node: { id: "<node_id>", layer: "<layer>", name: "<name>", platform: "<platform>", domain_or_ip: "<domain_or_ip>", role: "<role>" })\`\n`;
   }
 
   return {

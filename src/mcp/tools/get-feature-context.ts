@@ -41,7 +41,7 @@ export function handleGetFeatureContext(
               status: "prompt",
               message: "No feature specified. Please specify 'feature_key' from the registered features below or trace routes.",
               available_features: available.length > 0 ? available : [],
-              instructions: "Call 'septum_get_feature_context({ feature_key: \"<name>\" })' or register a new feature with 'septum_register_feature'.",
+              instructions: "Call 'septum_feature({ action: \"get\", feature_key: \"<name>\" })' or lock a feature with 'septum_feature({ action: \"lock\", feature_key: \"<name>\", domain: \"<domain>\" })'.",
             },
             null,
             2
@@ -127,8 +127,8 @@ export function handleGetFeatureContext(
                 feature_key: featureKey,
                 message: `Feature '${featureKey}' not found in configuration or vertical slices. Available features: [${availableStr}].`,
                 recovery_options: [
-                  `septum_register_feature({ feature_key: "${featureKey}", domain: "<domain_name>", allowed_touchpoints: ["path/to/file"] })`,
-                  `septum_trace_vertical_slice({ entry_file: "routes/web.php" })`,
+                  `septum_feature({ action: "lock", feature_key: "${featureKey}", domain: "<domain_name>", allowed_touchpoints: ["path/to/file"] })`,
+                  `septum_slice({ query: "routes/web.php" })`,
                 ],
               },
               null,

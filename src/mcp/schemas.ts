@@ -157,11 +157,12 @@ export function normalizeBoundaryArgs(raw: unknown): unknown {
     obj.file_path = obj.file_paths;
     delete obj.file_paths;
   }
-  if (obj.staged === true && obj.scope === undefined) {
-    obj.scope = "staged";
-  }
-  if (obj.domain !== undefined && obj.file_path === undefined && obj.file_paths === undefined) {
-    obj.scope = "domain";
+  if (obj.scope === undefined) {
+    if (obj.staged === true) {
+      obj.scope = "staged";
+    } else if (obj.domain !== undefined && obj.file_path === undefined && obj.file_paths === undefined) {
+      obj.scope = "domain";
+    }
   }
   return obj;
 }
@@ -443,14 +444,39 @@ export type TraceVerticalSliceArgs = z.infer<typeof TraceVerticalSliceSchema>;
 export const CheckBoundarySchema = z.preprocess(
   normalizeBoundaryArgs,
   z.object({
-    file_path: z.string().optional(),
-    file_paths: z.array(z.string()).optional(),
+    file_path: z.string().trim().min(1, "file_path cannot be blank").optional(),
+    file_paths: z.array(z.string().trim().min(1, "file_paths cannot contain blank paths")).optional(),
     proposed_imports: z.array(z.string()).optional().default([]),
     feature_key: z.string().optional(),
     scope: z.enum(["file", "all", "staged", "domain"]).optional(),
-    domain: z.string().optional(),
+    domain: z.string().trim().min(1, "domain cannot be blank").optional(),
     staged: z.boolean().optional(),
     workspace_path: z.string().optional(),
+  }).superRefine((args, ctx) => {
+    const hasBatch = Boolean(args.file_paths?.length);
+    const hasTarget = args.file_path !== undefined || hasBatch;
+    const scope = args.scope ?? (args.staged ? "staged" : hasTarget ? "file" : args.domain ? "domain" : "all");
+    if (args.file_path !== undefined && hasBatch) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["file_paths"], message: "Use either file_path or file_paths, not both." });
+    }
+    if (args.staged && scope !== "staged") {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["staged"], message: "staged=true requires scope='staged'." });
+    }
+    if (scope === "file" && !hasTarget) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["file_path"], message: "scope='file' requires file_path or non-empty file_paths." });
+    }
+    if (scope !== "file" && hasTarget) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["scope"], message: `scope='${scope}' does not accept file targets. Use scope='file' for proposed-import checks.` });
+    }
+    if (scope === "domain" && !args.domain) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["domain"], message: "scope='domain' requires a registered domain name." });
+    }
+    if (scope === "all" && args.domain) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["domain"], message: "scope='all' checks the entire repository. Use scope='domain' to filter a domain." });
+    }
+    if (scope !== "file" && args.proposed_imports.length) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["proposed_imports"], message: "proposed_imports requires a file target and scope='file'." });
+    }
   })
 );
 export type CheckBoundaryArgs = z.infer<typeof CheckBoundarySchema>;
@@ -693,3 +719,349 @@ export const GetEnvironmentTopologySchema = z.preprocess(
   })
 );
 export type GetEnvironmentTopologyArgs = z.infer<typeof GetEnvironmentTopologySchema>;
+
+// =========================================================================
+// 5 UNIFIED TOOLS SCHEMAS & NORMALIZERS (Refactored Clean-Break MCP Engine)
+// =========================================================================
+
+// 1. septum_domain
+export function normalizeDomainToolArgs(raw: unknown): unknown {
+  const coerced = extractSingleStringFallback(raw, "domain", [
+    "workspace_path",
+    "workspacePath",
+    "workspace",
+    "project_root",
+    "projectRoot",
+    "target_path",
+    "path",
+    "action",
+    "detail_level",
+    "detailLevel",
+    "mode",
+    "format",
+    "archetype_filter",
+    "archetype",
+    "file_filter",
+    "fileFilter",
+    "root",
+    "root_path",
+    "rootPath",
+  ]);
+  if (typeof coerced !== "object" || coerced === null || Array.isArray(coerced)) return coerced;
+  const obj = withAliases(coerced, {
+    domain_name: "domain",
+    domainName: "domain",
+    name: "domain",
+    archetype: "archetype_filter",
+    archetypeFilter: "archetype_filter",
+    type: "archetype_filter",
+    detailLevel: "detail_level",
+    mode: "detail_level",
+    format: "detail_level",
+    fileFilter: "file_filter",
+    file: "file_filter",
+    filter: "file_filter",
+    root_path: "root",
+    rootPath: "root",
+    path: "root",
+    allowedDependencies: "allowed_dependencies",
+    allowed: "allowed_dependencies",
+    forbiddenDependencies: "forbidden_dependencies",
+    forbidden: "forbidden_dependencies",
+    archetypes: "archetypes",
+    ingestNow: "ingest_now",
+    resolveLayer: "resolve",
+    resolve_layer: "resolve",
+    resolveNode: "resolve_node",
+    workspace: "workspace_path",
+    workspacePath: "workspace_path",
+    project_root: "workspace_path",
+    projectRoot: "workspace_path",
+  }) as Record<string, unknown>;
+
+  if (obj.domain !== undefined && obj.name === undefined) {
+    obj.name = obj.domain;
+  } else if (obj.name !== undefined && obj.domain === undefined) {
+    obj.domain = obj.name;
+  }
+
+  if (obj.archetype_filter !== undefined && obj.archetype === undefined) {
+    obj.archetype = obj.archetype_filter;
+  } else if (obj.archetype !== undefined && obj.archetype_filter === undefined) {
+    obj.archetype_filter = obj.archetype;
+  }
+
+  if (obj.full === true && obj.detail_level === undefined) {
+    obj.detail_level = "full";
+  }
+
+  if (typeof obj.resolve_node === "object" && obj.resolve_node !== null) {
+    obj.resolve_node = withAliases(obj.resolve_node, {
+      canonicalTag: "canonical_tag",
+      domainOrIp: "domain_or_ip",
+      connectedTo: "connected_to",
+      nodeId: "id",
+      node_id: "id",
+      nodeName: "name",
+      node_name: "name",
+    });
+  }
+
+  if (!obj.action) {
+    if (obj.root !== undefined || obj.ingest_now !== undefined) {
+      obj.action = "register";
+    } else if (obj.resolve !== undefined || obj.resolve_node !== undefined || obj.resolveNode !== undefined || obj.refresh !== undefined) {
+      obj.action = "topology";
+    } else {
+      obj.action = "catalog";
+    }
+  }
+
+  return obj;
+}
+
+export const DomainToolSchema = z.preprocess(
+  normalizeDomainToolArgs,
+  z.object({
+    action: z.enum(["catalog", "register", "topology"]).optional().default("catalog"),
+    domain: z.string().optional(),
+    name: z.string().optional(),
+    detail_level: z.enum(["compact", "full"]).optional().default("compact"),
+    archetype_filter: z.string().optional(),
+    archetype: z.string().optional(),
+    file_filter: z.string().optional(),
+    root: z.string().optional(),
+    description: z.string().optional(),
+    allowed_dependencies: z.array(z.string()).optional(),
+    forbidden_dependencies: z.array(z.string()).optional(),
+    archetypes: z.record(z.string()).optional(),
+    ingest_now: z.boolean().optional().default(false),
+    resolve: z
+      .object({
+        layer: z.enum(["edge", "gateway", "host", "runtime", "storage", "telemetry"]),
+        platform: z.string().min(1, "platform name cannot be empty"),
+        constraints: z.array(z.string()).optional(),
+      })
+      .optional(),
+    resolve_node: z
+      .object({
+        id: z.string().min(1, "Node id cannot be empty"),
+        layer: z.enum(["edge", "gateway", "host", "runtime", "storage", "telemetry"]),
+        name: z.string().min(1, "Node name cannot be empty"),
+        platform: z.string().min(1, "Platform cannot be empty"),
+        canonical_tag: z
+          .enum([
+            "shared_hosting",
+            "vps",
+            "docker",
+            "serverless",
+            "kubernetes",
+            "managed_db",
+            "cdn_edge",
+            "paas",
+            "static_cdn",
+            "unspecified",
+          ])
+          .optional(),
+        domain_or_ip: z.string().optional(),
+        role: z.string().optional(),
+        constraints: z.array(z.string()).optional(),
+        connected_to: z.array(z.string()).optional(),
+      })
+      .optional(),
+    resolveNode: z.any().optional(),
+    refresh: z.boolean().optional().default(false),
+    workspace_path: z.string().optional(),
+  })
+);
+export type DomainToolArgs = z.infer<typeof DomainToolSchema>;
+
+// 2. septum_symbol
+export function normalizeSymbolToolArgs(raw: unknown): unknown {
+  const coerced = extractSingleStringFallback(raw, "query", [
+    "workspace_path",
+    "workspacePath",
+    "workspace",
+    "project_root",
+    "projectRoot",
+    "action",
+    "domain",
+    "domain_name",
+    "domainName",
+    "min_lines",
+    "min_nesting",
+    "sort_by",
+    "limit",
+  ]);
+  if (typeof coerced !== "object" || coerced === null || Array.isArray(coerced)) return coerced;
+  const obj = withAliases(coerced, {
+    symbol: "query",
+    name: "query",
+    symbol_name: "query",
+    symbolName: "query",
+    target: "query",
+    domain_name: "domain",
+    domainName: "domain",
+    includeDependencies: "include_dependencies",
+    include_deps: "include_dependencies",
+    includeDeps: "include_dependencies",
+    dependencies: "include_dependencies",
+    deps: "include_dependencies",
+    max: "limit",
+    nesting: "min_nesting",
+    minNesting: "min_nesting",
+    lines: "min_lines",
+    minLines: "min_lines",
+    sortBy: "sort_by",
+    workspace: "workspace_path",
+    workspacePath: "workspace_path",
+    project_root: "workspace_path",
+    projectRoot: "workspace_path",
+  }) as Record<string, unknown>;
+
+  if (obj.query !== undefined && obj.symbol === undefined) {
+    obj.symbol = obj.query;
+  } else if (obj.symbol !== undefined && obj.query === undefined) {
+    obj.query = obj.symbol;
+  }
+
+  if (!obj.action) {
+    if (obj.min_lines !== undefined || obj.min_nesting !== undefined || obj.kind !== undefined || (obj.sort_by && !obj.query)) {
+      obj.action = "hotspots";
+    } else if (obj.include_dependencies !== undefined) {
+      obj.action = "inspect";
+    } else {
+      obj.action = "locate";
+    }
+  }
+
+  return obj;
+}
+
+export const SymbolToolSchema = z.preprocess(
+  normalizeSymbolToolArgs,
+  z.object({
+    action: z.enum(["locate", "inspect", "impact", "hotspots"]).optional().default("locate"),
+    query: z.string().optional(),
+    symbol: z.string().optional(),
+    domain: z.string().optional(),
+    include_dependencies: z.boolean().optional().default(true),
+    limit: z.number().int().positive().optional().default(10),
+    min_lines: z.number().int().nonnegative().optional(),
+    min_nesting: z.number().int().positive().optional(),
+    kind: z.string().optional(),
+    sort_by: z.enum(["lines", "nesting", "risk_score", "line_count"]).optional(),
+    workspace_path: z.string().optional(),
+  })
+);
+export type SymbolToolArgs = z.infer<typeof SymbolToolSchema>;
+
+// 3. septum_slice
+export const SliceToolSchema = TraceVerticalSliceSchema;
+export type SliceToolArgs = TraceVerticalSliceArgs;
+
+// 4. septum_boundary
+export const BoundaryToolSchema = CheckBoundarySchema;
+export type BoundaryToolArgs = CheckBoundaryArgs;
+
+// 5. septum_feature
+export function normalizeFeatureToolArgs(raw: unknown): unknown {
+  const coerced = extractSingleStringFallback(raw, "feature_key", [
+    "workspace_path",
+    "workspacePath",
+    "workspace",
+    "project_root",
+    "projectRoot",
+    "action",
+    "domain",
+    "domain_name",
+    "domainName",
+    "force",
+  ]);
+  if (typeof coerced !== "object" || coerced === null || Array.isArray(coerced)) return coerced;
+  const obj = { ...(coerced as Record<string, unknown>) };
+
+  const aliases: Record<string, string> = {
+    feature: "feature_key",
+    featureKey: "feature_key",
+    feature_name: "feature_key",
+    featureName: "feature_key",
+    feat: "feature_key",
+    name: "feature_key",
+    key: "feature_key",
+    domain_name: "domain",
+    domainName: "domain",
+    touchpoints: "allowed_touchpoints",
+    allowedTouchpoints: "allowed_touchpoints",
+    touchpoint: "allowed_touchpoints",
+    files: "allowed_touchpoints",
+    allowed_files: "allowed_touchpoints",
+    reuseSymbols: "reuse_symbols",
+    reuse: "reuse_symbols",
+    symbols: "reuse_symbols",
+    inputContract: "input_contract",
+    outputContract: "output_contract",
+    workspace: "workspace_path",
+    workspacePath: "workspace_path",
+    project_root: "workspace_path",
+    projectRoot: "workspace_path",
+  };
+
+  for (const [alias, target] of Object.entries(aliases)) {
+    if (obj[alias] !== undefined && obj[target] === undefined) {
+      obj[target] = obj[alias];
+    }
+  }
+
+  if (obj.feature_key !== undefined && obj.feature === undefined) {
+    obj.feature = obj.feature_key;
+  } else if (obj.feature !== undefined && obj.feature_key === undefined) {
+    obj.feature_key = obj.feature;
+  }
+
+  if (obj.domain !== undefined && obj.domain_name === undefined) {
+    obj.domain_name = obj.domain;
+  } else if (obj.domain_name !== undefined && obj.domain === undefined) {
+    obj.domain = obj.domain_name;
+  }
+
+  if (typeof obj.allowed_touchpoints === "string") {
+    obj.allowed_touchpoints = [obj.allowed_touchpoints];
+  } else if (!Array.isArray(obj.allowed_touchpoints) && obj.allowed_touchpoints !== undefined) {
+    obj.allowed_touchpoints = [];
+  }
+
+  if (typeof obj.reuse_symbols === "string") {
+    obj.reuse_symbols = [obj.reuse_symbols];
+  }
+
+  if (!obj.action) {
+    if (obj.allowed_touchpoints !== undefined || obj.domain !== undefined || obj.reuse_symbols !== undefined) {
+      obj.action = "lock";
+    } else {
+      obj.action = "get";
+    }
+  }
+
+  return obj;
+}
+
+export const FeatureToolSchema = z.preprocess(
+  normalizeFeatureToolArgs,
+  z.object({
+    action: z.enum(["get", "lock", "release"]).optional().default("get"),
+    feature_key: z.string().optional(),
+    feature: z.string().optional(),
+    domain: z.string().optional(),
+    domain_name: z.string().optional(),
+    description: z.string().optional(),
+    allowed_touchpoints: z.array(z.string()).optional(),
+    reuse_symbols: z.array(z.string()).optional(),
+    input_contract: z.record(z.unknown()).optional(),
+    output_contract: z.record(z.unknown()).optional(),
+    force: z.boolean().optional().default(false),
+    workspace_path: z.string().optional(),
+  })
+);
+export type FeatureToolArgs = z.infer<typeof FeatureToolSchema>;
+

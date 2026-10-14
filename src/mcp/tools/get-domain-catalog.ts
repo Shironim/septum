@@ -18,6 +18,8 @@ export function handleGetDomainCatalog(
   const indexStatus = {
     unsupported_files: JSON.parse(repo.getMeta("unsupported_files") || "[]"),
     watcher_mode: repo.getMeta("watcher_mode") || "manual",
+    sync_state: repo.getMeta("sync_state") || "unknown",
+    skipped_files: JSON.parse(repo.getMeta("skipped_files") || "[]"),
   };
 
   if (!domainName) {
@@ -29,15 +31,16 @@ export function handleGetDomainCatalog(
         total_domains: 0,
         message: `Workspace '${root}' belum memiliki domain terdaftar dalam Septum catalog.`,
         suggested_action: {
-          tool: "septum_register_domain",
+          tool: "septum_domain",
           params: {
+            action: "register",
             name: "core",
             root: "src",
             ingest_now: true,
           },
         },
         agent_guidance:
-          "Panggil tool 'septum_register_domain(name: \"core\", root: \"src\", ingest_now: true)' untuk mendaftarkan dan mengindeks domain utama secara otomatis, atau jalankan 'septum init' di terminal workspace.",
+          "Panggil tool 'septum_domain(action: \"register\", name: \"core\", root: \"src\", ingest_now: true)' untuk mendaftarkan dan mengindeks domain utama secara otomatis, atau jalankan 'septum init' di terminal workspace.",
       };
       return {
         content: [
@@ -75,7 +78,7 @@ export function handleGetDomainCatalog(
         forbidden_dependencies: JSON.parse(d.forbidden_deps_json || "[]"),
       })),
       agent_instruction:
-        "Macro semantic map loaded from SQLite SSOT. Use 'septum_get_domain_catalog' with domain='<name>' for granular file/symbol catalogs, or 'septum_trace_vertical_slice' with query='<route|command|intent>' for end-to-end execution flow.",
+        "Macro semantic map loaded from SQLite SSOT. Use 'septum_domain' with domain='<name>' for granular file/symbol catalogs, or 'septum_slice' with query='<route|command|intent>' for end-to-end execution flow.",
     };
 
     return {
@@ -111,8 +114,8 @@ export function handleGetDomainCatalog(
       available_domains: available,
       suggestions: suggestions.length > 0 ? suggestions : available,
       suggested_action: {
-        tool: "septum_register_domain",
-        params: { domain: domainName, root: `src/domains/${domainName}` },
+        tool: "septum_domain",
+        params: { action: "register", domain: domainName, root: `src/domains/${domainName}` },
       },
     };
     return {

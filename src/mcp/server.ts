@@ -1,63 +1,36 @@
-import { existsSync, statSync, watch, type FSWatcher } from "node:fs";
-import { relative, resolve } from "node:path";
+import { WorkspaceManager, resolveServerWorkspace, isWorkspaceInitialized, type WorkspaceLease } from "./workspace-manager.ts";
+import { RESOURCE_LIMITS } from "../core/resources/limits.ts";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
-import { BoundaryEvaluator } from "../core/boundary/evaluator.ts";
-import { ModuleResolver } from "../core/resolver/module-resolver.ts";
 import { ConfigLoader } from "../core/config/loader.ts";
-import { SeptumDatabase } from "../core/database/client.ts";
-import { SeptumRepository } from "../core/database/repository.ts";
-import { IngestionPipeline } from "../core/ingestion/pipeline.ts";
-import { ASTParserEngine } from "../core/parser/tree-sitter.ts";
 import { SessionManager } from "../core/session/session-manager.ts";
 import { SeptumTelemetry } from "../core/telemetry/telemetry.ts";
-import { handleCheckBoundary } from "./tools/check-boundary.ts";
-import { handleGetDomainCatalog } from "./tools/get-domain-catalog.ts";
+import { handleDomainTool } from "./tools/domain.ts";
+import { handleSymbolTool } from "./tools/symbol.ts";
+import { handleSliceTool } from "./tools/slice.ts";
+import { handleBoundaryTool } from "./tools/boundary.ts";
+import { handleFeatureTool } from "./tools/feature.ts";
+
 import {
-  handleClearFeatureContext,
-  handleGetFeatureContext,
-} from "./tools/get-feature-context.ts";
-import { handleLocateSymbol } from "./tools/locate-symbol.ts";
-import { handleTraceVerticalSlice } from "./tools/trace-vertical-slice.ts";
-import { handleGetSymbolHotspots } from "./tools/get-symbol-hotspots.ts";
-import { handleGetSymbol } from "./tools/get-symbol.ts";
-import { handleGetSymbolImpact } from "./tools/get-symbol-impact.ts";
-import { handleRegisterDomain } from "./tools/register-domain.ts";
-import { handleRegisterFeature } from "./tools/register-feature.ts";
-import { handleGetEnvironmentTopology } from "./tools/get-environment-topology.ts";
-import {
-  CheckBoundarySchema,
-  GetDomainCatalogSchema,
-  GetEnvironmentTopologySchema,
-  GetFeatureContextSchema,
-  GetSymbolHotspotsSchema,
-  GetSymbolImpactSchema,
-  GetSymbolSchema,
-  LocateSymbolSchema,
-  RegisterDomainSchema,
-  RegisterFeatureSchema,
-  TraceVerticalSliceSchema,
+  DomainToolSchema,
+  SymbolToolSchema,
+  SliceToolSchema,
+  BoundaryToolSchema,
+  FeatureToolSchema,
 } from "./schemas.ts";
 import { SEPTUM_VERSION } from "../version.ts";
-import { resolveWorkspaceRoot } from "../core/resolver/path-resolver.ts";
-import type { ValidatedSeptumConfig } from "../core/config/schema.ts";
 
-interface WorkspaceContext {
-  root: string;
-  config: ValidatedSeptumConfig;
-  db: SeptumDatabase;
-  repo: SeptumRepository;
-  evaluator: BoundaryEvaluator;
-  pipeline: IngestionPipeline;
-  ready: Promise<void>;
-  watcher: { flush: () => Promise<void>; close: () => void };
-}
-
-const workspaceContextCache = new Map<string, WorkspaceContext>();
+const TOOL_SCHEMAS = {
+  septum_domain: DomainToolSchema,
+  septum_symbol: SymbolToolSchema,
+  septum_slice: SliceToolSchema,
+  septum_boundary: BoundaryToolSchema,
+  septum_feature: FeatureToolSchema,
+};
 
 export function extractPathHint(args: unknown): string | undefined {
   if (!args) return undefined;
@@ -130,112 +103,16 @@ export function extractPathHint(args: unknown): string | undefined {
   return undefined;
 }
 
-function createWorkspaceWatcher(root: string, repo: SeptumRepository, pipeline: IngestionPipeline, ready: Promise<void>) {
-  const pending = new Set<string>();
-  let timer: ReturnType<typeof setTimeout> | null = null;
-  let flushing: Promise<void> | null = null;
-  let closed = false;
-  let needsFullSync = false;
-  const ignored = new Set(["node_modules", "vendor", ".git", ".septum", ".strata", "dist", "build", ".output", ".nuxt", ".next", ".cache", "coverage", ".turbo"]);
-  let watcher: FSWatcher | null = null;
-  let polling: ReturnType<typeof setInterval> | null = null;
-
-  const flush = async (): Promise<void> => {
-    if (timer) { clearTimeout(timer); timer = null; }
-    if (flushing) return flushing;
-    flushing = (async () => {
-      await ready;
-      if (!closed && (!watcher || needsFullSync || repo.getMeta("sync_error"))) {
-        needsFullSync = false;
-        await pipeline.run(ConfigLoader.load(undefined, root), { verifyContent: true });
-        repo.setMeta("sync_error", "");
-      }
-      while (!closed && pending.size > 0) {
-        const paths = [...pending];
-        pending.clear();
-        const config = ConfigLoader.load(undefined, root);
-        for (const filename of paths) {
-          const target = resolve(root, filename);
-          const relPath = relative(root, target).replace(/\\/g, "/");
-          if (!existsSync(target)) {
-            repo.runInTransaction(() => { repo.deleteFileByPath(relPath); repo.clearVerticalSlices();
-              const unsupported = JSON.parse(repo.getMeta("unsupported_files") || "[]") as string[];
-              repo.setMeta("unsupported_files", JSON.stringify(unsupported.filter(path => path !== relPath))); });
-          } else {
-            await pipeline.ingestFile(target, config);
-          }
-        }
-      }
-    })();
-    try { await flushing; } finally { flushing = null; }
-  };
-
-  const usePolling = (error: unknown) => {
-    watcher?.close();
-    watcher = null;
-    repo.setMeta("watcher_mode", "polling");
-    console.error(`[Septum Watcher Warning] Using polling: ${String(error)}`);
-    if (!polling) polling = setInterval(() => {
-      void flush().catch(failure => repo.setMeta("sync_error", String(failure)));
-    }, 1000);
-  };
-
-  try {
-    watcher = watch(root, { recursive: true }, (_event, filename) => {
-      if (!filename || closed) return;
-      const norm = filename.replace(/\\/g, "/");
-      if (norm.split("/").some(segment => ignored.has(segment))) return;
-      const target = resolve(root, norm);
-      let directory = false;
-      try { directory = statSync(target).isDirectory(); } catch { /* The path may have been removed before the event arrives. */ }
-      if (directory || (!ASTParserEngine.isSourceFile(norm) && (repo.getAllFiles().some(file => file.path.startsWith(norm + "/")) || (JSON.parse(repo.getMeta("unsupported_files") || "[]") as string[]).some(file => file.startsWith(norm + "/"))))) {
-        needsFullSync = true;
-      } else if (ASTParserEngine.isSourceFile(norm)) {
-        pending.add(norm);
-      } else {
-        return;
-      }
-      if (timer) clearTimeout(timer);
-      timer = setTimeout(() => {
-        void flush().catch(error => {
-          repo.setMeta("sync_error", String(error));
-          console.error(`[Septum Watcher Warning] ${String(error)}`);
-        });
-      }, 300);
-    });
-    repo.setMeta("watcher_mode", "native");
-    watcher.on("error", usePolling);
-  } catch (error) {
-    usePolling(error);
+function countLines(text: string): number {
+  let count = 1;
+  for (let i = 0; i < text.length; i++) {
+    if (text.charCodeAt(i) === 10) count++;
   }
-  return { flush, close: () => { closed = true; if (timer) clearTimeout(timer); if (polling) clearInterval(polling); watcher?.close(); } };
-}
-
-function getWorkspaceContext(pathHint?: string): WorkspaceContext {
-  const root = resolveWorkspaceRoot(pathHint);
-  let ctx = workspaceContextCache.get(root);
-  if (ctx) {
-    return ctx;
-  }
-
-  const config = ConfigLoader.load(undefined, root);
-  const rawDbPath = config.settings.db_path || ".septum/septum.db";
-  const resolvedDbPath = resolve(root, rawDbPath);
-  const db = new SeptumDatabase(resolvedDbPath);
-  const repo = new SeptumRepository(db.raw);
-  const evaluator = new BoundaryEvaluator(repo, new ModuleResolver(root, repo));
-  const pipeline = new IngestionPipeline(repo, root);
-
-  const ready = pipeline.run(config, { verifyContent: true }).then(() => {});
-  const watcher = createWorkspaceWatcher(root, repo, pipeline, ready);
-  ctx = { root, config, db, repo, evaluator, pipeline, ready, watcher };
-  workspaceContextCache.set(root, ctx);
-  return ctx;
+  return count;
 }
 
 export async function runMCPServer(): Promise<void> {
-  const initialCtx = getWorkspaceContext();
-  await initialCtx.ready;
+  const manager = new WorkspaceManager();
 
   const server = new Server(
     {
@@ -253,400 +130,259 @@ export async function runMCPServer(): Promise<void> {
     return {
       tools: [
         {
-          name: "septum_get_domain_catalog",
+          name: "septum_domain",
           description:
-            "Returns the authoritative structural catalog of a domain (files, archetypes, public signatures, and boundary rules). If 'domain' is omitted, returns the complete Macro Semantic Map (Telescope View) of the whole project. Token-efficient (< 400 tokens). Use this INSTEAD of browsing raw files.",
+            "Domain Catalog, Registration & Environment Topology Engine. Manages macro architecture, domain topology, bounded-context registration, and infrastructure plane (Edge, Gateway, Host, Runtime, Storage, Telemetry). Token-efficient (< 400 tokens).",
           inputSchema: {
             type: "object",
             properties: {
+              action: {
+                type: "string",
+                enum: ["catalog", "register", "topology"],
+                default: "catalog",
+                description: "Sub-operation to execute: 'catalog' (inspect domain/macro map), 'register' (dynamically register bounded-context domain), or 'topology' (6-layer infrastructure plane).",
+              },
               domain: {
                 type: "string",
-                description: "Optional domain to inspect (e.g. 'orders', 'core'). If omitted, returns the project-wide Macro Semantic Map.",
-              },
-              archetype_filter: {
-                type: "string",
-                description: "Optional filter: 'service' | 'model' | 'controller' | 'repository'",
+                description: "Target domain name (e.g. 'orders', 'core'). If omitted in catalog action, returns project-wide Macro Semantic Map.",
               },
               detail_level: {
                 type: "string",
                 enum: ["compact", "full"],
                 default: "compact",
-                description: "Catalog detail level: 'compact' (default, token-efficient summary with file connections) or 'full' (includes full method/property signatures).",
+                description: "Catalog detail level: 'compact' (default, token-efficient summary with file connections) or 'full' (includes full signatures).",
+              },
+              archetype_filter: {
+                type: "string",
+                description: "Optional archetype filter (e.g. 'service', 'model', 'controller', 'repository').",
               },
               file_filter: {
                 type: "string",
                 description: "Optional substring filter to inspect specific file(s) within the domain.",
               },
-            },
-            required: [],
-          },
-        },
-        {
-          name: "septum_get_feature_context",
-          description:
-            "Returns authoritative task/feature context (< 300 tokens) including allowed_touchpoints, reusable symbols with signatures, and contracts. Use this when implementing a specific feature.",
-          inputSchema: {
-            type: "object",
-            properties: {
-              feature_key: {
-                type: "string",
-                description:
-                  "Unique identifier for the feature to inspect (e.g. 'checkout_flow'). Symmetrically accepts 'feature'.",
-              },
-              feature: {
-                type: "string",
-                description: "Alias for 'feature_key'.",
-              },
-            },
-            required: [],
-          },
-        },
-        {
-          name: "septum_check_boundary",
-          description:
-            "Pre-flight boundary check to verify proposed file changes and imports against domain rules and feature touchpoints, or audit the entire repository / staged files / domain for cross-domain and circular dependencies.",
-          inputSchema: {
-            type: "object",
-            properties: {
-              file_path: {
-                type: "string",
-                description: "Path of the file being edited or created (single file check)",
-              },
-              file_paths: {
-                type: "array",
-                items: { type: "string" },
-                description: "List of file paths being edited or created in a batch check",
-              },
-              proposed_imports: {
-                type: "array",
-                items: { type: "string" },
-                description: "List of import statements or target symbols proposed for the file",
-              },
-              feature_key: {
-                type: "string",
-                description: "Optional feature key to validate touchpoints against.",
-              },
-              scope: {
-                type: "string",
-                enum: ["file", "all", "staged", "domain"],
-                description: "Audit scope when file_path is omitted: 'all' (entire codebase), 'staged' (git staged files), 'domain' (specific domain), or 'file'.",
-              },
-              domain: {
-                type: "string",
-                description: "Optional domain name to filter boundary audit when scope is 'domain' or 'all'.",
-              },
-            },
-          },
-        },
-        {
-          name: "septum_get_symbol_hotspots",
-          description:
-            "Discovers oversized functions, methods, and classes exceeding a specified line count threshold or cyclomatic control flow nesting depth (> 4). Essential for Single Responsibility Principle (SRP) enforcement, finding God Functions / bug magnets, and isolating refactoring targets deterministically without reading raw files.",
-          inputSchema: {
-            type: "object",
-            properties: {
-              min_lines: {
-                type: "number",
-                description: "Minimum physical lines of code (LoC) threshold (default: 30).",
-              },
-              min_nesting: {
-                type: "number",
-                description: "Minimum control-flow nesting depth (e.g. nested if/for/while/try > 4).",
-              },
-              kind: {
-                type: "string",
-                description: "Filter by symbol kind ('function', 'method', 'class', 'struct', 'interface').",
-              },
-              domain: {
-                type: "string",
-                description: "Filter by domain name.",
-              },
-              limit: {
-                type: "number",
-                description: "Maximum results to return (default: 30).",
-              },
-              sort_by: {
-                type: "string",
-                enum: ["lines", "nesting", "risk_score"],
-                description: "Sorting criteria: 'risk_score' (combines lines & nesting depth), 'nesting', or 'lines'. Default: 'risk_score'.",
-              },
-            },
-          },
-        },
-        {
-          name: "septum_clear_feature_context",
-          description:
-            "Releases the active feature session lock (.septum/session.json) once feature implementation or editing is complete.",
-          inputSchema: {
-            type: "object",
-            properties: {},
-          },
-        },
-        {
-          name: "septum_locate_symbol",
-          description:
-            "Locates a symbol or resolves diagnostic error logs (e.g. 'OrderController::calculateTotal()' or 'Method X::y() does not exist'). Returns target file path, existing sibling methods, and ranked alternative suggestions when a method doesn't exist.",
-          inputSchema: {
-            type: "object",
-            properties: {
-              query: {
-                type: "string",
-                description:
-                  "Symbol name, call syntax (e.g. 'OrderController::calculateTotal'), or error log snippet. Symmetrically accepts 'symbol'.",
-              },
-              symbol: {
-                type: "string",
-                description: "Alias for 'query'.",
-              },
-              domain: {
-                type: "string",
-                description: "Optional domain filter (e.g. 'orders')",
-              },
-              limit: {
-                type: "number",
-                description: "Maximum number of suggestions to return (default: 10, max: 50).",
-              },
-            },
-            required: ["query"],
-          },
-        },
-        {
-          name: "septum_trace_vertical_slice",
-          description:
-            "Traces the end-to-end vertical slice of an MVC/Inertia application (Route -> Request Validation -> Controller Action -> Model -> Frontend View/Component). Accepts route URIs, controller actions, or high-level feature intents without requiring manual file guessing.",
-          inputSchema: {
-            type: "object",
-            properties: {
-              query: {
-                type: "string",
-                description:
-                  "Route URI (e.g. 'POST /orders/{id}/status'), action (e.g. 'OrderController@updateStatus'), or intent (e.g. 'Ubah status order di dashboard'). Symmetrically accepts 'symbol'.",
-              },
-              symbol: {
-                type: "string",
-                description: "Alias for 'query'.",
-              },
-              max_depth: {
-                type: "number",
-                default: 5,
-                minimum: 1,
-                maximum: 8,
-                description: "Maximum depth to trace (default: 5, min: 1, max: 8).",
-              },
-            },
-            required: ["query"],
-          },
-        },
-        {
-          name: "septum_get_symbol",
-          description:
-            "Retrieves physical coordinates and structural metadata of a symbol (exact start_line, end_line, total_lines, signature, visibility, injected dependencies, and outbound calls). Returns deterministic JSON for direct piping into view_file without line guessing.",
-          inputSchema: {
-            type: "object",
-            properties: {
-              symbol: {
-                type: "string",
-                description:
-                  "Symbol name, e.g. 'OrderController::cancelOrder', 'OrderController', or 'cancelOrder'. Symmetrically accepts 'query'.",
-              },
-              query: {
-                type: "string",
-                description: "Alias for 'symbol'.",
-              },
-              domain: {
-                type: "string",
-                description: "Optional domain filter (e.g. 'orders')",
-              },
-              include_dependencies: {
-                type: "boolean",
-                description: "Whether to include injected dependencies and outbound calls (default: true)",
-              },
-            },
-            required: ["symbol"],
-          },
-        },
-        {
-          name: "septum_get_symbol_impact",
-          description:
-            "Calculates blast radius and maps all inbound callers/dependents of a symbol across domains. Prevents Local Scope Myopia by reporting all files, callers, and line numbers that depend on the target symbol before refactoring.",
-          inputSchema: {
-            type: "object",
-            properties: {
-              symbol: {
-                type: "string",
-                description:
-                  "Target symbol to inspect, e.g. 'OrderService::cancelOrder' or 'OrderService'. Symmetrically accepts 'query'.",
-              },
-              query: {
-                type: "string",
-                description: "Alias for 'symbol'.",
-              },
-            },
-            required: ["symbol"],
-          },
-        },
-        {
-          name: "septum_register_domain",
-          description:
-            "Directly registers or updates a bounded-context domain in SQLite SSOT (Zero-Config). Use this to dynamically teach Septum about custom domain boundaries, allowed dependencies, and archetypes without touching any YAML files.",
-          inputSchema: {
-            type: "object",
-            properties: {
-              domain: {
-                type: "string",
-                description:
-                  "Unique domain name/identifier (e.g. 'orders', 'checkout', 'billing'). Symmetrically accepts 'name'.",
-              },
-              name: {
-                type: "string",
-                description: "Alias for 'domain'.",
-              },
               root: {
                 type: "string",
-                description: "Root directory path for this domain (e.g. 'src/domains/orders', 'app/Domain/Orders')",
+                description: "Root directory path for domain registration (action='register').",
               },
               description: {
                 type: "string",
-                description: "Optional high-level architectural purpose of the domain",
+                description: "Architectural purpose of the domain (action='register').",
               },
               allowed_dependencies: {
                 type: "array",
                 items: { type: "string" },
-                description: "List of domain names this domain is allowed to import",
+                description: "List of domain names this domain is allowed to import (action='register').",
               },
               forbidden_dependencies: {
                 type: "array",
                 items: { type: "string" },
-                description: "List of domain names strictly forbidden from being imported",
+                description: "List of domain names strictly forbidden from being imported (action='register').",
               },
               archetypes: {
                 type: "object",
-                description: "Layer archetypes (e.g. { 'service': 'src/services/**', 'model': 'src/models/**' })",
+                description: "Layer archetypes mapping (action='register').",
               },
               ingest_now: {
                 type: "boolean",
-                description: "Whether to immediately run AST ingestion on this domain's files (default: false)",
+                default: false,
+                description: "Whether to immediately run AST ingestion on domain files upon registration.",
               },
-            },
-            required: ["domain", "root"],
-          },
-        },
-        {
-          name: "septum_register_feature",
-          description:
-            "Directly registers or updates a feature/task context in Septum SQLite SSOT. Establishes an active session lease (.septum/session.json) with allowed_touchpoints and reuse_symbols to enforce surgical blast-radius boundaries during code modifications.",
-          inputSchema: {
-            type: "object",
-            properties: {
-              feature_key: {
-                type: "string",
-                description:
-                  "Unique identifier for the feature/task (e.g. 'penjualan', 'checkout-pos'). Symmetrically accepts 'feature'.",
-              },
-              feature: {
-                type: "string",
-                description: "Alias for 'feature_key'.",
-              },
-              domain: {
-                type: "string",
-                description: "Bounded-context domain to which this feature belongs",
-              },
-              description: {
-                type: "string",
-                description: "Scope and rationale for the feature",
-              },
-              allowed_touchpoints: {
-                type: "array",
-                items: { type: "string" },
-                description: "List of file paths or glob patterns permitted to be edited for this feature",
-              },
-              reuse_symbols: {
-                type: "array",
-                items: { type: "string" },
-                description: "Symbols/services/methods that must be reused rather than duplicated",
-              },
-              input_contract: {
-                type: "object",
-                description: "Expected input payload / DTO schema",
-              },
-              output_contract: {
-                type: "object",
-                description: "Expected output response / return contract",
-              },
-            },
-            required: ["feature_key", "domain"],
-          },
-        },
-        {
-          name: "septum_get_environment_topology",
-          description:
-            "Self-Aware Production Topology Engine: Maps and verifies the 6-layer environment topology (Edge/WAF, Gateway/Web Server, Host Platform, Runtime, Storage/Cache, Telemetry). Identifies cross-layer constraints (e.g. Cloudflare + LiteSpeed + Laravel throttle), surfaces pending architectural inquiries if layers are ambiguous, and allows recording verified environment answers to SQLite SSOT.",
-          inputSchema: {
-            type: "object",
-            properties: {
               resolve: {
                 type: "object",
                 properties: {
                   layer: {
                     type: "string",
                     enum: ["edge", "gateway", "host", "runtime", "storage", "telemetry"],
-                    description: "Target layer to manually resolve/verify",
                   },
-                  platform: {
-                    type: "string",
-                    description: "Confirmed platform name (e.g. 'Hostinger Shared Hosting', 'Cloudflare WAF', 'LiteSpeed')",
-                  },
-                  constraints: {
-                    type: "array",
-                    items: { type: "string" },
-                    description: "Optional list of architectural constraints for this layer",
-                  },
+                  platform: { type: "string" },
+                  constraints: { type: "array", items: { type: "string" } },
                 },
-                required: ["layer", "platform"],
-                description: "Optional argument to record and verify a specific layer into SQLite SSOT",
+                description: "Record and verify infrastructure layer in SQLite SSOT (action='topology').",
               },
-              resolveNode: {
+              resolve_node: {
                 type: "object",
                 properties: {
-                  id: {
-                    type: "string",
-                    description: "Unique node identifier (e.g. 'api-gateway-1', 'db-primary')",
-                  },
-                  layer: {
-                    type: "string",
-                    enum: ["edge", "gateway", "host", "runtime", "storage", "telemetry"],
-                    description: "Topology layer for this node",
-                  },
-                  name: {
-                    type: "string",
-                    description: "Human-readable node name",
-                  },
-                  platform: {
-                    type: "string",
-                    description: "Platform or infrastructure provider for this node",
-                  },
-                  domain_or_ip: {
-                    type: "string",
-                    description: "Optional domain or IP address of the node",
-                  },
-                  role: {
-                    type: "string",
-                    description: "Optional architectural role of the node",
-                  },
-                  connected_to: {
-                    type: "array",
-                    items: { type: "string" },
-                    description: "Optional list of target node IDs this node connects to",
-                  },
+                  id: { type: "string" },
+                  layer: { type: "string", enum: ["edge", "gateway", "host", "runtime", "storage", "telemetry"] },
+                  name: { type: "string" },
+                  platform: { type: "string" },
+                  domain_or_ip: { type: "string" },
+                  role: { type: "string" },
+                  connected_to: { type: "array", items: { type: "string" } },
+                  constraints: { type: "array", items: { type: "string" } },
                 },
-                required: ["id", "layer", "name", "platform"],
-                description: "Optional argument to record and verify a distributed topology node into SQLite SSOT",
+                description: "Record distributed topology node in SQLite SSOT (action='topology').",
               },
               refresh: {
                 type: "boolean",
-                description: "Force re-detection from codebase files, ignoring cached status",
+                description: "Force re-detection from codebase files, ignoring cached status (action='topology').",
               },
             },
+            required: [],
+          },
+        },
+        {
+          name: "septum_symbol",
+          description:
+            "Unified Symbol Engine: single entrypoint for symbol location, full contract inspection, refactoring blast radius (impact), and Single Responsibility / God Function complexity hotspots.",
+          inputSchema: {
+            type: "object",
+            properties: {
+              action: {
+                type: "string",
+                enum: ["locate", "inspect", "impact", "hotspots"],
+                default: "locate",
+                description: "Sub-operation: 'locate' (fuzzy search/error log resolution), 'inspect' (physical coordinates & signatures), 'impact' (blast radius & inbound callers), or 'hotspots' (complexity & SRP smells).",
+              },
+              query: {
+                type: "string",
+                description: "Symbol name, call syntax (e.g. 'OrderController::cancelOrder'), or search query (for locate, inspect, impact).",
+              },
+              domain: {
+                type: "string",
+                description: "Optional domain filter (e.g. 'orders').",
+              },
+              include_dependencies: {
+                type: "boolean",
+                default: true,
+                description: "Whether to include injected dependencies and outbound calls (action='inspect').",
+              },
+              min_lines: {
+                type: "number",
+                description: "Minimum physical lines of code threshold (action='hotspots', default: 30).",
+              },
+              min_nesting: {
+                type: "number",
+                description: "Minimum control-flow nesting depth threshold (action='hotspots').",
+              },
+              kind: {
+                type: "string",
+                description: "Filter symbol kind: 'function' | 'method' | 'class' | 'struct' | 'interface' (action='hotspots').",
+              },
+              sort_by: {
+                type: "string",
+                enum: ["risk_score", "line_count", "lines", "nesting"],
+                default: "risk_score",
+                description: "Sorting criteria for hotspots (action='hotspots').",
+              },
+              limit: {
+                type: "number",
+                description: "Maximum results to return (default: 10 for locate, 30 for hotspots).",
+              },
+            },
+            required: [],
+          },
+        },
+        {
+          name: "septum_slice",
+          description:
+            "Vertical Execution Slice Tracer: traces end-to-end execution flow (Ingress -> Validation -> Controller -> Service -> Repository -> Entity) from route URI, controller action, or high-level intent without guessing files.",
+          inputSchema: {
+            type: "object",
+            properties: {
+              query: {
+                type: "string",
+                description: "Route URI (e.g. 'POST /orders/{id}/pay'), action (e.g. 'OrderController@pay'), or high-level task intent.",
+              },
+              max_depth: {
+                type: "number",
+                default: 5,
+                minimum: 1,
+                maximum: 8,
+                description: "Maximum depth to trace (default: 5, min: 1, max: 8). Use 6-8 for deep Event/Job/Queue traces.",
+              },
+            },
+            required: ["query"],
+          },
+        },
+        {
+          name: "septum_boundary",
+          description:
+            "Architecture Guard & Circular Dependency Gate: Pre-flight boundary check verifying proposed file edits, additions, and imports against domain rules and feature touchpoints, or auditing the entire repository / staged files for cross-domain and circular dependencies.",
+          inputSchema: {
+            type: "object",
+            properties: {
+              scope: {
+                type: "string",
+                enum: ["file", "staged", "all", "domain"],
+                description: "Audit scope: 'file' requires file_path or non-empty file_paths; 'staged', 'all', and 'domain' reject file targets and proposed_imports. 'domain' requires a registered domain; 'all' rejects domain filters. If omitted, infer file/staged/domain/all from arguments.",
+              },
+              file_path: {
+                type: "string",
+                description: "Path of the file being edited or created (scope='file' only). Use either file_path or file_paths.",
+              },
+              file_paths: {
+                type: "array",
+                items: { type: "string" },
+                description: "Non-empty list of file paths for batch proposed-import checks (scope='file' only). Use either file_path or file_paths.",
+              },
+              proposed_imports: {
+                type: "array",
+                items: { type: "string" },
+                description: "List of proposed import statements or target symbols (scope='file' only).",
+              },
+              domain: {
+                type: "string",
+                description: "Registered domain name, required for scope='domain'; optional for staged/file checks. Explicit scope='all' does not accept a domain filter.",
+              },
+              feature_key: {
+                type: "string",
+                description: "Optional feature key to validate touchpoints against.",
+              },
+            },
+            required: [],
+          },
+        },
+        {
+          name: "septum_feature",
+          description:
+            "Active Touchpoint & Scope Lock Engine: manages feature task context, touchpoint locks (.septum/session.json), and session release to enforce surgical blast-radius boundaries.",
+          inputSchema: {
+            type: "object",
+            properties: {
+              action: {
+                type: "string",
+                enum: ["get", "lock", "release"],
+                default: "get",
+                description: "Feature lifecycle action: 'get' (retrieve feature context), 'lock' (register feature & establish active session lease), or 'release' (release active session lock).",
+              },
+              feature_key: {
+                type: "string",
+                description: "Unique feature identifier (e.g. 'checkout_flow'). Symmetrically accepts 'feature'.",
+              },
+              domain: {
+                type: "string",
+                description: "Bounded-context domain for this feature (action='lock').",
+              },
+              description: {
+                type: "string",
+                description: "Scope and rationale for the feature (action='lock').",
+              },
+              allowed_touchpoints: {
+                type: "array",
+                items: { type: "string" },
+                description: "Permitted file paths or glob patterns (action='lock').",
+              },
+              reuse_symbols: {
+                type: "array",
+                items: { type: "string" },
+                description: "Mandatory reusable symbols (action='lock').",
+              },
+              input_contract: {
+                type: "object",
+                description: "Expected input payload / DTO schema (action='lock').",
+              },
+              output_contract: {
+                type: "object",
+                description: "Expected output response contract (action='lock').",
+              },
+              force: {
+                type: "boolean",
+                default: false,
+                description: "Force release session (action='release').",
+              },
+            },
+            required: [],
           },
         },
       ],
@@ -656,8 +392,61 @@ export async function runMCPServer(): Promise<void> {
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: args } = request.params;
     const startTime = performance.now();
-    const pathHint = extractPathHint(args as Record<string, any>);
-    const ctx = getWorkspaceContext(pathHint);
+    let lease: WorkspaceLease | undefined;
+    try {
+    const schema = TOOL_SCHEMAS[name as keyof typeof TOOL_SCHEMAS];
+    if (!schema) throw new Error(`Unknown tool: '${name}'`);
+    const validated = schema.safeParse(args ?? {});
+    if (!validated.success) throw new Error(`[Septum Validation Error] Invalid arguments for ${name}: ${validated.error.message}`);
+    const record = (validated.data ?? {}) as Record<string, any>;
+    const raw = (args ?? {}) as Record<string, any>;
+    const workspacePath = record.workspace_path ?? raw.workspace_path ?? raw.workspacePath ?? raw.workspace ?? raw.project_root ?? raw.projectRoot;
+    const root = resolveServerWorkspace({workspacePath, filePath: workspacePath ? undefined : extractPathHint(args), fallbackRoot:manager.lastRoot});
+
+    if (!isWorkspaceInitialized(root)) {
+      if (name === "septum_domain" && (!record.action || record.action === "catalog")) {
+        const diagnostic = {
+          status: "NOT_INDEXED",
+          total_domains: 0,
+          message: `Workspace '${root}' belum diinisialisasi dengan Septum. Jalankan 'septum init' terlebih dahulu di terminal workspace.`,
+          suggested_action: {
+            tool: "septum_domain",
+            params: {
+              action: "register",
+              name: "core",
+              root: "src",
+              ingest_now: true,
+            },
+          },
+          agent_guidance:
+            "Panggil tool 'septum_domain(action: \"register\", name: \"core\", root: \"src\", ingest_now: true)' untuk mendaftarkan dan mengindeks domain utama secara otomatis, atau jalankan 'septum init' di terminal workspace.",
+        };
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(diagnostic, null, 2),
+            },
+          ],
+          metadata: diagnostic,
+        };
+      }
+      const isRegistration = name === "septum_domain" && record.action === "register";
+      if (!isRegistration) {
+        return {
+          isError: true,
+          content: [
+            {
+              type: "text",
+              text: `[Septum MCP Error] Workspace '${root}' belum diinisialisasi. Jalankan 'septum init' di terminal workspace atau gunakan tool 'septum_domain' dengan action='register' untuk mendaftarkan domain.`,
+            },
+          ],
+        };
+      }
+    }
+
+    lease = manager.acquire(root);
+    const ctx = lease.context;
     await ctx.ready;
     await ctx.watcher.flush();
     if (ctx.repo.getMeta("sync_error")) throw new Error(`Workspace index synchronization failed: ${ctx.repo.getMeta("sync_error")}`);
@@ -670,8 +459,9 @@ export async function runMCPServer(): Promise<void> {
       : null;
 
     const executeTool = async () => {
-      if (name === "septum_get_domain_catalog") {
-        const parsed = GetDomainCatalogSchema.safeParse(args ?? {});
+      // 5 Unified Tools Handlers
+      if (name === "septum_domain") {
+        const parsed = DomainToolSchema.safeParse(args ?? {});
         if (!parsed.success) {
           return {
             isError: true,
@@ -683,9 +473,9 @@ export async function runMCPServer(): Promise<void> {
             ],
           };
         }
-        return handleGetDomainCatalog(ctx.repo, ctx.config, parsed.data, ctx.root);
-      } else if (name === "septum_get_feature_context") {
-        const parsed = GetFeatureContextSchema.safeParse(args ?? {});
+        return await handleDomainTool(ctx.repo, ctx.config, parsed.data, ctx.root);
+      } else if (name === "septum_symbol") {
+        const parsed = SymbolToolSchema.safeParse(args ?? {});
         if (!parsed.success) {
           return {
             isError: true,
@@ -697,9 +487,9 @@ export async function runMCPServer(): Promise<void> {
             ],
           };
         }
-        return handleGetFeatureContext(ctx.repo, ctx.config, parsed.data, ctx.root);
-      } else if (name === "septum_locate_symbol") {
-        const parsed = LocateSymbolSchema.safeParse(args ?? {});
+        return await handleSymbolTool(ctx.repo, ctx.config, parsed.data, ctx.pipeline, ctx.root);
+      } else if (name === "septum_slice") {
+        const parsed = SliceToolSchema.safeParse(args ?? {});
         if (!parsed.success) {
           return {
             isError: true,
@@ -711,9 +501,9 @@ export async function runMCPServer(): Promise<void> {
             ],
           };
         }
-        return await handleLocateSymbol(ctx.repo, ctx.config, parsed.data, ctx.pipeline, ctx.root);
-      } else if (name === "septum_get_symbol") {
-        const parsed = GetSymbolSchema.safeParse(args ?? {});
+        return handleSliceTool(ctx.repo, ctx.config, parsed.data, ctx.root);
+      } else if (name === "septum_boundary") {
+        const parsed = BoundaryToolSchema.safeParse(args ?? {});
         if (!parsed.success) {
           return {
             isError: true,
@@ -725,9 +515,9 @@ export async function runMCPServer(): Promise<void> {
             ],
           };
         }
-        return handleGetSymbol(ctx.repo, ctx.config, parsed.data, ctx.root);
-      } else if (name === "septum_get_symbol_impact") {
-        const parsed = GetSymbolImpactSchema.safeParse(args ?? {});
+        return await handleBoundaryTool(ctx.evaluator, ctx.config, parsed.data, ctx.repo, ctx.root);
+      } else if (name === "septum_feature") {
+        const parsed = FeatureToolSchema.safeParse(args ?? {});
         if (!parsed.success) {
           return {
             isError: true,
@@ -739,110 +529,14 @@ export async function runMCPServer(): Promise<void> {
             ],
           };
         }
-        return handleGetSymbolImpact(ctx.repo, ctx.config, parsed.data, ctx.root);
-      } else if (name === "septum_trace_vertical_slice") {
-        const parsed = TraceVerticalSliceSchema.safeParse(args ?? {});
-        if (!parsed.success) {
-          return {
-            isError: true,
-            content: [
-              {
-                type: "text",
-                text: `[Septum Validation Error] Invalid arguments for ${name}: ${parsed.error.message}`,
-              },
-            ],
-          };
-        }
-        return handleTraceVerticalSlice(ctx.repo, ctx.config, parsed.data, ctx.root);
-      } else if (name === "septum_clear_feature_context") {
-        const cleared = handleClearFeatureContext(ctx.root);
-        return {
-          content: [
-            {
-              type: "text",
-              text: cleared
-                ? "Active feature session successfully released."
-                : "No active feature session found to release.",
-            },
-          ],
-        };
-      } else if (name === "septum_check_boundary") {
-        const parsed = CheckBoundarySchema.safeParse(args ?? {});
-        if (!parsed.success) {
-          return {
-            isError: true,
-            content: [
-              {
-                type: "text",
-                text: `[Septum Validation Error] Invalid arguments for ${name}: ${parsed.error.message}`,
-              },
-            ],
-          };
-        }
-        return handleCheckBoundary(ctx.evaluator, ctx.config, parsed.data, ctx.repo, ctx.root);
-      } else if (name === "septum_get_symbol_hotspots") {
-        const parsed = GetSymbolHotspotsSchema.safeParse(args ?? {});
-        if (!parsed.success) {
-          return {
-            isError: true,
-            content: [
-              {
-                type: "text",
-                text: `[Septum Validation Error] Invalid arguments for ${name}: ${parsed.error.message}`,
-              },
-            ],
-          };
-        }
-        return handleGetSymbolHotspots(ctx.repo, ctx.config, parsed.data, ctx.root);
-      } else if (name === "septum_register_domain") {
-        const parsed = RegisterDomainSchema.safeParse(args ?? {});
-        if (!parsed.success) {
-          return {
-            isError: true,
-            content: [
-              {
-                type: "text",
-                text: `[Septum Validation Error] Invalid arguments for ${name}: ${parsed.error.message}`,
-              },
-            ],
-          };
-        }
-        return await handleRegisterDomain(ctx.repo, ctx.config, parsed.data, ctx.root);
-      } else if (name === "septum_register_feature") {
-        const parsed = RegisterFeatureSchema.safeParse(args ?? {});
-        if (!parsed.success) {
-          return {
-            isError: true,
-            content: [
-              {
-                type: "text",
-                text: `[Septum Validation Error] Invalid arguments for ${name}: ${parsed.error.message}`,
-              },
-            ],
-          };
-        }
-        return await handleRegisterFeature(ctx.repo, ctx.config, parsed.data, ctx.root);
-      } else if (name === "septum_get_environment_topology") {
-        const parsed = GetEnvironmentTopologySchema.safeParse(args ?? {});
-        if (!parsed.success) {
-          return {
-            isError: true,
-            content: [
-              {
-                type: "text",
-                text: `[Septum Validation Error] Invalid arguments for ${name}: ${parsed.error.message}`,
-              },
-            ],
-          };
-        }
-        return handleGetEnvironmentTopology(ctx.repo, ctx.config, parsed.data, ctx.root);
+        return await handleFeatureTool(ctx.repo, ctx.config, parsed.data, ctx.root);
       } else {
         throw new Error(`Unknown tool: '${name}'`);
       }
     };
 
     try {
-      const response = await executeTool();
+      const response = await manager.runTool(executeTool);
       const durationMs = Math.round(performance.now() - startTime);
 
       let bytesOut = 0;
@@ -851,7 +545,7 @@ export async function runMCPServer(): Promise<void> {
         for (const item of response.content) {
           if (typeof item.text === "string") {
             bytesOut += Buffer.byteLength(item.text, "utf8");
-            linesOut += item.text.split("\n").length;
+            linesOut += countLines(item.text);
           }
         }
       }
@@ -894,37 +588,63 @@ export async function runMCPServer(): Promise<void> {
         ],
       };
     }
+    } catch (error) {
+      return {isError: true, content: [{type: "text" as const, text: `[Septum MCP Error] ${error instanceof Error ? error.message : String(error)}`}]};
+    } finally { lease?.release(); }
   });
 
   const transport = new StdioServerTransport();
 
+  let stopping = false;
+  let memoryTimer: ReturnType<typeof setInterval> | undefined;
   const cleanup = () => {
-    for (const ctx of workspaceContextCache.values()) {
+    if (stopping) return;
+    stopping = true;
+    if (memoryTimer) clearInterval(memoryTimer);
+    const deadline = setTimeout(() => {
+      console.error("[Septum MCP] Shutdown deadline exceeded; indexing may require reconciliation.");
+      process.exit(1);
+    }, RESOURCE_LIMITS.shutdownMs);
+    void (async () => {
       try {
-        ctx.watcher.close();
-        ctx.db.close();
-      } catch (err) {
-        // Ignore close error during shutdown
+        await server.close();
+        await manager.close();
+        clearTimeout(deadline);
+        console.error("[Septum MCP] All workspace resources closed cleanly.");
+        process.exit(0);
+      } catch (error) {
+        console.error(`[Septum MCP] Cleanup failed: ${String(error)}`);
+        clearTimeout(deadline);
+        process.exit(1);
       }
-    }
-    console.error("[Septum MCP] All database connections closed cleanly.");
-    process.exit(0);
+    })();
   };
-
-  process.on("SIGINT", cleanup);
-  process.on("SIGTERM", cleanup);
-  process.on("beforeExit", () => {
-    for (const ctx of workspaceContextCache.values()) {
-      try {
-        ctx.watcher.close();
-        ctx.db.close();
-      } catch {
-        // Ignore close error
-      }
-    }
-  });
-
+  process.once("SIGINT", cleanup);
+  process.once("SIGTERM", cleanup);
+  process.stdin.once("end", cleanup);
+  process.stdin.once("close", cleanup);
+  server.onclose = cleanup;
   await server.connect(transport);
+  try {
+    const initialRoot = resolveServerWorkspace({initial:true});
+    if (isWorkspaceInitialized(initialRoot)) {
+      const initial = manager.acquire(initialRoot);
+      try { await initial.context.ready; } finally { initial.release(); }
+    } else {
+      manager.lastRoot = initialRoot;
+    }
+    if (process.env.SEPTUM_MEMORY_DIAGNOSTICS === "1") {
+      memoryTimer = setInterval(() => {
+        const sample = { ...process.memoryUsage(), workspaces: manager.size, watches: manager.watchCount, pending_paths: manager.pendingPaths, sync_duration_ms: manager.syncDurationMs };
+        SeptumTelemetry.recordMemorySample(sample, manager.lastRoot);
+      }, 60_000);
+      memoryTimer.unref();
+    }
+  } catch (error) {
+    await manager.close();
+    throw error;
+  }
+
   if (process.stdin.isTTY) {
     console.error(
       `\x1b[36m[Septum MCP]\x1b[0m Server daemon running on stdio (PID: ${process.pid}, v${SEPTUM_VERSION}).`

@@ -4,7 +4,7 @@ import type { BoundaryEvaluator } from "../../core/boundary/evaluator.ts";
 import type { ValidatedSeptumConfig } from "../../core/config/schema.ts";
 import type { SeptumRepository } from "../../core/database/repository.ts";
 import type { BoundaryViolation } from "../../types/index.ts";
-import { normalizeBoundaryArgs, type CheckBoundaryArgs } from "../schemas.ts";
+import { CheckBoundarySchema, type CheckBoundaryArgs } from "../schemas.ts";
 
 export type { CheckBoundaryArgs } from "../schemas.ts";
 
@@ -15,11 +15,21 @@ export async function handleCheckBoundary(
   repo?: SeptumRepository,
   workspaceRoot?: string
 ) {
-  const args = (normalizeBoundaryArgs(rawArgs ?? {}) ?? {}) as CheckBoundaryArgs & Record<string, unknown>;
+  const args = CheckBoundarySchema.parse(rawArgs ?? {});
+  if (args.domain) {
+    const domain = Object.keys(config.domains || {}).find(name => name.toLowerCase() === args.domain!.toLowerCase());
+    if (!domain) throw new Error(`Unknown boundary domain '${args.domain}'. Choose a registered domain.`);
+    args.domain = domain;
+  }
   const root = workspaceRoot || args.workspace_path || process.cwd();
   const proposedImports = args.proposed_imports ?? [];
   const featureKey = args.feature_key;
 
+  const syncState = repo?.getMeta("sync_state");
+  if (syncState === "running" || syncState === "error") {
+    return { content: [{ type: "text" as const, text: JSON.stringify({status: "unknown", sync_state: syncState, message: "Boundary audit is incomplete because workspace synchronization has not completed."}) }] };
+  }
+  const skipped = JSON.parse(repo?.getMeta("skipped_files") || "[]") as {path: string; reason: string}[];
   const unsupported = JSON.parse(repo?.getMeta("unsupported_files") || "[]") as string[];
   const requested = [...(Array.isArray(args.file_path) ? args.file_path : args.file_path ? [args.file_path] : []), ...(args.file_paths || [])]
     .map(file => relative(root, resolve(root, file)).replace(/\\/g, "/"));
@@ -27,6 +37,13 @@ export async function handleCheckBoundary(
     (!args.domain || evaluator.resolveSourceDomain(file, config) === args.domain) &&
     (requested.length === 0 || requested.includes(file))
   );
+  const relevantSkipped = skipped.filter(file =>
+    (!args.domain || evaluator.resolveSourceDomain(file.path, config) === args.domain) &&
+    (requested.length === 0 || requested.includes(file.path))
+  );
+  if (relevantSkipped.length > 0 && args.scope !== "staged" && !args.staged) {
+    return { content: [{type: "text" as const, text: JSON.stringify({status: "unknown", skipped_files: relevantSkipped, message: "Boundary audit is incomplete because source files exceed resource limits."})}] };
+  }
   if (relevantUnsupported.length > 0 && args.scope !== "staged" && !args.staged) {
     return { content: [{ type: "text" as const, text: JSON.stringify({ status: "unknown", unsupported_files: relevantUnsupported, message: "Boundary audit is incomplete because source files have no supported parser." }) }] };
   }
@@ -157,7 +174,7 @@ export async function handleCheckBoundary(
                     args.domain ? ` in domain '${args.domain}'` : " across codebase"
                   }.`
                 : domainCount === 0
-                ? "No boundary violations detected. [Septum Notice: Domain catalog is currently unindexed. Run 'septum_register_domain' to initialize bounded contexts.]"
+                ? "No boundary violations detected. [Septum Notice: Domain catalog is currently unindexed. Run 'septum_domain' with action='register' to initialize bounded contexts.]"
                 : `All domain boundaries are clean${
                     args.domain ? ` for domain '${args.domain}'` : ""
                   }. Zero cross-domain leaks or circular dependencies detected.`,
@@ -206,7 +223,7 @@ export async function handleCheckBoundary(
               message: hasViolations
                 ? `${totalViolations} boundary violation(s) detected across ${filesToCheck.length} file(s).`
                 : Object.keys(config?.domains || {}).length === 0
-                ? `All ${filesToCheck.length} file(s) approved. [Septum Notice: Domain catalog is currently unindexed. Run 'septum_register_domain' to initialize bounded contexts.]`
+                ? `All ${filesToCheck.length} file(s) approved. [Septum Notice: Domain catalog is currently unindexed. Run 'septum_domain' with action='register' to initialize bounded contexts.]`
                 : `All ${filesToCheck.length} file(s) approved. No boundary violations detected.`,
             },
             null,
@@ -243,7 +260,7 @@ export async function handleCheckBoundary(
                 : undefined,
               message:
                 Object.keys(config?.domains || {}).length === 0
-                  ? "Boundary integrity check failed: Domain catalog is currently unindexed. Run 'septum_register_domain' to initialize bounded contexts."
+                  ? "Boundary integrity check failed: Domain catalog is currently unindexed. Run 'septum_domain' with action='register' to initialize bounded contexts."
                   : violations.some((v) => v.rule === "unmapped_domain")
                   ? "Boundary integrity check failed: File does not belong to any declared bounded context."
                   : "Boundary violation detected. Proposed imports violate bounded context architecture.",
@@ -274,7 +291,7 @@ export async function handleCheckBoundary(
               : undefined,
             message:
               Object.keys(config?.domains || {}).length === 0
-                ? "No boundary violations detected. [Septum Notice: Domain catalog is currently unindexed. Run 'septum_register_domain' to initialize bounded contexts.]"
+                ? "No boundary violations detected. [Septum Notice: Domain catalog is currently unindexed. Run 'septum_domain' with action='register' to initialize bounded contexts.]"
                 : impact && impact.direct_dependents_count > 0
                 ? `No boundary violations detected. Caution: ${impact.direct_dependents_count} dependent file(s) consume this file.`
                 : "No boundary violations detected. Proposed imports are permissible.",

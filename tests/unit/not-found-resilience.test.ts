@@ -60,7 +60,7 @@ describe("Unified Not-Found Protocol & Recovery Guidance Resilience", () => {
       expect(json.message).toContain("not found in Septum catalog");
       expect(Array.isArray(json.suggestions)).toBe(true);
       expect(json.suggestions).toContain("orders");
-      expect(json.suggested_action.tool).toBe("septum_register_domain");
+      expect(json.suggested_action.tool).toBe("septum_domain");
     });
   });
 

@@ -175,8 +175,8 @@ describe("Dynamic Feature Registration & Auto-Derive Fallback", () => {
       expect(payload.feature_key).toBe("nonexistent-feature");
       expect(payload.message).toContain("Feature 'nonexistent-feature' not found");
       expect(payload.recovery_options).toBeArray();
-      expect(payload.recovery_options.some((opt: string) => opt.includes("septum_register_feature"))).toBe(true);
-      expect(payload.recovery_options.some((opt: string) => opt.includes("septum_trace_vertical_slice"))).toBe(true);
+      expect(payload.recovery_options.some((opt: string) => opt.includes("septum_feature"))).toBe(true);
+      expect(payload.recovery_options.some((opt: string) => opt.includes("septum_slice"))).toBe(true);
     });
 
     it("should gracefully handle zero-argument calls by returning catalog guidance instead of throwing", () => {
