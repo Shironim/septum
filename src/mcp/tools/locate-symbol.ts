@@ -1,5 +1,6 @@
 import { existsSync, readdirSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
+import { isIgnoredDirectory } from "../../core/resources/ignore.ts";
 import type { ValidatedSeptumConfig } from "../../core/config/schema.ts";
 import type { SeptumRepository } from "../../core/database/repository.ts";
 import type { IngestionPipeline } from "../../core/ingestion/pipeline.ts";
@@ -168,7 +169,7 @@ function findCandidateFiles(root: string, term: string): string[] {
     try {
       const entries = readdirSync(dir, { withFileTypes: true });
       for (const e of entries) {
-        if (e.name.startsWith(".") || e.name === "node_modules" || e.name === "dist") continue;
+        if (isIgnoredDirectory(e.name)) continue;
         const full = join(dir, e.name);
         if (e.isDirectory()) {
           scan(full, depth + 1);

@@ -2,6 +2,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import type { DomainConfig } from "../../types/index.ts";
 import type { SeptumRepository } from "../database/repository.ts";
+import { DEFAULT_IGNORED_DIRECTORIES, isIgnoredDirectory } from "../resources/ignore.ts";
 
 export type ProjectType =
   | "monorepo"
@@ -25,34 +26,21 @@ export interface DiscoveredProjectTopology {
   projectType: ProjectType;
   architectureStyle: ArchitectureStyle;
   domains: Record<string, DomainConfig>;
+  scanned_folders: string[];
+  ignored_folders: string[];
 }
 
 export class TopologyDetector {
   private static readonly IGNORED_DIRS = new Set([
-    "node_modules",
-    "vendor",
-    "dist",
-    "build",
-    ".git",
-    ".septum",
-    ".system_generated",
+    ...DEFAULT_IGNORED_DIRECTORIES,
     "tests",
     "test",
-    "coverage",
-    ".vscode",
-    ".idea",
-    ".agents",
-    "bin",
+    "scripts",
     "locales",
     "resources",
     "public",
     "assets",
     "static",
-    ".output",
-    ".nuxt",
-    ".next",
-    ".turbo",
-    ".cache",
   ]);
 
   private static readonly SOURCE_EXTENSIONS = new Set([
@@ -96,13 +84,31 @@ export class TopologyDetector {
     try {
       const entries = fs.readdirSync(dir, { withFileTypes: true });
       for (const entry of entries) {
-        if (entry.name.startsWith(".") || this.IGNORED_DIRS.has(entry.name)) continue;
+        if (isIgnoredDirectory(entry.name) || this.IGNORED_DIRS.has(entry.name)) continue;
         const full = path.join(dir, entry.name);
         if (entry.isFile()) {
           const ext = path.extname(entry.name).toLowerCase();
           if (this.SOURCE_EXTENSIONS.has(ext)) return true;
         } else if (entry.isDirectory()) {
           if (this.hasSourceFiles(full)) return true;
+        }
+      }
+    } catch {
+      // Ignore read errors
+    }
+    return false;
+  }
+
+  /**
+   * Checks whether a directory contains any direct source code files at its root level.
+   */
+  public static hasDirectSourceFiles(dir: string): boolean {
+    try {
+      const entries = fs.readdirSync(dir, { withFileTypes: true });
+      for (const entry of entries) {
+        if (entry.isFile() && !entry.name.startsWith(".")) {
+          const ext = path.extname(entry.name).toLowerCase();
+          if (this.SOURCE_EXTENSIONS.has(ext)) return true;
         }
       }
     } catch {
@@ -122,10 +128,10 @@ export class TopologyDetector {
     const domains: Record<string, DomainConfig> = {};
     let architectureStyle: ArchitectureStyle = "generic";
 
-    // 1. Monorepo Workspaces (apps/*, packages/*)
+    // 1. Monorepo Workspaces (apps/*, packages/*, modules/*, libs/*)
     if (isMonorepo) {
       architectureStyle = "monorepo-workspaces";
-      const workspaceDirs = ["apps", "packages", "modules"];
+      const workspaceDirs = ["apps", "packages", "modules", "libs"];
       interface WorkspaceCandidate {
         parent: string;
         sub: string;
@@ -185,19 +191,30 @@ export class TopologyDetector {
       }
     }
 
-    // 2. Modular DDD (app/Domain, src/modules, src/domains, etc.)
+    // 2. Modular DDD (app/Domain, src/modules, src/domains, domains/*, etc.)
     if (Object.keys(domains).length === 0) {
       const modularCandidates = [
         { prefix: "domain", dir: path.join(projectRoot, "app", "Domain") },
         { prefix: "domain", dir: path.join(projectRoot, "app", "Domains") },
+        { prefix: "domain", dir: path.join(projectRoot, "app", "domain") },
+        { prefix: "domain", dir: path.join(projectRoot, "app", "domains") },
+        { prefix: "module", dir: path.join(projectRoot, "app", "modules") },
+        { prefix: "feature", dir: path.join(projectRoot, "app", "features") },
         { prefix: "domain", dir: path.join(projectRoot, "src", "domains") },
+        { prefix: "domain", dir: path.join(projectRoot, "src", "domain") },
         { prefix: "feature", dir: path.join(projectRoot, "src", "features") },
         { prefix: "module", dir: path.join(projectRoot, "src", "modules") },
+        { prefix: "domain", dir: path.join(projectRoot, "domains") },
+        { prefix: "domain", dir: path.join(projectRoot, "domain") },
+        { prefix: "module", dir: path.join(projectRoot, "modules") },
+        { prefix: "feature", dir: path.join(projectRoot, "features") },
       ];
 
       for (const cand of modularCandidates) {
         if (fs.existsSync(cand.dir) && fs.statSync(cand.dir).isDirectory()) {
-          const subdirs = this.getSubdirectories(cand.dir);
+          const subdirs = this.getSubdirectories(cand.dir).filter((s) =>
+            this.hasSourceFiles(path.join(cand.dir, s))
+          );
           if (subdirs.length > 0) {
             architectureStyle = "modular-ddd";
             for (const sub of subdirs) {
@@ -205,9 +222,22 @@ export class TopologyDetector {
               domains[sub.toLowerCase()] = {
                 root: relRoot,
                 description: `Modular ${cand.prefix} domain: ${sub}`,
-                allowed_dependencies: ["shared", "common"],
+                allowed_dependencies: ["shared", "common", "root"],
                 forbidden_dependencies: [],
                 archetypes: this.inferDefaultArchetypes(path.join(projectRoot, relRoot)),
+              };
+            }
+
+            // Check if parent container (e.g. src/ or app/) has direct entrypoint files
+            const parentContainer = path.dirname(cand.dir);
+            if (parentContainer !== projectRoot && this.hasDirectSourceFiles(parentContainer)) {
+              const relParent = path.relative(projectRoot, parentContainer);
+              domains["root"] = {
+                root: relParent,
+                description: `Root entrypoint and shared bootstrap layer in ${relParent}`,
+                allowed_dependencies: Object.keys(domains),
+                forbidden_dependencies: [],
+                archetypes: this.inferDefaultArchetypes(parentContainer),
               };
             }
           }
@@ -215,98 +245,239 @@ export class TopologyDetector {
       }
     }
 
-    // 3. Layered Monolith / Clean Architecture in src/
-    const srcDir = path.join(projectRoot, "src");
-    if (Object.keys(domains).length === 0 && fs.existsSync(srcDir) && fs.statSync(srcDir).isDirectory()) {
-      const subdirs = this.getSubdirectories(srcDir);
-      if (subdirs.length > 0) {
-        architectureStyle =
-          framework === "mcp-server" || framework === "cli"
-            ? "cli-adapter"
-            : "layered-monolith";
+    // 3. Layered Monolith / Clean Architecture in standard code directories (src, app, lib)
+    if (Object.keys(domains).length === 0) {
+      for (const standardDirName of ["src", "app", "lib"]) {
+        const standardDir = path.join(projectRoot, standardDirName);
+        if (fs.existsSync(standardDir) && fs.statSync(standardDir).isDirectory()) {
+          const subdirs = this.getSubdirectories(standardDir).filter((s) =>
+            this.hasSourceFiles(path.join(standardDir, s))
+          );
+          const hasDirectFiles = this.hasDirectSourceFiles(standardDir);
 
-        const sharedKernelNames = new Set(["types", "shared", "common", "contracts"]);
-        const coreNames = new Set(["core", "domain", "services", "usecase", "internal"]);
-        const adapterNames = new Set([
-          "cli",
-          "mcp",
-          "api",
-          "controllers",
-          "routes",
-          "handlers",
-          "delivery",
-        ]);
+          if (subdirs.length > 0) {
+            architectureStyle =
+              framework === "mcp-server" || framework === "cli"
+                ? "cli-adapter"
+                : "layered-monolith";
 
-        for (const sub of subdirs) {
-          const relRoot = path.join("src", sub);
-          const name = sub.toLowerCase();
-          let allowed: string[] = [];
-          let forbidden: string[] = [];
+            const sharedKernelNames = new Set(["types", "shared", "common", "contracts"]);
+            const coreNames = new Set(["core", "domain", "services", "usecase", "internal"]);
+            const adapterNames = new Set([
+              "cli",
+              "mcp",
+              "api",
+              "controllers",
+              "routes",
+              "handlers",
+              "delivery",
+            ]);
 
-          if (sharedKernelNames.has(name)) {
-            allowed = [];
-            forbidden = Array.from(adapterNames)
-              .concat(Array.from(coreNames))
-              .filter((n) => subdirs.map((s) => s.toLowerCase()).includes(n));
-          } else if (coreNames.has(name)) {
-            allowed = subdirs
-              .map((s) => s.toLowerCase())
-              .filter((s) => sharedKernelNames.has(s));
-            forbidden = subdirs
-              .map((s) => s.toLowerCase())
-              .filter((s) => adapterNames.has(s));
-          } else {
-            // Adapters
-            allowed = subdirs
-              .map((s) => s.toLowerCase())
-              .filter((s) => sharedKernelNames.has(s) || coreNames.has(s));
-            forbidden = [];
+            for (const sub of subdirs) {
+              const relRoot = path.join(standardDirName, sub);
+              const name = sub.toLowerCase();
+              let allowed: string[] = [];
+              let forbidden: string[] = [];
+
+              if (sharedKernelNames.has(name)) {
+                allowed = [];
+                forbidden = Array.from(adapterNames)
+                  .concat(Array.from(coreNames))
+                  .filter((n) => subdirs.map((s) => s.toLowerCase()).includes(n));
+              } else if (coreNames.has(name)) {
+                allowed = subdirs
+                  .map((s) => s.toLowerCase())
+                  .filter((s) => sharedKernelNames.has(s));
+                forbidden = subdirs
+                  .map((s) => s.toLowerCase())
+                  .filter((s) => adapterNames.has(s));
+              } else {
+                // Adapters
+                allowed = subdirs
+                  .map((s) => s.toLowerCase())
+                  .filter((s) => sharedKernelNames.has(s) || coreNames.has(s));
+                forbidden = [];
+              }
+
+              domains[name] = {
+                root: relRoot,
+                description: `${sub} layer`,
+                allowed_dependencies: [...new Set(allowed)],
+                forbidden_dependencies: forbidden,
+                archetypes: this.inferDefaultArchetypes(path.join(projectRoot, relRoot)),
+              };
+            }
+
+            // Register root domain if direct source files exist in the standard folder
+            if (hasDirectFiles) {
+              domains["root"] = {
+                root: standardDirName,
+                description: `Root entrypoint and shared bootstrap layer in ${standardDirName}`,
+                allowed_dependencies: subdirs.map((s) => s.toLowerCase()),
+                forbidden_dependencies: [],
+                archetypes: this.inferDefaultArchetypes(standardDir),
+              };
+            }
+            break;
+          } else if (hasDirectFiles) {
+            // Flat source folder with multi-nested code files
+            architectureStyle = "layered-monolith";
+            domains["app"] = {
+              root: standardDirName,
+              description: `Primary application domain in ${standardDirName}`,
+              allowed_dependencies: [],
+              forbidden_dependencies: [],
+              archetypes: this.inferDefaultArchetypes(standardDir),
+            };
+            break;
           }
-
-          domains[name] = {
-            root: relRoot,
-            description: `${sub} layer`,
-            allowed_dependencies: allowed,
-            forbidden_dependencies: forbidden,
-            archetypes: this.inferDefaultArchetypes(path.join(projectRoot, relRoot)),
-          };
         }
       }
     }
 
     // 4. Framework-specific structural patterns (Laravel, Go)
     if (Object.keys(domains).length === 0) {
-      if (language === "php" || framework.includes("laravel")) {
+      if (language === "php" || framework.includes("laravel") || fs.existsSync(path.join(projectRoot, "artisan"))) {
         const appDir = path.join(projectRoot, "app");
         if (fs.existsSync(appDir)) {
           architectureStyle = "layered-monolith";
-          const subdirs = this.getSubdirectories(appDir);
-          for (const sub of subdirs) {
-            domains[sub.toLowerCase()] = {
-              root: path.join("app", sub),
-              description: `Laravel layer: ${sub}`,
+          const subdirs = this.getSubdirectories(appDir).filter((s) =>
+            this.hasSourceFiles(path.join(appDir, s))
+          );
+          if (subdirs.length > 0) {
+            for (const sub of subdirs) {
+              domains[sub.toLowerCase()] = {
+                root: path.join("app", sub),
+                description: `Laravel layer: ${sub}`,
+                allowed_dependencies: [],
+                forbidden_dependencies: [],
+                archetypes: this.inferDefaultArchetypes(path.join(projectRoot, "app", sub)),
+              };
+            }
+            if (this.hasDirectSourceFiles(appDir)) {
+              domains["root"] = {
+                root: "app",
+                description: "Laravel application root",
+                allowed_dependencies: subdirs.map((s) => s.toLowerCase()),
+                forbidden_dependencies: [],
+                archetypes: this.inferDefaultArchetypes(appDir),
+              };
+            }
+          } else {
+            domains["app"] = {
+              root: "app",
+              description: "Core Laravel Application (auto-discovered)",
               allowed_dependencies: [],
               forbidden_dependencies: [],
-              archetypes: this.inferDefaultArchetypes(path.join(projectRoot, "app", sub)),
+              archetypes: {
+                controller: "app/Http/Controllers/**",
+                service: "app/Services/**",
+                model: "app/Models/**",
+                repository: "app/Repositories/**",
+              },
             };
           }
         }
-      } else if (language === "go") {
+
+        const routesDir = path.join(projectRoot, "routes");
+        if (fs.existsSync(routesDir)) {
+          domains["routes"] = {
+            root: "routes",
+            description: "Laravel HTTP Route Definitions (auto-discovered)",
+            allowed_dependencies: [],
+            forbidden_dependencies: [],
+            archetypes: {
+              route: "routes/**/*.php",
+            },
+          };
+        }
+
+        const databaseDir = path.join(projectRoot, "database");
+        if (fs.existsSync(databaseDir)) {
+          domains["database"] = {
+            root: "database",
+            description: "Laravel Migrations and Database Schemas (auto-discovered)",
+            allowed_dependencies: [],
+            forbidden_dependencies: [],
+            archetypes: {
+              migration: "database/migrations/**/*.php",
+            },
+          };
+        }
+
+        const viewsDir = path.join(projectRoot, "resources", "views");
+        if (fs.existsSync(viewsDir)) {
+          domains["views"] = {
+            root: "resources/views",
+            description: "Laravel Blade Templates and UI Views (auto-discovered)",
+            allowed_dependencies: [],
+            forbidden_dependencies: [],
+            archetypes: {
+              view: "resources/views/**/*.blade.php",
+            },
+          };
+        }
+      } else if (language === "go" || fs.existsSync(path.join(projectRoot, "go.mod"))) {
         architectureStyle = "clean-architecture";
-        for (const goDir of ["cmd", "internal", "pkg"]) {
-          const full = path.join(projectRoot, goDir);
-          if (fs.existsSync(full)) {
-            domains[goDir] = {
-              root: goDir,
-              description: `Go layer: ${goDir}`,
-              allowed_dependencies:
-                goDir === "cmd"
-                  ? ["internal", "pkg"]
-                  : goDir === "internal"
-                  ? ["pkg"]
-                  : [],
-              forbidden_dependencies: goDir === "pkg" ? ["internal", "cmd"] : [],
-              archetypes: this.inferDefaultArchetypes(full),
+        const pkgDir = path.join(projectRoot, "pkg");
+        if (fs.existsSync(pkgDir) && this.hasSourceFiles(pkgDir)) {
+          domains["pkg"] = {
+            root: "pkg",
+            description: "Go public library pkg",
+            allowed_dependencies: [],
+            forbidden_dependencies: ["internal", "cmd"],
+            archetypes: this.inferDefaultArchetypes(pkgDir),
+          };
+        }
+
+        const internalDir = path.join(projectRoot, "internal");
+        if (fs.existsSync(internalDir)) {
+          const internalSubs = this.getSubdirectories(internalDir).filter((s) =>
+            this.hasSourceFiles(path.join(internalDir, s))
+          );
+          if (internalSubs.length > 0) {
+            for (const sub of internalSubs) {
+              domains[sub.toLowerCase()] = {
+                root: path.join("internal", sub),
+                description: `Internal ${sub} domain`,
+                allowed_dependencies: domains["pkg"] ? ["pkg"] : [],
+                forbidden_dependencies: ["cmd"],
+                archetypes: this.inferDefaultArchetypes(path.join(internalDir, sub)),
+              };
+            }
+          } else if (this.hasSourceFiles(internalDir)) {
+            domains["internal"] = {
+              root: "internal",
+              description: "Go internal layer",
+              allowed_dependencies: domains["pkg"] ? ["pkg"] : [],
+              forbidden_dependencies: ["cmd"],
+              archetypes: this.inferDefaultArchetypes(internalDir),
+            };
+          }
+        }
+
+        const cmdDir = path.join(projectRoot, "cmd");
+        if (fs.existsSync(cmdDir)) {
+          const cmdSubs = this.getSubdirectories(cmdDir).filter((s) =>
+            this.hasSourceFiles(path.join(cmdDir, s))
+          );
+          if (cmdSubs.length > 0) {
+            for (const sub of cmdSubs) {
+              domains[`cmd-${sub.toLowerCase()}`] = {
+                root: path.join("cmd", sub),
+                description: `Go entrypoint: ${sub}`,
+                allowed_dependencies: Object.keys(domains),
+                forbidden_dependencies: [],
+                archetypes: this.inferDefaultArchetypes(path.join(cmdDir, sub)),
+              };
+            }
+          } else if (this.hasSourceFiles(cmdDir)) {
+            domains["cmd"] = {
+              root: "cmd",
+              description: "Go entrypoint cmd",
+              allowed_dependencies: Object.keys(domains),
+              forbidden_dependencies: [],
+              archetypes: this.inferDefaultArchetypes(cmdDir),
             };
           }
         }
@@ -327,9 +498,33 @@ export class TopologyDetector {
           archetypes: this.inferDefaultArchetypes(path.join(projectRoot, d)),
         };
       }
+      if (this.hasDirectSourceFiles(projectRoot)) {
+        domains["root"] = {
+          root: ".",
+          description: "Top-level root domain",
+          allowed_dependencies: Object.keys(domains),
+          forbidden_dependencies: [],
+          archetypes: this.inferDefaultArchetypes(projectRoot),
+        };
+      }
     }
 
     const projectType = this.detectProjectType(projectRoot, framework, language, isMonorepo);
+
+    const scanned_folders = Array.from(new Set(Object.values(domains).map((d) => d.root))).sort();
+
+    const ignored_folders: string[] = [];
+    try {
+      const entries = fs.readdirSync(projectRoot, { withFileTypes: true });
+      for (const entry of entries) {
+        if (entry.isDirectory()) {
+          if (isIgnoredDirectory(entry.name) || this.IGNORED_DIRS.has(entry.name)) {
+            ignored_folders.push(entry.name);
+          }
+        }
+      }
+    } catch {}
+    ignored_folders.sort();
 
     return {
       framework,
@@ -337,6 +532,8 @@ export class TopologyDetector {
       projectType,
       architectureStyle,
       domains,
+      scanned_folders,
+      ignored_folders,
     };
   }
 
@@ -364,6 +561,8 @@ export class TopologyDetector {
     repo.setMeta("architecture_style", topology.architectureStyle);
     repo.setMeta("framework", topology.framework);
     repo.setMeta("language", topology.language);
+    repo.setMeta("scanned_folders", JSON.stringify(topology.scanned_folders));
+    repo.setMeta("ignored_folders", JSON.stringify(topology.ignored_folders));
 
     const allRecords = repo.domains.getAllDomains();
     repo.setMeta(
@@ -374,6 +573,8 @@ export class TopologyDetector {
         architectureStyle: topology.architectureStyle,
         domainsCount: allRecords.length,
         domains: allRecords.map((r) => r.name),
+        scannedFolders: topology.scanned_folders,
+        ignoredFolders: topology.ignored_folders,
       })
     );
 
@@ -394,14 +595,16 @@ export class TopologyDetector {
     if (
       fs.existsSync(path.join(projectRoot, "pnpm-workspace.yaml")) ||
       fs.existsSync(path.join(projectRoot, "lerna.json")) ||
-      fs.existsSync(path.join(projectRoot, "turbo.json"))
+      fs.existsSync(path.join(projectRoot, "turbo.json")) ||
+      fs.existsSync(path.join(projectRoot, "nx.json"))
     ) {
       return true;
     }
 
     const hasApps = fs.existsSync(path.join(projectRoot, "apps"));
     const hasPackages = fs.existsSync(path.join(projectRoot, "packages"));
-    if (hasApps && hasPackages) return true;
+    const hasLibs = fs.existsSync(path.join(projectRoot, "libs"));
+    if (hasApps && (hasPackages || hasLibs)) return true;
 
     const pkgPath = path.join(projectRoot, "package.json");
     if (fs.existsSync(pkgPath)) {
@@ -478,7 +681,12 @@ export class TopologyDetector {
   }
 
   private static detectLanguage(projectRoot: string): DiscoveredProjectTopology["language"] {
-    if (fs.existsSync(path.join(projectRoot, "composer.json"))) return "php";
+    if (
+      fs.existsSync(path.join(projectRoot, "composer.json")) ||
+      fs.existsSync(path.join(projectRoot, "artisan"))
+    ) {
+      return "php";
+    }
     if (fs.existsSync(path.join(projectRoot, "go.mod"))) return "go";
     if (
       fs.existsSync(path.join(projectRoot, "pyproject.toml")) ||
@@ -530,6 +738,10 @@ export class TopologyDetector {
           if (allDeps.astro) return "astro";
           if (allDeps.vue) return "vue";
           if (allDeps["@nestjs/core"]) return "nestjs";
+          if (allDeps.express) return "express";
+          if (allDeps.fastify) return "fastify";
+          if (allDeps.hono) return "hono";
+          if (allDeps.elysia) return "elysia";
           if (allDeps["@modelcontextprotocol/sdk"]) return "mcp-server";
         }
       } catch (err: unknown) {
@@ -584,7 +796,7 @@ export class TopologyDetector {
     try {
       return fs
         .readdirSync(dir, { withFileTypes: true })
-        .filter((e) => e.isDirectory() && !this.IGNORED_DIRS.has(e.name) && !e.name.startsWith("."))
+        .filter((e) => e.isDirectory() && !isIgnoredDirectory(e.name) && !this.IGNORED_DIRS.has(e.name))
         .map((e) => e.name);
     } catch {
       return [];

@@ -58,6 +58,7 @@ Thumbs.db
 scratch/
 tmp/
 .agents/
+.gemini/
 .codegraph/
 report*.txt
 
