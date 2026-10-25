@@ -292,8 +292,18 @@ export function normalizeLocateSymbolArgs(raw: unknown): unknown {
   } else if (obj.symbol !== undefined && obj.query === undefined) {
     obj.query = obj.symbol;
   }
+  if (!obj.query && !obj.symbol && typeof obj.symbol_ref === "object" && obj.symbol_ref !== null) {
+    obj.query = (obj.symbol_ref as Record<string, unknown>).name;
+    obj.symbol = obj.query;
+  }
   return obj;
 }
+
+export const SymbolReferenceSchema = z.object({
+  file_path: z.string().min(1), language: z.string().min(1), name: z.string().min(1), kind: z.string().min(1),
+  signature: z.string(), start_line: z.number().int().positive(), end_line: z.number().int().positive(),
+  indexed_content_hash: z.string().min(1), container: z.string().optional(), receiver: z.string().optional(),
+}).refine(ref => ref.end_line >= ref.start_line, { message: "end_line must be at or after start_line" });
 
 export const LocateSymbolSchema = z.preprocess(
   normalizeLocateSymbolArgs,
@@ -301,6 +311,8 @@ export const LocateSymbolSchema = z.preprocess(
     query: z.string().min(1, "query is required"),
     symbol: z.string().optional(),
     domain: z.string().optional(),
+    symbol_ref: SymbolReferenceSchema.optional(),
+    file_path: z.string().min(1).optional(),
     limit: z.number().int().min(1).max(50).optional().default(10),
     workspace_path: z.string().optional(),
   })
@@ -342,6 +354,10 @@ export function normalizeGetSymbolArgs(raw: unknown): unknown {
   } else if (obj.query !== undefined && obj.symbol === undefined) {
     obj.symbol = obj.query;
   }
+  if (!obj.query && !obj.symbol && typeof obj.symbol_ref === "object" && obj.symbol_ref !== null) {
+    obj.query = (obj.symbol_ref as Record<string, unknown>).name;
+    obj.symbol = obj.query;
+  }
   return obj;
 }
 
@@ -351,8 +367,13 @@ export const GetSymbolSchema = z.preprocess(
     symbol: z.string().min(1, "symbol is required"),
     query: z.string().optional(),
     domain: z.string().optional(),
+    symbol_ref: SymbolReferenceSchema.optional(),
     include_dependencies: z.boolean().optional().default(true),
     workspace_path: z.string().optional(),
+    file_path: z.string().min(1).optional(),
+    include_source: z.boolean().optional().default(false),
+    source_start_line: z.number().int().positive().optional(),
+    source_line_limit: z.number().int().positive().max(200).optional().default(120),
   })
 );
 export type GetSymbolArgs = z.infer<typeof GetSymbolSchema>;
@@ -918,6 +939,9 @@ export function normalizeSymbolToolArgs(raw: unknown): unknown {
     workspacePath: "workspace_path",
     project_root: "workspace_path",
     projectRoot: "workspace_path",
+    filePath: "file_path",
+    sourceStartLine: "source_start_line",
+    sourceLineLimit: "source_line_limit",
   }) as Record<string, unknown>;
 
   if (obj.query !== undefined && obj.symbol === undefined) {
@@ -936,6 +960,10 @@ export function normalizeSymbolToolArgs(raw: unknown): unknown {
     }
   }
 
+  if (!obj.query && !obj.symbol && typeof obj.symbol_ref === "object" && obj.symbol_ref !== null) {
+    obj.query = (obj.symbol_ref as Record<string, unknown>).name;
+    obj.symbol = obj.query;
+  }
   return obj;
 }
 
@@ -946,6 +974,7 @@ export const SymbolToolSchema = z.preprocess(
     query: z.string().optional(),
     symbol: z.string().optional(),
     domain: z.string().optional(),
+    symbol_ref: SymbolReferenceSchema.optional(),
     include_dependencies: z.boolean().optional().default(true),
     limit: z.number().int().positive().optional(),
     min_lines: z.number().int().nonnegative().optional(),
@@ -953,6 +982,14 @@ export const SymbolToolSchema = z.preprocess(
     kind: z.string().optional(),
     sort_by: z.enum(["lines", "nesting", "risk_score", "line_count"]).optional(),
     workspace_path: z.string().optional(),
+    file_path: z.string().min(1).optional(),
+    include_source: z.boolean().optional().default(false),
+    source_start_line: z.number().int().positive().optional(),
+    source_line_limit: z.number().int().positive().max(200).optional().default(120),
+  }).superRefine((args, ctx) => {
+    if (args.symbol_ref && args.action !== "locate" && args.action !== "inspect") {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["symbol_ref"], message: "symbol_ref is supported only for locate and inspect." });
+    }
   })
 );
 export type SymbolToolArgs = z.infer<typeof SymbolToolSchema>;

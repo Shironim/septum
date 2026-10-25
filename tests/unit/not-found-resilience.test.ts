@@ -48,7 +48,7 @@ describe("Unified Not-Found Protocol & Recovery Guidance Resilience", () => {
   });
 
   describe("handleGetDomainCatalog Not-Found Protocol", () => {
-    it("returns structured JSON with found: false, suggestions, and recovery action instead of throwing", () => {
+    it("returns structured JSON with found: false, suggestions, and recovery action instead of throwing", async () => {
       const result = handleGetDomainCatalog(repo, mockConfig, { domain: "order" });
 
       expect(result.content[0].type).toBe("text");
@@ -83,7 +83,7 @@ describe("Unified Not-Found Protocol & Recovery Guidance Resilience", () => {
   });
 
   describe("handleGetSymbol Not-Found Protocol", () => {
-    it("returns structured JSON with found: false and ranked suggestions", () => {
+    it("returns structured JSON with found: false and ranked suggestions", async () => {
       const result = handleGetSymbol(repo, mockConfig, {
         symbol: "MissingOrderHandler",
       });
@@ -99,8 +99,8 @@ describe("Unified Not-Found Protocol & Recovery Guidance Resilience", () => {
   });
 
   describe("handleTraceVerticalSlice Not-Found Protocol", () => {
-    it("returns structured JSON with found: false and alternatives list", () => {
-      const result = handleTraceVerticalSlice(repo, mockConfig, {
+    it("returns structured JSON with found: false and alternatives list", async () => {
+      const result = await handleTraceVerticalSlice(repo, mockConfig, {
         query: "POST /unregistered/route",
       });
 
@@ -116,7 +116,7 @@ describe("Unified Not-Found Protocol & Recovery Guidance Resilience", () => {
   });
 
   describe("handleGetSymbolImpact Not-Found Protocol", () => {
-    it("returns structured JSON with found_in_index: false and zero dependents", () => {
+    it("returns structured JSON with found_in_index: false and zero dependents", async () => {
       const result = handleGetSymbolImpact(repo, mockConfig, {
         symbol: "GhostSymbol",
       });

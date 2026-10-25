@@ -23,6 +23,7 @@ import {
   FeatureToolSchema,
 } from "./schemas.ts";
 import { SEPTUM_VERSION } from "../version.ts";
+import { checkRuntimeVersion } from "../utils/version-check.ts";
 
 const TOOL_SCHEMAS = {
   septum_domain: DomainToolSchema,
@@ -246,6 +247,44 @@ export async function runMCPServer(): Promise<void> {
                 type: "string",
                 description: "Optional domain filter (e.g. 'orders').",
               },
+              file_path: {
+                type: "string",
+                description: "Exact indexed repository-relative file path. Use it to select one candidate when names are ambiguous.",
+              },
+              symbol_ref: {
+                type: "object",
+                description: "Declaration reference returned by locate/inspect or a full catalog. Selects an overload for locate/inspect; stale indexed fingerprints are refused.",
+                properties: {
+                  file_path: { type: "string", minLength: 1 },
+                  language: { type: "string", minLength: 1 },
+                  name: { type: "string", minLength: 1 },
+                  kind: { type: "string", minLength: 1 },
+                  signature: { type: "string" },
+                  start_line: { type: "integer", minimum: 1 },
+                  end_line: { type: "integer", minimum: 1 },
+                  indexed_content_hash: { type: "string", minLength: 1 },
+                  container: { type: "string" },
+                  receiver: { type: "string" },
+                },
+                required: ["file_path", "language", "name", "kind", "signature", "start_line", "end_line", "indexed_content_hash"],
+              },
+              include_source: {
+                type: "boolean",
+                default: false,
+                description: "For action='inspect', include a bounded source slice only when the indexed file fingerprint still matches disk.",
+              },
+              source_start_line: {
+                type: "number",
+                minimum: 1,
+                description: "First line to return within the selected symbol range (action='inspect').",
+              },
+              source_line_limit: {
+                type: "number",
+                minimum: 1,
+                maximum: 200,
+                default: 120,
+                description: "Maximum source lines returned (action='inspect', capped at 200).",
+              },
               include_dependencies: {
                 type: "boolean",
                 default: true,
@@ -436,9 +475,16 @@ export async function runMCPServer(): Promise<void> {
 
     if (!isWorkspaceInitialized(root)) {
       if (name === "septum_domain" && (!record.action || record.action === "catalog")) {
-        const diagnostic = {
+        const runtimeVersion = await checkRuntimeVersion();
+        let agentGuidance =
+          "Panggil tool 'septum_domain(action: \"register\", name: \"core\", root: \"src\", ingest_now: true)' untuk mendaftarkan dan mengindeks domain utama secara otomatis, atau jalankan 'septum init' di terminal workspace.";
+        if (runtimeVersion.update_available) {
+          agentGuidance += ` Update available: v${runtimeVersion.server_version} -> v${runtimeVersion.latest_version}. Recommend running '${runtimeVersion.upgrade_command}' and reloading the MCP server if schema/features differ.`;
+        }
+        const diagnostic: Record<string, any> = {
           status: "NOT_INDEXED",
           total_domains: 0,
+          runtime_version: runtimeVersion,
           message: `Workspace '${root}' belum diinisialisasi dengan Septum. Jalankan 'septum init' terlebih dahulu di terminal workspace.`,
           suggested_action: {
             tool: "septum_domain",
@@ -449,8 +495,12 @@ export async function runMCPServer(): Promise<void> {
               ingest_now: true,
             },
           },
-          agent_guidance:
-            "Panggil tool 'septum_domain(action: \"register\", name: \"core\", root: \"src\", ingest_now: true)' untuk mendaftarkan dan mengindeks domain utama secara otomatis, atau jalankan 'septum init' di terminal workspace.",
+          agent_guidance: agentGuidance,
+          ...(runtimeVersion.update_available
+            ? {
+                agent_instruction: `Update available: v${runtimeVersion.server_version} -> v${runtimeVersion.latest_version}. Recommend running '${runtimeVersion.upgrade_command}' and reloading the MCP server if schema/features differ.`,
+              }
+            : {}),
         };
         return {
           content: [
@@ -460,6 +510,7 @@ export async function runMCPServer(): Promise<void> {
             },
           ],
           metadata: diagnostic,
+          runtime_version: runtimeVersion,
         };
       }
       const isRegistration = name === "septum_domain" && record.action === "register";
@@ -540,7 +591,7 @@ export async function runMCPServer(): Promise<void> {
             ],
           };
         }
-        return handleSliceTool(ctx.repo, ctx.config, parsed.data, ctx.root);
+        return handleSliceTool(ctx.repo, ctx.config, parsed.data, ctx.root, extra?.signal);
       } else if (name === "septum_boundary") {
         if (sessionCorruptError) {
           return {

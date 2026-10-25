@@ -1,6 +1,7 @@
 import { parseArgs } from "node:util";
 import { SessionManager } from "../core/session/session-manager.ts";
 import { SEPTUM_VERSION } from "../version.ts";
+import { checkRuntimeVersion, formatUpdateNotice, type RuntimeVersionMeta } from "../utils/version-check.ts";
 import { handleCheckCommand } from "./commands/check.ts";
 import { handleHookCommand } from "./commands/hook.ts";
 import { handleInitCommand } from "./commands/init.ts";
@@ -36,11 +37,17 @@ export async function runCLI(argv: string[]): Promise<void> {
 
   if (flags.version || command === "version") {
     console.log(`Septum v${SEPTUM_VERSION}`);
+    const meta = await checkRuntimeVersion({ timeoutMs: 1200 });
+    const notice = formatUpdateNotice(meta);
+    if (notice) {
+      console.log(notice);
+    }
     return;
   }
 
   if (flags.help || !command || command === "help") {
-    printHelp();
+    const meta = await checkRuntimeVersion({ timeoutMs: 1000 });
+    printHelp(meta);
     return;
   }
 
@@ -62,7 +69,8 @@ export async function runCLI(argv: string[]): Promise<void> {
         const strict = Boolean(flags.strict);
         const staged = Boolean(flags.staged);
         const feature = typeof flags.feature === "string" ? flags.feature : undefined;
-        await handleCheckCommand({ strict, staged, feature });
+        const json = Boolean(flags.json);
+        await handleCheckCommand({ strict, staged, feature, json });
         break;
       }
 
@@ -122,10 +130,11 @@ export async function runCLI(argv: string[]): Promise<void> {
   }
 }
 
-function printHelp(): void {
+function printHelp(versionMeta?: RuntimeVersionMeta): void {
+  const notice = versionMeta ? formatUpdateNotice(versionMeta) : null;
   console.log(`
 Septum — Deterministic Bounded-Context & Structural File Catalog
-Version: v${SEPTUM_VERSION}
+Version: v${SEPTUM_VERSION}${notice ? `\n\n${notice}` : ""}
 
 USAGE:
   septum <command> [options]

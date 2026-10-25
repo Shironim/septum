@@ -1,58 +1,54 @@
 export const SEPTUM_MAP_SKILL_TEMPLATE = `---
 name: septum-map
-description: Framework-agnostic codebase discovery, multi-language AST symbol & file-connection mapping, and bounded-context governance for Septum. Uses Tree-Sitter WASM (TS/JS/TSX, PHP, Python, Go, Rust, Java, C#, Ruby + Vue/Svelte/Astro/Blade) and SQLite SSOT (.septum/septum.db) to prevent symbol duplication, map file integrations, and enforce architectural boundaries.
+description: Framework-agnostic codebase and boundary governance. Use when initializing Septum, reviewing its domain catalog, registering domain boundaries, managing feature touchpoints, or checking Septum boundary results.
 ---
 
-# \`septum-map\` — Multi-Language AST Discovery, File Connectivity & Bounded-Context Governance
+# \`septum-map\` — Septum Governance
 
-> **Prinsip Utama:** Septum memetakan setiap fungsi, class, method, struct/interface, dan variabel/konstanta di file backend beserta keterhubungan dua arah antar-file (\`imports_from\` & \`imported_by\`) ke dalam SQLite SSOT (\`.septum/septum.db\`). Dengan peta deterministik ini, AI Agent **tidak boleh menduplikasi simbol yang sudah ada** dan wajib menjaga integritas batas domain (*bounded-context*) serta mencegah *circular dependency*.
+> **Prinsip utama:** Septum memberi bukti dari index dan aturan yang tercatat, bukan ground truth lengkap tentang source atau runtime. Selalu nyatakan cakupan dan ketidakpastian sebelum memakai hasilnya sebagai dasar keputusan.
 
----
+## Cakupan
 
-## 1. Landasan Arsitektur & Pencegahan Duplikasi
+Gunakan skill ini hanya untuk mengoperasikan dan menafsirkan governance Septum: katalog domain, aturan dependency, feature touchpoints, dan boundary check. Skill ini tidak menetapkan desain backend atau kebijakan bisnis; ikuti skill dan keputusan project yang relevan.
 
-1. **Anti-Symbol Duplication (Peta Simbol & Keterhubungan File):**
-   Setiap file yang diindeks oleh mesin \`web-tree-sitter\` Septum memiliki daftar simbol terstruktur (\`class\`, \`interface\`, \`struct\`, \`trait\`, \`enum\`, \`function\`, \`method\`, \`type\`, \`constant\`, \`variable\`) serta graf koneksi dua arah (\`connections.imports_from\` dan \`connections.imported_by_count\`). Agen wajib memeriksa peta ini sebelum membuat fungsi, class, atau variabel baru.
-2. **Software Reflexion Models & Boundary Enforcement:**
-   Septum memvalidasi rencana perubahan kode terhadap aturan \`allowed_dependencies\`, \`forbidden_dependencies\`, \`allowed_touchpoints\`, dan mendeteksi siklus dependensi (\`circular_dependency\`) baik per-file maupun lintas-domain.
-3. **Token-Budgeted Context (< 400 Tokens Default):**
-   Katalog domain secara default disajikan dalam mode ringkas (\`detail_level: "compact"\`) agar agen memperoleh topologi file, rentang baris (\`line_span\`), jumlah method/property, dan koneksi antar-file tanpa membanjiri jendela konteks.
+## Kontrak tool dan command
 
----
+Schema MCP yang aktif dan output \`septum --help\` adalah kontrak saat ini. Periksa keduanya sebelum menggunakan tool atau command; jangan mengandalkan nama tool, parameter, atau kemampuan dari salinan skill/dokumentasi lain.
 
-## 2. Referensi Cepat 5 Unified Tools MCP Septum (Standardized \`snake_case\` Contracts)
-
-| Tool MCP | Parameter Utama (\`snake_case\`) | Fungsi & Kapan Digunakan |
+| Tool | Kegunaan | Batas interpretasi |
 |---|---|---|
-| **\`septum_domain\`** | \`{ action?: "catalog"\\|"register"\\|"topology", domain?, detail_level?: "compact"\\|"full", archetype_filter?, file_filter?, root?, allowed_dependencies?, forbidden_dependencies?, ingest_now?, resolve?, resolve_node? }\` | Mengelola arsitektur makro, topologi domain, pendaftaran bounded-context, dan plane infrastruktur 6-layer. Default \`action: "catalog"\` (< 400 token). |
-| **\`septum_symbol\`** | \`{ action?: "locate"\\|"inspect"\\|"impact"\\|"hotspots", query?, symbol?, domain?, include_dependencies?: true, min_lines?: 30, min_nesting?, sort_by?: "risk_score", limit?: 10 }\` | Unified Symbol Engine: mencari simbol (\`locate\`), inspeksi detail kontrak & signature (\`inspect\`), hitung blast radius & pemanggil (\`impact\`), atau isolasi fungsi kompleks & SRP smell (\`hotspots\`). |
-| **\`septum_slice\`** | \`{ query, max_depth?: 5 }\` | Menelusuri alur eksekusi end-to-end (\`Ingress ➔ Validation ➔ Controller ➔ Service ➔ Repository ➔ Entity\`). \`max_depth\` default \`5\`, rentang \`1..8\` (gunakan \`6..8\` untuk deep trace Event/Job/Queue). |
-| **\`septum_boundary\`** | \`{ scope?: "file"\\|"all"\\|"staged"\\|"domain", file_path?, file_paths?, proposed_imports?, feature_key?, domain? }\` | Pre-flight boundary check memvalidasi \`proposed_imports\` sebelum menulis file, serta audit repo-wide atau git-staged untuk mencegah pelanggaran batas domain dan *circular dependency*. |
-| **\`septum_feature\`** | \`{ action?: "get"\\|"lock"\\|"release", feature_key?, domain?, allowed_touchpoints?, reuse_symbols?, force? }\` | Mengelola konteks fitur: ambil detail fitur (\`get\`), kunci sesi touchpoint di \`.septum/session.json\` (\`lock\`), atau lepaskan kunci sesi (\`release\`). |
+| \`septum_domain\` | \`catalog\` membaca peta (opsi \`detail_level: "compact"\`); \`register\` mendaftarkan domain; \`topology\` membaca atau mencatat topologi lingkungan. | Registrasi dan resolusi topologi dapat mengubah state. Layout folder hanya petunjuk, bukan bukti kebijakan domain. |
+| \`septum_symbol\` | \`locate\`, \`inspect\`, \`impact\`, atau \`hotspots\` sesuai schema aktif. | Hasil bergantung pada index dan extractor. Impact/hotspot adalah sinyal triase, bukan bukti lengkap tentang runtime atau risiko perubahan. |
+| \`septum_slice\` | Menelusuri kandidat vertical slice dari query; \`max_depth\` membatasi penelusuran. | \`confidence\` dapat menjelaskan kecocokan query; jangan anggap setiap node/edge sebagai panggilan runtime yang terbukti. |
+| \`septum_boundary\` | Memeriksa usulan file/import atau mengaudit scope \`file\`, \`staged\`, \`domain\`, atau \`all\`; hasil dapat memuat rule \`circular_dependency\`. | Interpretasikan berdasarkan \`status\`, scope, sync state, dan coverage yang dikembalikan. \`approved\` hanya berlaku untuk scope yang diperiksa. |
+| \`septum_feature\` | \`get\` membaca konteks; \`lock\` membuat feature/session lock; \`release\` melepasnya. | \`lock\` dan \`release\` mengubah state session; touchpoints adalah input ke pemeriksaan Septum, bukan kontrol akses filesystem. |
 
----
+CLI yang umum: \`septum init\` menyiapkan konfigurasi, hook/harness yang dipilih, dan initial index; \`septum sync\` memperbarui index; \`septum check\` menjalankan boundary check. Verifikasi opsi aktual dengan \`septum --help\`. Command tersebut dapat mengubah file project atau index.
 
-## 3. Alur Kerja Pemetaan & Inisialisasi Domain (The 4-Step Lifecycle)
+## Alur governance
 
-> [!NOTE] Zero-Config Default (\`septum init\`)
-> Menjalankan \`septum init\` di terminal secara otomatis mendeteksi bahasa & framework (TS/JS, PHP/Laravel, Python, Go, Rust, Java, C#, Ruby), mendaftarkan domain ke \`.septum/septum.db\`, mengindeks AST via Tree-Sitter WASM, dan memasang hook di \`.agents/\`.
+1. **Periksa kondisi awal.** Pastikan workspace target benar. Periksa apakah \`.septum/septum.db\` dan konfigurasi Septum sudah ada. Gunakan \`workspace_path\` bila schema tool menyediakan dan konteks berisi beberapa project.
+2. **Baca peta dan coverage.** Ambil katalog domain. Catat status index, file unsupported/skipped/uncovered, dan informasi freshness yang benar-benar tersedia. Jika status tidak ada atau tidak cukup, tandai coverage sebagai tidak diketahui.
+3. **Pisahkan bukti dari usulan.** Gunakan source/layout dan kontrak project sebagai bukti. Perlakukan nama folder, archetype, hasil impact, hotspot, dan slice sebagai petunjuk sampai diverifikasi. Jangan menyimpulkan aturan bisnis atau dependency yang diizinkan dari struktur folder saja.
+4. **Rumuskan perubahan governance.** Sajikan domain/root, allowed/forbidden dependencies, archetypes, dan alasan berbasis bukti. Tandai asumsi serta keputusan yang perlu dikonfirmasi pemilik project.
+5. **Minta persetujuan sebelum mutasi.** Lakukan \`septum_domain(action: "register")\`, \`septum_feature(action: "lock"|"release")\`, \`septum init\`, atau \`septum sync\` hanya jika task secara jelas mengizinkannya. Jelaskan bahwa operasi tersebut mengubah konfigurasi, session, hook, atau index sesuai command yang dipilih.
+6. **Verifikasi hasil sesuai scope.** Setelah perubahan yang diizinkan, baca ulang katalog/session terkait dan jalankan boundary check yang tepat. Laporkan status aktual; jangan mengubah \`unknown\` menjadi lulus.
 
-Gunakan alur 4 langkah ini saat merancang domain baru, melakukan *re-mapping* arsitektur, atau mengunci kontrak fitur:
+## Menafsirkan hasil
 
-### Langkah 1: Topological & Connectivity Scan (Maksimal 2 Tool Call)
-1. Panggil \`septum_domain({ action: "catalog" })\` untuk memeriksa *Telescope View* dan daftar domain yang terdaftar.
-2. Panggil \`septum_domain({ action: "catalog", domain: "<target>", detail_level: "compact" })\` untuk memetakan file, simbol yang sudah ada, dan koneksi \`imports_from\` / \`imported_by_count\`.
+- \`approved\` berarti tidak ada pelanggaran yang ditemukan pada scope dan coverage yang diperiksa; itu tidak membuktikan seluruh repository bebas pelanggaran.
+- \`unknown\`, sync yang belum selesai/gagal, atau file unsupported/skipped berarti hasil tidak cukup untuk menyimpulkan aman.
+- Tidak ditemukannya simbol, caller, route, atau dependency berarti “tidak ditemukan pada index/query ini”, bukan otomatis “tidak ada di source/runtime”.
+- \`exact\`/confidence pada slice adalah label pencocokan yang dikembalikan tool. Jangan mengubahnya menjadi kepastian bahwa seluruh chain benar secara runtime.
+- Feature lock dapat membantu boundary check atau hook Septum yang aktif menolak touchpoint di luar daftar. Ia tidak membatasi kemampuan baca/tulis agent atau proses lain pada level OS.
 
-### Langkah 2: Perumusan Kontrak Domain & Anti-Duplikasi Simbol
-* **\`domain\` & \`root\`:** Nama domain dan direktori kanonikalnya.
-* **\`allowed_dependencies\` & \`forbidden_dependencies\`:** Whitelist dan blacklist dependensi lintas-domain.
-* **\`reuse_symbols\`:** Daftar class, service, repository, atau konstanta eksisting yang **wajib digunakan kembali** agar agen tidak membuat kode duplikat.
+## Format laporan ringkas
 
-### Langkah 3: Registrasi Deterministik ke SQLite SSOT
-1. Gunakan \`septum_domain({ action: "register", domain, root, allowed_dependencies, forbidden_dependencies, ingest_now: true })\` untuk menyimpan batas domain.
-2. Gunakan \`septum_feature({ action: "lock", feature_key, domain, allowed_touchpoints, reuse_symbols })\` untuk mengunci fokus pengerjaan fitur.
+Laporkan:
 
-### Langkah 4: Verifikasi Boundary & Siklus Dependensi
-Jalankan \`septum_boundary({ scope: "all" })\` (atau CLI \`septum check --staged\`) untuk memastikan 0 pelanggaran batas domain dan 0 *circular dependency*.
+- **Workspace dan operasi:** target, tool/command, scope, serta apakah state berubah.
+- **Bukti:** status dan lokasi yang benar-benar dikembalikan Septum/source.
+- **Coverage:** complete, partial, unknown, atau tidak dilaporkan, beserta alasannya.
+- **Inferensi/asumsi:** labeli secara eksplisit; jangan tampilkan sebagai ground truth.
+- **Keputusan governance:** aturan yang diusulkan/disetujui dan siapa yang mengotorisasi mutasinya.
 `;
-

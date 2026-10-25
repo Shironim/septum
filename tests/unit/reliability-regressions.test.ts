@@ -100,8 +100,8 @@ describe('Reliability regressions', () => {
     const pipeline = new IngestionPipeline(repo, root); await pipeline.run(config);
     file(root, 'src/orders.controller.ts', source('new')); await pipeline.ingestFile(join(root, 'src/orders.controller.ts'), config);
     const tracer = new VerticalSliceTracer(repo, root);
-    expect(tracer.trace('GET /orders/new').found).toBe(true);
-    expect(tracer.trace('GET /orders/old').found).toBe(false);
+    expect((await tracer.traceAsync('GET /orders/new')).found).toBe(true);
+    expect((await tracer.traceAsync('GET /orders/old')).found).toBe(false);
   });
 
   it('does not label an unknown symbol as low risk', () => {
@@ -113,7 +113,7 @@ describe('Reliability regressions', () => {
 
   it('reports unsupported languages rather than a successful empty parse', async () => {
     const parser = new ASTParserEngine();
-    for (const [path, source] of [['hello.rs', 'pub fn hello() {}'], ['Hello.java', 'class Hello {}'], ['Hello.cs', 'class Hello {}'], ['hello.rb', 'def hello\nend']]) {
+    for (const [path, source] of [['hello.zig', 'pub fn hello() void {}'], ['Hello.scala', 'object Hello {}'], ['Hello.kt', 'fun hello() {}']]) {
       expect((await parser.parseFile(path, source) as any).status).toBe('unsupported');
     }
   });
@@ -149,7 +149,7 @@ describe('Audit completeness', () => {
   it('refuses a clean audit when mapped source files have no supported parser', () => {
     const { root, repo } = project();
     repo.upsertDomain('app', { root: 'src' });
-    file(root, 'src/hello.rs', 'pub fn hello() {}');
+    file(root, 'src/hello.zig', 'pub fn hello() void {}');
     const result = command(root, ['check', '--strict']);
     expect(result.exitCode).toBe(1);
     expect(result.stderr.toString()).toContain('unsupported');

@@ -114,8 +114,8 @@ describe("Unified 5 MCP Tools Suite", () => {
       expect(parsed.max_depth).toBe(8);
     });
 
-    it("should execute trace slice via handleSliceTool", () => {
-      const res = handleSliceTool(repo, config, {
+    it("should execute trace slice via handleSliceTool", async () => {
+      const res = await handleSliceTool(repo, config, {
         query: "POST /api/orders",
       });
       expect(res.content[0].text).toBeDefined();

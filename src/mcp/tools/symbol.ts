@@ -28,7 +28,13 @@ export async function handleSymbolTool(
           symbol,
           query: symbol,
           domain: args.domain,
+          file_path: args.file_path,
+          symbol_ref: args.symbol_ref,
           include_dependencies: args.include_dependencies,
+          include_source: args.include_source,
+          source_start_line: args.source_start_line,
+          source_line_limit: args.source_line_limit,
+          workspace_path: args.workspace_path,
         },
         workspaceRoot
       );
@@ -72,6 +78,8 @@ export async function handleSymbolTool(
         {
           query: args.query || args.symbol || "",
           domain: args.domain,
+          file_path: args.file_path,
+          symbol_ref: args.symbol_ref,
           limit: args.limit ?? 10,
           workspace_path: args.workspace_path,
         },

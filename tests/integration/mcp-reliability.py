@@ -119,16 +119,16 @@ with tempfile.TemporaryDirectory(prefix='septum-mcp-regression-') as temporary:
                 break
             assert time.monotonic() < deadline, 'Deleted file remained indexed'
             time.sleep(.075)
-        unsupported = b / 'src/orders/hello.rs'
-        unsupported.write_text('pub fn hello() {}')
+        unsupported = b / 'src/orders/hello.kt'
+        unsupported.write_text('class Hello')
         deadline = time.monotonic() + 5
         while True:
             catalog = tool('septum_domain', {'action': 'catalog', 'domain': 'orders', 'workspace_path': str(b)})
-            if 'src/orders/hello.rs' in catalog['index_status']['unsupported_files']:
+            if 'src/orders/hello.kt' in catalog['index_status']['unsupported_files']:
                 break
             assert time.monotonic() < deadline, 'Unsupported source file was not recorded'
             time.sleep(.075)
-        result = tool('septum_boundary', {'file_path': 'src/orders/hello.rs', 'workspace_path': str(b)})
+        result = tool('septum_boundary', {'file_path': 'src/orders/hello.kt', 'workspace_path': str(b)})
         assert result['status'] == 'unknown', 'Unsupported target must not receive approval'
         unsupported.unlink()
         deadline = time.monotonic() + 5

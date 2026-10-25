@@ -1,3 +1,6 @@
+import { assertPathContained } from "../../core/resolver/path-resolver.ts";
+import { readSourceFile } from "../../core/resources/source-files.ts";
+import { computeContentHash } from "../../core/ingestion/hasher.ts";
 import { relative, resolve } from "node:path";
 import { auditStagedFiles } from "../../core/boundary/staged-auditor.ts";
 import type { BoundaryEvaluator } from "../../core/boundary/evaluator.ts";
@@ -84,6 +87,28 @@ export async function handleCheckBoundary(
     return { content: [{ type: "text" as const, text: JSON.stringify({ status: "unknown", unsupported_files: relevantUnsupported, message: "Boundary audit is incomplete because source files have no supported parser." }) }] };
   }
 
+  if (args.scope !== "staged" && !args.staged && repo) {
+    const relevant = (file: string) => (!args.domain || evaluator.resolveSourceDomain(file,config) === args.domain) && (requested.length === 0 || requested.includes(file));
+    const staleFiles = repo.getMeta("workspace_root") ? repo.getAllFiles().filter(file => relevant(file.path)).filter(file => {
+      try { assertPathContained(file.path,root,"Boundary source"); return computeContentHash(readSourceFile(resolve(root,file.path))) !== file.content_hash; }
+      catch { return true; }
+    }).map(file => file.path) : [];
+    const relationships = repo.getImportRelationships(root).filter(edge => relevant(edge.source.file));
+    const incomplete = relationships.filter(edge => edge.index_coverage === "partial" || edge.freshness !== "current" || !["resolved","external"].includes(edge.resolution.status) || edge.resolution.coverage === "conditional" || edge.target_domains.length > 1);
+    const proposed = requested.flatMap(file => proposedImports.map(target => evaluator.getResolver().resolveImport(target,file)))
+      .filter(result => !["resolved","external"].includes(result.status) || result.coverage === "conditional");
+    if (incomplete.length || proposed.length || staleFiles.length) {
+      const known = evaluator.auditCodebase(config).filter(violation => relevant(violation.file));
+      known.push(...requested.flatMap(file => evaluator.evaluate(file,proposedImports,effectiveFeatureKey,config)));
+      return { content: [{ type: "text" as const, text: JSON.stringify({
+        status: known.length ? "rejected" : "unknown", violations: known, total_violations: known.length,
+        circular_dependencies: known.filter(v => v.rule === "circular_dependency"), circular_dependencies_count: known.filter(v => v.rule === "circular_dependency").length, relationships: incomplete, proposed_resolutions: proposed,
+        stale_files: staleFiles,
+        message: "Relevant import resolution is incomplete; an empty graph cannot prove boundary approval.",
+      }) }] };
+    }
+  }
+
   const filesToCheck: string[] = [];
   if (args.file_paths && Array.isArray(args.file_paths) && args.file_paths.length > 0) {
     filesToCheck.push(...args.file_paths);
@@ -101,7 +126,7 @@ export async function handleCheckBoundary(
       args.scope ?? (args.staged ? "staged" : args.domain ? "domain" : "all");
 
     if (effectiveScope === "staged") {
-      const { files: stagedFiles, violations: stagedViolations } = await auditStagedFiles(evaluator, config, root, effectiveFeatureKey, repo);
+      const { files: stagedFiles, violations: stagedViolations, resolution_issues: resolutionIssues } = await auditStagedFiles(evaluator, config, root, effectiveFeatureKey, repo);
 
       if (stagedFiles.length === 0 && stagedViolations.length === 0) {
         return {
@@ -149,7 +174,8 @@ export async function handleCheckBoundary(
             type: "text" as const,
             text: JSON.stringify(
               {
-                status: hasViolations ? "rejected" : "approved",
+                status: hasViolations ? "rejected" : resolutionIssues.length ? "unknown" : "approved",
+                resolution_issues: resolutionIssues,
                 scope: "staged",
                 total_checked: stagedFiles.length,
                 total_violations: filteredViolations.length,
@@ -157,7 +183,7 @@ export async function handleCheckBoundary(
                 circular_dependencies: circularDependencies,
                 domain_violation_breakdown: domainBreakdown,
                 violations: filteredViolations,
-                message: hasViolations
+                message: resolutionIssues.length && !hasViolations ? "Staged import resolution is incomplete; approval is unknown." : hasViolations
                   ? `${filteredViolations.length} boundary violation(s) detected across ${stagedFiles.length} staged file(s).`
                   : `All ${stagedFiles.length} staged file(s) approved. No boundary violations detected.`,
               },

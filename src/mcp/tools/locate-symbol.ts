@@ -18,7 +18,7 @@ export async function handleLocateSymbol(
   pipeline?: IngestionPipeline,
   workspaceRoot?: string
 ) {
-  const query = (args.query || args.symbol || "").toString().trim();
+  const query = (args.query || args.symbol || args.symbol_ref?.name || "").toString().trim();
   if (!query) {
     throw new Error(
       "Missing required argument: 'query' (e.g. 'OrderController::calculateTotal' or error log snippet)"
@@ -63,7 +63,7 @@ export async function handleLocateSymbol(
   }
 
   const locator = new SymbolLocator(repo);
-  let result: SymbolLocationResult = (locator.locate as any)(query, args.domain, limit);
+  let result: SymbolLocationResult = locator.locate(query, args.domain, { filePath: args.file_path, reference: args.symbol_ref });
 
   // 2. JIT Delta Sync: Check if located file has changed on disk since last ingest
   if (result.found && result.file_path && pipeline) {
@@ -73,7 +73,7 @@ export async function handleLocateSymbol(
     try {
       const reindexed = await pipeline.ingestFile(fullPath, config);
       if (reindexed) {
-        result = (locator.locate as any)(query, args.domain, limit);
+        result = locator.locate(query, args.domain, { filePath: args.file_path, reference: args.symbol_ref });
       }
     } catch {
       // Silently fall back to existing result
@@ -92,7 +92,7 @@ export async function handleLocateSymbol(
           if (reindexed) anyReindexed = true;
         }
         if (anyReindexed) {
-          result = (locator.locate as any)(query, args.domain, limit);
+          result = locator.locate(query, args.domain, { filePath: args.file_path, reference: args.symbol_ref });
         }
       }
     } catch {
@@ -123,7 +123,10 @@ export async function handleLocateSymbol(
   }
 
   const payload = {
-    status: result.found ? "success" : "not_found",
+    status: result.status ?? (result.found ? "success" : "not_found"),
+    candidates: result.candidates,
+    symbol_ref: result.symbol_ref,
+    visibility_semantics: "legacy_normalized",
     found: result.found,
     query,
     file_path: result.file_path || null,

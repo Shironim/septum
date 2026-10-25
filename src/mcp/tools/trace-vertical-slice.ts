@@ -10,7 +10,8 @@ export function handleTraceVerticalSlice(
   repo: SeptumRepository,
   config: ValidatedSeptumConfig,
   args: Partial<TraceVerticalSliceArgs> & { route?: string },
-  workspaceRoot?: string
+  workspaceRoot?: string,
+  signal?: AbortSignal
 ) {
   const query = (
     args.query ||
@@ -32,7 +33,7 @@ export function handleTraceVerticalSlice(
     process.cwd();
   const maxDepth = Math.min(Math.max(Math.trunc(Number(args.max_depth ?? 5)), 1), 8);
   const tracer = new VerticalSliceTracer(repo, root);
-  const result: VerticalSliceTraceResponse = (tracer.trace as any)(query, maxDepth);
+  return tracer.traceAsync(query, maxDepth, signal).then((result: VerticalSliceTraceResponse) => {
   const chain = result.chain || result.slice || [];
 
   let summary = "";
@@ -47,7 +48,9 @@ export function handleTraceVerticalSlice(
   }
 
   const payload = {
-    status: result.found ? "success" : "not_found",
+    status: result.diagnostics?.length ? "unknown" : result.found ? "success" : "not_found",
+    coverage: result.coverage,
+    diagnostics: result.diagnostics,
     query,
     found: result.found,
     confidence: result.confidence || (result.found ? "exact" : undefined),
@@ -70,5 +73,6 @@ export function handleTraceVerticalSlice(
     ],
     metadata: payload,
   };
+  });
 }
 

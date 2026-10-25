@@ -99,7 +99,7 @@ describe("Multi-Root Workspace Resolution & WorkspaceRoot Propagation", () => {
     expect(mockConfig.features["checkout-step"].domain).toBe("orders");
   });
 
-  it("BoundaryEvaluator with ModuleResolver correctly resolves relative paths inside workspaceRoot", () => {
+  it("BoundaryEvaluator with ModuleResolver correctly resolves relative paths inside workspaceRoot", async () => {
     const resolver = new ModuleResolver(tempWorkspace1, repo);
     const evaluator = new BoundaryEvaluator(repo, resolver);
 
@@ -133,8 +133,8 @@ describe("Multi-Root Workspace Resolution & WorkspaceRoot Propagation", () => {
     expect(json.status).toBe("approved");
   });
 
-  it("handleTraceVerticalSlice operates deterministically with custom workspaceRoot", () => {
-    const result = handleTraceVerticalSlice(
+  it("handleTraceVerticalSlice operates deterministically with custom workspaceRoot", async () => {
+    const result = await handleTraceVerticalSlice(
       repo,
       mockConfig,
       { query: "GET /api/cart" },
@@ -147,35 +147,35 @@ describe("Multi-Root Workspace Resolution & WorkspaceRoot Propagation", () => {
   });
 
   describe("extractPathHint Resolution", () => {
-    it("extracts path hint from bare string file paths", () => {
+    it("extracts path hint from bare string file paths", async () => {
       expect(extractPathHint("packages/orders/Service.php")).toBe("packages/orders/Service.php");
       expect(extractPathHint("  /path/to/project  ")).toBe("/path/to/project");
       expect(extractPathHint("")).toBeUndefined();
     });
 
-    it("extracts path hint from bare string array", () => {
+    it("extracts path hint from bare string array", async () => {
       expect(extractPathHint(["packages/orders/Service.php", "packages/orders/Model.php"])).toBe("packages/orders/Service.php");
       expect(extractPathHint([])).toBeUndefined();
     });
 
-    it("extracts path hint from camelCase workspace and projectRoot properties", () => {
+    it("extracts path hint from camelCase workspace and projectRoot properties", async () => {
       expect(extractPathHint({ workspacePath: "/monorepo/subapp" })).toBe("/monorepo/subapp");
       expect(extractPathHint({ projectRoot: "/monorepo/billing" })).toBe("/monorepo/billing");
       expect(extractPathHint({ targetPath: "/monorepo/orders" })).toBe("/monorepo/orders");
     });
 
-    it("extracts path hint from camelCase file properties", () => {
+    it("extracts path hint from camelCase file properties", async () => {
       expect(extractPathHint({ filePath: "packages/orders/Service.php" })).toBe("packages/orders/Service.php");
       expect(extractPathHint({ fromFile: "packages/billing/Pay.php" })).toBe("packages/billing/Pay.php");
       expect(extractPathHint({ filePaths: ["src/a.ts", "src/b.ts"] })).toBe("src/a.ts");
     });
 
-    it("does not treat domain root from register_domain as workspace root", () => {
+    it("does not treat domain root from register_domain as workspace root", async () => {
       expect(extractPathHint({ domain: "orders", root: "src/domains/orders" })).toBeUndefined();
       expect(extractPathHint({ name: "orders", root: "src/domains/orders" })).toBeUndefined();
     });
 
-    it("extracts root as workspace root only when domain is not specified", () => {
+    it("extracts root as workspace root only when domain is not specified", async () => {
       expect(extractPathHint({ root: "/path/to/workspace" })).toBe("/path/to/workspace");
     });
   });

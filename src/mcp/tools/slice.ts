@@ -9,7 +9,8 @@ export function handleSliceTool(
   repo: SeptumRepository,
   config: ValidatedSeptumConfig,
   args: SliceToolArgs,
-  workspaceRoot?: string
+  workspaceRoot?: string,
+  signal?: AbortSignal
 ) {
-  return handleTraceVerticalSlice(repo, config, args, workspaceRoot);
+  return handleTraceVerticalSlice(repo, config, args, workspaceRoot, signal);
 }
