@@ -345,9 +345,29 @@ export class ExpressSemanticExtractor implements SemanticSliceExtractor {
     };
 
     // 1. Identify root app variables (e.g. app in app.ts) which start with root prefix ""
+    // Also identify top-level callers that are not targets of any mount
+    const targetedCallers = new Set<string>();
     for (const mount of mounts) {
-      if (mount.callerVar === "app" || mount.callerVar === "server") {
-        getPrefixes(`${mount.relPath}#${mount.callerVar}`).add("");
+      const fileMap = fileImports.get(mount.relPath);
+      const importedFile = fileMap?.get(mount.targetVar);
+      if (importedFile) {
+        targetedCallers.add(`${importedFile}#router`);
+        targetedCallers.add(`${importedFile}#default`);
+        targetedCallers.add(`${importedFile}#${mount.targetVar}`);
+        for (const m of mounts) {
+          if (m.relPath === importedFile) {
+            targetedCallers.add(`${importedFile}#${m.callerVar}`);
+          }
+        }
+      } else {
+        targetedCallers.add(`${mount.relPath}#${mount.targetVar}`);
+      }
+    }
+
+    for (const mount of mounts) {
+      const callerKey = `${mount.relPath}#${mount.callerVar}`;
+      if (mount.callerVar === "app" || mount.callerVar === "server" || !targetedCallers.has(callerKey)) {
+        getPrefixes(callerKey).add("");
       }
     }
 
@@ -362,7 +382,8 @@ export class ExpressSemanticExtractor implements SemanticSliceExtractor {
       for (const mount of mounts) {
         const callerKey = `${mount.relPath}#${mount.callerVar}`;
         const callerPrefixes = getPrefixes(callerKey);
-        const basePrefixes = callerPrefixes.size > 0 ? Array.from(callerPrefixes) : [""];
+        if (callerPrefixes.size === 0) continue;
+        const basePrefixes = Array.from(callerPrefixes);
 
         // Check if targetVar is imported from another file
         const fileMap = fileImports.get(mount.relPath);

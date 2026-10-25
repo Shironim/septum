@@ -734,7 +734,8 @@ export class FastifySemanticExtractor implements SemanticSliceExtractor {
         if (!targetScopeId) continue;
 
         const parentPrefixes = getPrefixes(reg.parentScopeId);
-        const basePrefixes = parentPrefixes.size > 0 ? Array.from(parentPrefixes) : [""];
+        if (parentPrefixes.size === 0) continue;
+        const basePrefixes = Array.from(parentPrefixes);
         const targetSet = getPrefixes(targetScopeId);
 
         for (const baseP of basePrefixes) {
