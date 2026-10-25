@@ -2,6 +2,7 @@ import { assertPathContained } from "../../resolver/path-resolver.ts";
 import { ImportResolver } from "../../resolver/import-resolver.ts";
 import { readSourceFile } from "../../resources/source-files.ts";
 import { computeContentHash } from "../../ingestion/hasher.ts";
+import { getLanguageCapability } from "../../parser/language-capabilities.ts";
 import type { ImportRelationship } from "../../../types/index.ts";
 import * as fs from "node:fs";
 import { dirname, join, posix, resolve, sep } from "node:path";
@@ -177,7 +178,7 @@ export class DependencyRepository {
         kind: "imports", derivation: "source",
         source: { file: dep.source_file, line: dep.line_number, statement: dep.statement, indexed_content_hash: hashes.get(dep.source_file) ?? "" },
         resolution, target_domains: [...new Set(targetDomains)], freshness: current,
-        index_coverage: resolution.targets.every(target => target.files.every(file => hashes.has(file))) ? "complete" : "partial",
+        index_coverage: resolution.targets.every(target => target.files.every(file => hashes.has(file) || !getLanguageCapability(file))) ? "complete" : "partial",
         ...(dep.source_file.endsWith(".go") ? { import_binding: (() => {
           const alias = dep.statement.replace(/^\s*import\s+/, "").match(/^\s*([A-Za-z_]\w*|\.)\s+["`]/)?.[1];
           return { kind: alias === "_" ? "blank" : alias === "." ? "dot" : alias ? "named" : "default", alias };

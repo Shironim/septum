@@ -626,8 +626,11 @@ export class CallGraphTracer {
    */
   private findFileBySymbolOrName(
     ident: string,
-    contextFile?: string
+    contextFile?: string,
+    visited = new Set<string>()
   ): { file: FileRecord; symbol?: SymbolRecord } | null {
+    if (contextFile && visited.has(contextFile)) return null;
+    if (contextFile) visited.add(contextFile);
     const cleanIdent = ident.replace(/controller$/i, "").toLowerCase();
 
     // 1. Try imports of contextFile
@@ -643,7 +646,13 @@ export class CallGraphTracer {
               const sym = syms.find(
                 (s) => s.name.toLowerCase() === ident.toLowerCase() || s.name.toLowerCase().includes(cleanIdent)
               );
-              return { file: resolved, symbol: sym };
+              if (sym) {
+                return { file: resolved, symbol: sym };
+              }
+              if (visited.size < 5) {
+                const reExported = this.findFileBySymbolOrName(ident, resolved.path, visited);
+                if (reExported?.symbol) return reExported;
+              }
             }
           }
         }

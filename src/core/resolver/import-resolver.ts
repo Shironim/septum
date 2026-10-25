@@ -66,7 +66,21 @@ export class ImportResolver {
     };
     const filesAt = (base: string, extensions: string[]): string[] => {
       this.assertContained(base);
-      const candidates = [base, ...extensions.map(ext => base + ext), ...extensions.map(ext => path.join(base, "index" + ext))];
+      const extraCandidates: string[] = [];
+      if (base.endsWith(".js")) {
+        const stripped = base.slice(0, -3);
+        extraCandidates.push(stripped + ".ts", stripped + ".tsx", stripped + ".d.ts", path.join(stripped, "index.ts"));
+      } else if (base.endsWith(".mjs")) {
+        const stripped = base.slice(0, -4);
+        extraCandidates.push(stripped + ".mts", stripped + ".d.mts");
+      } else if (base.endsWith(".cjs")) {
+        const stripped = base.slice(0, -4);
+        extraCandidates.push(stripped + ".cts", stripped + ".d.cts");
+      } else if (base.endsWith(".jsx")) {
+        const stripped = base.slice(0, -4);
+        extraCandidates.push(stripped + ".tsx");
+      }
+      const candidates = [base, ...extraCandidates, ...extensions.map(ext => base + ext), ...extensions.map(ext => path.join(base, "index" + ext))];
       return [...new Set(candidates.filter(file => {
         this.assertContained(file);
         return fs.existsSync(file) && fs.statSync(file).isFile();
@@ -303,8 +317,45 @@ export class ImportResolver {
       const extensions = [".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs", ".d.ts", ".json"];
       if (target.startsWith(".") || path.isAbsolute(target)) return resolvedFiles(filesAt(path.resolve(path.dirname(source), target), extensions), "relative_path");
       if (builtinModules.includes(target) || target.startsWith("node:") && builtinModules.includes(target.slice(5)) || target === "bun" || target.startsWith("bun:")) return finish("external", "runtime_builtin");
-      const tsconfig = json(path.join(this.root, "tsconfig.json"));
-      if (tsconfig.extends) return finish("unsupported", "tsconfig_extends_not_supported");
+      const loadTsConfig = (configPath: string, visited = new Set<string>()): any => {
+        if (visited.has(configPath)) return {};
+        visited.add(configPath);
+        const cfg = json(configPath);
+        if (!cfg || typeof cfg !== "object") return {};
+        if (!cfg.extends) return cfg;
+
+        const extendsList = Array.isArray(cfg.extends) ? cfg.extends : [cfg.extends];
+        let mergedCompilerOptions: any = {};
+        for (const extRef of extendsList) {
+          if (typeof extRef !== "string") continue;
+          let parentPath: string | undefined;
+          if (extRef.startsWith(".")) {
+            const candidate = path.resolve(path.dirname(configPath), extRef.endsWith(".json") ? extRef : extRef + ".json");
+            try { this.assertContained(candidate); parentPath = candidate; } catch {}
+          } else {
+            const nodeModCandidate = path.resolve(this.root, "node_modules", extRef.endsWith(".json") ? extRef : extRef + ".json");
+            try { this.assertContained(nodeModCandidate); if (fs.existsSync(nodeModCandidate)) parentPath = nodeModCandidate; } catch {}
+          }
+          if (parentPath && fs.existsSync(parentPath)) {
+            const parentCfg = loadTsConfig(parentPath, visited);
+            mergedCompilerOptions = {
+              ...mergedCompilerOptions,
+              ...(parentCfg.compilerOptions ?? {}),
+              paths: { ...(mergedCompilerOptions.paths ?? {}), ...(parentCfg.compilerOptions?.paths ?? {}) },
+            };
+          }
+        }
+        return {
+          ...cfg,
+          compilerOptions: {
+            ...mergedCompilerOptions,
+            ...(cfg.compilerOptions ?? {}),
+            paths: { ...(mergedCompilerOptions.paths ?? {}), ...(cfg.compilerOptions?.paths ?? {}) },
+          },
+        };
+      };
+
+      const tsconfig = loadTsConfig(path.join(this.root, "tsconfig.json"));
       const options = tsconfig.compilerOptions ?? {};
       const aliases = options.paths ?? {};
       const matching = Object.keys(aliases).filter(key => key.endsWith("*") ? target.startsWith(key.slice(0,-1)) : target === key).sort((a,b)=>b.length-a.length);
@@ -333,9 +384,26 @@ export class ImportResolver {
         const workspace = json(path.resolve(this.root,directory,"package.json"));
         if (typeof workspace.name !== "string" || !(target === workspace.name || target.startsWith(workspace.name + "/"))) continue;
         const subpath = target.slice(workspace.name.length).replace(/^\//, "");
-        const exported = typeof workspace.exports === "string" ? workspace.exports : workspace.exports?.["."];
-        if (!subpath && exported && typeof exported !== "string") return finish("unsupported","conditional_package_exports");
-        const entry = subpath || exported || workspace.module || workspace.main || "index";
+        let resolvedEntry: string | undefined;
+
+        if (!subpath) {
+          const exported = typeof workspace.exports === "string" ? workspace.exports : workspace.exports?.["."];
+          if (typeof exported === "string") {
+            resolvedEntry = exported;
+          } else if (exported && typeof exported === "object") {
+            resolvedEntry = exported.import || exported.default || exported.require || exported.types;
+            if (typeof resolvedEntry !== "string") return finish("unsupported", "conditional_package_exports");
+          }
+        } else if (workspace.exports && typeof workspace.exports === "object") {
+          const subExport = workspace.exports["./" + subpath] ?? workspace.exports["./" + subpath + ".js"];
+          if (typeof subExport === "string") {
+            resolvedEntry = subExport;
+          } else if (subExport && typeof subExport === "object") {
+            resolvedEntry = subExport.import || subExport.default || subExport.require || subExport.types;
+          }
+        }
+
+        const entry = resolvedEntry || subpath || workspace.module || workspace.main || "index";
         if (typeof entry !== "string") return finish("unsupported","package_entry_not_literal");
         workspaceFiles.push(...filesAt(path.resolve(this.root,directory,entry),extensions));
       }

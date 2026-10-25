@@ -106,4 +106,48 @@ describe("shared import resolution contract", () => {
   expect(missingResult.status).toBe("unresolved");
   expect(missingResult.reason).toBe("file_not_found");
  });
+
+  it("resolves TS .js/.mjs/.cjs specifiers to corresponding .ts/.mts/.cts files (TS-02a)", () => {
+    put("src/helpers.ts");
+    expect(resolve("./helpers.js", "src/main.ts").targets[0].files).toEqual(["src/helpers.ts"]);
+
+    put("src/async-util.mts");
+    expect(resolve("./async-util.mjs", "src/main.ts").targets[0].files).toEqual(["src/async-util.mts"]);
+
+    // If both .js and .ts exist on disk, resolution must be ambiguous
+    put("src/ambig.js");
+    put("src/ambig.ts");
+    expect(resolve("./ambig.js", "src/main.ts").status).toBe("ambiguous");
+  });
+
+  it("resolves tsconfig.json relative extends with paths and baseUrl (TS-02b)", () => {
+    put("tsconfig.base.json", JSON.stringify({ compilerOptions: { paths: { "@domain/*": ["src/domain/*"] } } }));
+    put("tsconfig.json", JSON.stringify({ extends: "./tsconfig.base.json" }));
+    put("src/domain/order.ts");
+
+    const resolver = new ModuleResolver(root);
+    const before = resolver.resolveImport("@domain/order", "src/main.ts");
+    expect(before.targets[0].files).toEqual(["src/domain/order.ts"]);
+
+    // Modifying parent tsconfig invalidates config_revision
+    put("tsconfig.base.json", JSON.stringify({ compilerOptions: { paths: { "@domain/*": ["lib/domain/*"] } } }));
+    const after = resolver.resolveImport("@domain/order", "src/main.ts");
+    expect(after.config_revision).not.toBe(before.config_revision);
+  });
+
+  it("resolves workspace package conditional exports and subpath exports (TS-02c)", () => {
+    put("package.json", JSON.stringify({ workspaces: ["packages/*"] }));
+    put("packages/core/package.json", JSON.stringify({
+      name: "@workspace/core",
+      exports: {
+        ".": { "import": "./src/index.ts", "require": "./dist/index.cjs" },
+        "./utils": "./src/utils.ts",
+      },
+    }));
+    put("packages/core/src/index.ts");
+    put("packages/core/src/utils.ts");
+
+    expect(resolve("@workspace/core", "src/main.ts").targets[0].files).toEqual(["packages/core/src/index.ts"]);
+    expect(resolve("@workspace/core/utils", "src/main.ts").targets[0].files).toEqual(["packages/core/src/utils.ts"]);
+  });
 });
