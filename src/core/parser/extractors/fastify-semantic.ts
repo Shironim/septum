@@ -319,7 +319,7 @@ export class FastifySemanticExtractor implements SemanticSliceExtractor {
         }
       } else if (node.type === "export_statement") {
         for (const child of node.namedChildren) {
-          if (child.type === "function_declaration" || child.type === "arrow_function" || child.type === "function_expression") {
+          if (child.type === "function_declaration" || child.type === "arrow_function" || child.type === "function_expression" || child.type === "function") {
             definedScopes.add(`${relPath}#default`);
           }
         }
@@ -488,13 +488,13 @@ export class FastifySemanticExtractor implements SemanticSliceExtractor {
     let curr: Parser.SyntaxNode | null = node.parent;
     while (curr) {
       if (curr.type === "function_declaration") {
+        if (curr.parent?.type === "export_statement") return `${relPath}#default`;
         const name = curr.childForFieldName("name");
         if (name) return `${relPath}#${name.text.trim()}`;
-        if (curr.parent?.type === "export_statement") return `${relPath}#default`;
       } else if (curr.type === "variable_declarator") {
         const name = curr.childForFieldName("name");
         if (name) return `${relPath}#${name.text.trim()}`;
-      } else if (curr.type === "arrow_function" || curr.type === "function_expression") {
+      } else if (curr.type === "arrow_function" || curr.type === "function_expression" || curr.type === "function") {
         if (curr.parent?.type === "export_statement") return `${relPath}#default`;
         if (curr.parent?.type === "arguments") {
           const call = curr.parent.parent;

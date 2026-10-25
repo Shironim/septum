@@ -590,11 +590,30 @@ export class FastApiSemanticExtractor implements SemanticSliceExtractor {
                 serviceLine = serviceContent.slice(0, fnMatch.index).split("\n").length;
               }
               // Scan service for ORM persistence (SQLAlchemy, Tortoise, SQLModel)
-              const ormMatch =
+              let modelName: string | undefined;
+              const directOrmMatch =
                 serviceContent.match(/(?:db\.(?:add|query)|session\.(?:query|add)|select)\s*\(\s*([A-Z][a-zA-Z0-9_]+)/) ||
                 serviceContent.match(/\b([A-Z][a-zA-Z0-9_]+)\.(?:create|filter|get|save|all)\s*\(/);
-              if (ormMatch) {
-                const modelName = ormMatch[1];
+              if (directOrmMatch) {
+                modelName = directOrmMatch[1];
+              } else {
+                const varAddMatch = serviceContent.match(/(?:db|session)\.add\s*\(\s*([a-zA-Z0-9_]+)\s*\)/);
+                if (varAddMatch) {
+                  const varName = varAddMatch[1];
+                  const instMatch = serviceContent.match(new RegExp(`\\b${varName}\\s*=\\s*([A-Z][a-zA-Z0-9_]+)\\s*\\(`));
+                  if (instMatch) {
+                    modelName = instMatch[1];
+                  }
+                }
+                if (!modelName) {
+                  const impMatch = serviceContent.match(/from\s+[a-zA-Z0-9_.]+\s+import\s+[^\\n]*\b([A-Z][a-zA-Z0-9_]+)\b/);
+                  if (impMatch && serviceContent.includes("db.add") && new RegExp(`\\b${impMatch[1]}\\s*\\(`).test(serviceContent)) {
+                    modelName = impMatch[1];
+                  }
+                }
+              }
+
+              if (modelName) {
                 let modelFile: string | undefined;
                 const modelImportMatch = serviceContent.match(
                   new RegExp(`from\\s+([a-zA-Z0-9_.]+)\\s+import\\s+[^\\n]*\\b${modelName}\\b`)

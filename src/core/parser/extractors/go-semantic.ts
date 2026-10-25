@@ -76,6 +76,7 @@ export class GoSemanticExtractor implements SemanticSliceExtractor {
       relPath: string;
       line: number;
       body: string;
+      params?: string;
     }
 
     // 1. Catalog all handler functions & methods across .go files
@@ -203,10 +204,11 @@ export class GoSemanticExtractor implements SemanticSliceExtractor {
         const bStart = afMatch.index + afMatch[0].length;
         const bEnd = this.findGoBraceBlockEnd(content, bStart - 1);
         const bText = content.slice(bStart, bEnd);
+        const params = afMatch[3];
         if (rcv) {
-          goMethods.set(`${rcv}.${fn}`, { receiver: rcv, name: fn, file, relPath, line: fLine, body: bText });
+          goMethods.set(`${rcv}.${fn}`, { receiver: rcv, name: fn, file, relPath, line: fLine, body: bText, params });
         } else {
-          goMethods.set(fn, { name: fn, file, relPath, line: fLine, body: bText });
+          goMethods.set(fn, { name: fn, file, relPath, line: fLine, body: bText, params });
         }
       }
     }
@@ -479,7 +481,10 @@ export class GoSemanticExtractor implements SemanticSliceExtractor {
       const handlerStruct = goStructs.get(controllerClass);
       if (handlerStruct?.fields?.has(rVar)) {
         rType = handlerStruct.fields.get(rVar)!;
+      } else if (targetStruct?.fields?.has(rVar)) {
+        rType = targetStruct.fields.get(rVar)!;
       }
+      rType = rType.replace(/^\*?(?:[a-zA-Z0-9_]+\.)?/, "");
 
       const rMethodInfo = goMethods.get(`${rType}.${rMethod}`) || goMethods.get(`${rVar}.${rMethod}`);
       const rStructInfo = goStructs.get(rType);
@@ -491,6 +496,14 @@ export class GoSemanticExtractor implements SemanticSliceExtractor {
       } else if (rMethodInfo?.body) {
         const entMatch = rMethodInfo.body.match(/&?([A-Z][a-zA-Z0-9_]+)\s*\{/);
         if (entMatch) entityName = entMatch[1];
+      }
+      if (!entityName && rMethodInfo?.params) {
+        const pMatch = rMethodInfo.params.match(/\*?(?:[a-zA-Z0-9_]+\.)?([A-Z][a-zA-Z0-9_]+)\b/);
+        if (pMatch && goStructs.has(pMatch[1])) entityName = pMatch[1];
+      }
+      if (!entityName && targetMethod?.params) {
+        const pMatch = targetMethod.params.match(/\*?(?:[a-zA-Z0-9_]+\.)?([A-Z][a-zA-Z0-9_]+)\b/);
+        if (pMatch && goStructs.has(pMatch[1])) entityName = pMatch[1];
       }
     }
 

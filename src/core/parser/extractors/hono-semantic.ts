@@ -43,7 +43,7 @@ function normalizeRouteUri(prefix: string, rawPath: string): string {
   const p = (prefix ?? "").trim().replace(/\/+$/, "");
   let r = (rawPath ?? "").trim();
   if (!r.startsWith("/")) r = "/" + r;
-  if (r === "/" && p.length > 0) return p;
+  if (r === "/" && p.length > 0) return `${p}/`;
   if (r === "/" && p.length === 0) return "/";
   const joined = `${p}${r}`;
   return joined.startsWith("/") ? joined : `/${joined}`;
@@ -188,7 +188,18 @@ export class HonoSemanticExtractor implements SemanticSliceExtractor {
             if (sMatch) {
               const svcIdent = sMatch[1];
               const svcMethod = sMatch[2];
-              const svcImport = fileImports.get(scanFile)?.get(svcIdent);
+              const imports = fileImports.get(scanFile);
+              let svcImport = imports?.get(svcIdent);
+              if (!svcImport && imports) {
+                const pascal = svcIdent.charAt(0).toUpperCase() + svcIdent.slice(1);
+                svcImport = imports.get(pascal);
+                if (!svcImport) {
+                  const instMatch = scanContent.match(new RegExp(`\\b(?:const|let|var)\\s+${svcIdent}\\s*=\\s*new\\s+([a-zA-Z0-9_]+)`));
+                  if (instMatch) {
+                    svcImport = imports.get(instMatch[1]);
+                  }
+                }
+              }
               serviceFile = svcImport;
 
               chain.push({
