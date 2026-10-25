@@ -54,6 +54,9 @@
   "files": [
     "bin",
     "src",
+    "scripts/postinstall.ts",
+    "dist/*.js",
+    "dist/*.d.ts",
     "README.md",
     "LICENSE"
   ],

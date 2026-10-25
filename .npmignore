@@ -18,6 +18,12 @@ coverage/
 report.txt
 report*.txt
 
+# Build Outputs & Standalone Binaries
+dist/septum*
+dist/*.exe
+*.exe
+scripts/compile.ts
+
 # IDE & OS
 .vscode/
 .idea/
