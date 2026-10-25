@@ -16,6 +16,7 @@ export interface SemanticSliceExtractor {
    */
   extractSlices(
     projectRoot: string,
-    domainId?: number
+    domainId?: number,
+    signal?: AbortSignal
   ): Promise<VerticalSliceCandidate[]> | VerticalSliceCandidate[];
 }

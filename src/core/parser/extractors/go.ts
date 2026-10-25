@@ -1,3 +1,4 @@
+import { getLanguageCapability } from "../language-capabilities.ts";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ExtractedDependency, ExtractedSymbol, ParsedFileAST, Visibility } from "../../../types/index.ts";
@@ -41,7 +42,7 @@ const GO_STDLIB_PREFIXES = new Set([
 
 import type Parser from "web-tree-sitter";
 import { blankCommentsAndStrings } from "../boundary-tracker.ts";
-import { calculateAstControlFlowNesting, parseWithTreeSitter } from "../wasm-loader.ts";
+import { calculateAstControlFlowNesting, getNodeHeader, parseSourceWithTreeSitter } from "../wasm-loader.ts";
 
 const GO_CONTROL_FLOW_NODES = new Set([
   "if_statement",
@@ -59,15 +60,16 @@ const GO_FUNCTION_BOUNDARY_NODES = new Set([
 
 export class GoExtractor implements CodeExtractor {
   public canHandle(filePath: string): boolean {
-    return /\.go$/i.test(filePath);
+    return getLanguageCapability(filePath)?.extractor === "go";
   }
 
   public async extract(filePath: string, content: string): Promise<ParsedFileAST> {
-    const astResult = await parseWithTreeSitter("go", content, (rootNode) =>
-      this.extractFromAst(rootNode, filePath, content)
+    const astResult = await parseSourceWithTreeSitter("go", content, (rootNode) =>
+      this.extractFromAst(rootNode, filePath, content),
+      () => this.extractFallback(filePath, content)
     );
     if (astResult) {
-      return { ...astResult, status: "parsed" };
+      return astResult;
     }
 
     return { ...this.extractFallback(filePath, content), status: "degraded" };
@@ -135,7 +137,8 @@ export class GoExtractor implements CodeExtractor {
       }
     }
 
-    // 2. Extract Go Types, Structs, Interfaces, and Functions
+    // 2. Extract Go Types, Structs, Interfaces, Constants, and Functions
+    let inConstBlock = false;
     for (let i = 0; i < cleanLines.length; i++) {
       const trimmed = cleanLines[i].trim();
       const rawTrimmed = lines[i].trim();
@@ -143,10 +146,52 @@ export class GoExtractor implements CodeExtractor {
 
       if (!trimmed) continue;
 
-      const typeMatch = /^type\s+([A-Za-z0-9_]+)\s+(struct|interface)\b/.exec(trimmed);
+      if (trimmed.startsWith("const (")) {
+        inConstBlock = true;
+        continue;
+      }
+      if (inConstBlock) {
+        if (trimmed === ")") {
+          inConstBlock = false;
+          continue;
+        }
+        const constIdMatch = /^([A-Za-z0-9_]+)/.exec(trimmed);
+        if (constIdMatch && constIdMatch[1] !== "_") {
+          const constName = constIdMatch[1];
+          const visibility: Visibility = /^[A-Z]/.test(constName) ? "public" : "private";
+          symbols.push({
+            name: constName,
+            kind: "constant",
+            signature: rawTrimmed.replace(/;$/, "").trim(),
+            visibility,
+            line_start: lineNum,
+            line_end: lineNum,
+            line_count: 1,
+          });
+        }
+        continue;
+      }
+
+      const singleConstMatch = /^const\s+([A-Za-z0-9_]+)\b/.exec(trimmed);
+      if (singleConstMatch) {
+        const constName = singleConstMatch[1];
+        const visibility: Visibility = /^[A-Z]/.test(constName) ? "public" : "private";
+        symbols.push({
+          name: constName,
+          kind: "constant",
+          signature: rawTrimmed.replace(/;$/, "").trim(),
+          visibility,
+          line_start: lineNum,
+          line_end: lineNum,
+          line_count: 1,
+        });
+        continue;
+      }
+
+      const typeMatch = /^type\s+([A-Za-z0-9_]+)(?:\[[^\]]*\])?\s+(struct|interface)\b/.exec(trimmed);
       if (typeMatch) {
         const typeName = typeMatch[1];
-        const kind = typeMatch[2] === "interface" ? "interface" : "class";
+        const kind = typeMatch[2] === "interface" ? "interface" : "struct";
         const visibility: Visibility = /^[A-Z]/.test(typeName) ? "public" : "private";
         const endLine = findBraceBlockEnd(cleanLines, i);
 
@@ -158,6 +203,22 @@ export class GoExtractor implements CodeExtractor {
           line_start: lineNum,
           line_end: endLine,
           line_count: Math.max(1, endLine - lineNum + 1),
+        });
+        continue;
+      }
+
+      const typeDefMatch = /^type\s+([A-Za-z0-9_]+)(?:\[[^\]]*\])?\s+([A-Za-z0-9_]+|\[\]|map|func)\b/.exec(trimmed);
+      if (typeDefMatch) {
+        const typeName = typeDefMatch[1];
+        const visibility: Visibility = /^[A-Z]/.test(typeName) ? "public" : "private";
+        symbols.push({
+          name: typeName,
+          kind: "type",
+          signature: rawTrimmed.replace(/\{$/, "").trim(),
+          visibility,
+          line_start: lineNum,
+          line_end: lineNum,
+          line_count: 1,
         });
         continue;
       }
@@ -210,19 +271,11 @@ export class GoExtractor implements CodeExtractor {
 
 
   private isExternalImport(importPath: string, filePath?: string): boolean {
-    if (this.isGoStdlib(importPath)) {
-      return true;
-    }
-    if (importPath.startsWith(".") || importPath.startsWith("/")) {
-      return false;
-    }
+    if (importPath.startsWith(".") || importPath.startsWith("/")) return false;
     const modName = this.findGoModuleName(filePath);
-    if (modName) {
-      if (importPath === modName || importPath.startsWith(`${modName}/`)) {
-        return false;
-      }
-      return true;
-    }
+    if (modName && (importPath === modName || importPath.startsWith(`${modName}/`))) return false;
+    if (this.isGoStdlib(importPath)) return true;
+    if (modName) return true;
 
     if (
       importPath.includes("/domains/") ||
@@ -258,7 +311,7 @@ export class GoExtractor implements CodeExtractor {
 
   private isGoStdlib(importPath: string): boolean {
     const rootSegment = importPath.split("/")[0];
-    return GO_STDLIB_PREFIXES.has(rootSegment) || !importPath.includes(".");
+    return GO_STDLIB_PREFIXES.has(rootSegment);
   }
 
   private extractFromAst(
@@ -313,6 +366,31 @@ export class GoExtractor implements CodeExtractor {
         continue;
       }
 
+      if (node.type === "const_declaration") {
+        for (const spec of node.namedChildren) {
+          if (spec.type !== "const_spec") continue;
+          const nameNodes = spec.namedChildren.filter((c) => c.type === "identifier");
+          const lineStart = spec.startPosition.row + 1;
+          const lineEnd = Math.max(lineStart, spec.endPosition.row + 1);
+          const headerLine = (lines[spec.startPosition.row] ?? "").trim().replace(/;$/, "").trim();
+
+          for (const nameNode of nameNodes) {
+            const constName = nameNode.text;
+            const visibility: Visibility = /^[A-Z]/.test(constName) ? "public" : "private";
+            symbols.push({
+              name: constName,
+              kind: "constant",
+              signature: headerLine || `const ${constName}`,
+              visibility,
+              line_start: lineStart,
+              line_end: lineEnd,
+              line_count: Math.max(1, lineEnd - lineStart + 1),
+            });
+          }
+        }
+        continue;
+      }
+
       if (node.type === "type_declaration") {
         for (const spec of node.namedChildren) {
           if (spec.type !== "type_spec" && spec.type !== "type_alias") continue;
@@ -323,7 +401,12 @@ export class GoExtractor implements CodeExtractor {
 
           const typeName = nameNode.text;
           const typeVal = spec.childForFieldName("type") ?? spec.namedChildren[1];
-          const kind = typeVal?.type === "interface_type" ? "interface" : "class";
+          const kind: ExtractedSymbol["kind"] =
+            typeVal?.type === "interface_type"
+              ? "interface"
+              : typeVal?.type === "struct_type"
+              ? "struct"
+              : "type";
           const visibility: Visibility = /^[A-Z]/.test(typeName) ? "public" : "private";
           const lineStart = spec.startPosition.row + 1;
           const lineEnd = Math.max(lineStart, spec.endPosition.row + 1);
@@ -352,7 +435,7 @@ export class GoExtractor implements CodeExtractor {
         const visibility: Visibility = /^[A-Z]/.test(methodName) ? "public" : "private";
         const lineStart = node.startPosition.row + 1;
         const lineEnd = Math.max(lineStart, node.endPosition.row + 1);
-        const headerLine = (lines[node.startPosition.row] ?? "").trim().replace(/\{$/, "").trim();
+        const headerLine = getNodeHeader(node);
         const nestingDepth = calculateAstControlFlowNesting(
           node,
           GO_CONTROL_FLOW_NODES,
@@ -382,7 +465,7 @@ export class GoExtractor implements CodeExtractor {
         const visibility: Visibility = /^[A-Z]/.test(funcName) ? "public" : "private";
         const lineStart = node.startPosition.row + 1;
         const lineEnd = Math.max(lineStart, node.endPosition.row + 1);
-        const headerLine = (lines[node.startPosition.row] ?? "").trim().replace(/\{$/, "").trim();
+        const headerLine = getNodeHeader(node);
         const nestingDepth = calculateAstControlFlowNesting(
           node,
           GO_CONTROL_FLOW_NODES,

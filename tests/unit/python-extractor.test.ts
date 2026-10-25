@@ -70,6 +70,10 @@ async def async_dispatch_event():
     expect(classSym?.visibility).toBe("public");
 
     // Methods
+    const initMethod = ast.symbols.find((s) => s.name === "InvoiceProcessor::__init__");
+    expect(initMethod?.kind).toBe("method");
+    expect(initMethod?.visibility).toBe("public");
+
     const calcMethod = ast.symbols.find((s) => s.name === "InvoiceProcessor::calculate_total");
     expect(calcMethod?.kind).toBe("method");
     expect(calcMethod?.visibility).toBe("public");
@@ -86,5 +90,34 @@ async def async_dispatch_event():
 
     const asyncFunc = ast.symbols.find((s) => s.name === "async_dispatch_event");
     expect(asyncFunc?.kind).toBe("function");
+  });
+
+  it("should extract nested classes, closures, and decorated properties", async () => {
+    const pythonCode = `
+class ServiceContainer:
+    class Config:
+        debug: bool = True
+
+    @property
+    def is_ready(self) -> bool:
+        return True
+
+    def run_job(self):
+        def inner_worker():
+            pass
+        return inner_worker
+`;
+
+    const ast = await extractor.extract("src/container.py", pythonCode);
+
+    const innerClass = ast.symbols.find((s) => s.name === "ServiceContainer::Config");
+    expect(innerClass?.kind).toBe("class");
+
+    const propSym = ast.symbols.find((s) => s.name === "ServiceContainer::is_ready");
+    expect(propSym?.kind).toBe("property");
+    expect(propSym?.signature).toContain("@property");
+
+    const closureSym = ast.symbols.find((s) => s.name === "ServiceContainer::run_job::inner_worker");
+    expect(closureSym?.kind).toBe("function");
   });
 });

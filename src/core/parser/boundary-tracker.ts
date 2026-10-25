@@ -287,6 +287,16 @@ export function calculatePythonNesting(
   return maxDepth;
 }
 
+export function findClosingParenthesis(maskedSource: string, openingIndex: number): number {
+  if (maskedSource[openingIndex] !== "(") return -1;
+  let depth = 0;
+  for (let i = openingIndex; i < maskedSource.length; i++) {
+    if (maskedSource[i] === "(") depth++;
+    else if (maskedSource[i] === ")" && --depth === 0) return i;
+  }
+  return -1;
+}
+
 /**
  * Replaces the contents of comments and string/template literals with spaces while
  * preserving exact character offsets, outer quote delimiters, and line breaks.

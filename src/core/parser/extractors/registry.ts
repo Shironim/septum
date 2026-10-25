@@ -3,22 +3,35 @@ import type {
   VerticalSliceCandidate,
 } from "./semantic-extractor.interface.ts";
 import { LaravelSemanticExtractor } from "./laravel-semantic.ts";
+import { SymfonySemanticExtractor } from "./symfony-semantic.ts";
 import { McpCliSemanticExtractor } from "./mcp-cli-semantic.ts";
 import { NestJsSemanticExtractor } from "./nestjs-semantic.ts";
+import { FastApiSemanticExtractor } from "./fastapi-semantic.ts";
+import { DjangoSemanticExtractor } from "./django-semantic.ts";
+import { GoSemanticExtractor } from "./go-semantic.ts";
 
 export class SemanticSliceExtractorRegistry {
   private static extractors: SemanticSliceExtractor[] = [
     new LaravelSemanticExtractor(),
+    new SymfonySemanticExtractor(),
     new McpCliSemanticExtractor(),
     new NestJsSemanticExtractor(),
+    new FastApiSemanticExtractor(),
+    new DjangoSemanticExtractor(),
+    new GoSemanticExtractor(),
   ];
+
+  public static getCapabilities() {
+    return this.extractors.map(({ id, name }) => ({ id, name, coverage: "partial" }));
+  }
 
   /**
    * Registers a new semantic slice extractor strategy.
    * Prepends to the list to give higher priority to custom extractors.
    */
-  public static register(extractor: SemanticSliceExtractor): void {
+  public static register(extractor: SemanticSliceExtractor): () => void {
     this.extractors.unshift(extractor);
+    return () => { this.extractors = this.extractors.filter(item => item !== extractor); };
   }
 
   /**
@@ -34,37 +47,22 @@ export class SemanticSliceExtractorRegistry {
   public static async extractAllSlices(
     projectRoot: string,
     framework?: string,
-    domainId?: number
+    domainId?: number,
+    signal?: AbortSignal
   ): Promise<VerticalSliceCandidate[]> {
     const matched = this.getExtractors(projectRoot, framework);
     const combinedSlices: VerticalSliceCandidate[] = [];
 
     for (const extractor of matched) {
-      const slices = await extractor.extractSlices(projectRoot, domainId);
+      signal?.throwIfAborted();
+      let slices: VerticalSliceCandidate[];
+      try { slices = await extractor.extractSlices(projectRoot, domainId, signal); }
+      catch (error) { signal?.throwIfAborted(); throw new Error(`Semantic adapter '${extractor.id}' failed: ${error instanceof Error ? error.message : String(error)}`); }
+      signal?.throwIfAborted();
       combinedSlices.push(...slices);
     }
 
     return combinedSlices;
   }
 
-  /**
-   * Synchronous execution of all matched semantic extractors.
-   */
-  public static extractAllSlicesSync(
-    projectRoot: string,
-    framework?: string,
-    domainId?: number
-  ): VerticalSliceCandidate[] {
-    const matched = this.getExtractors(projectRoot, framework);
-    const combinedSlices: VerticalSliceCandidate[] = [];
-
-    for (const extractor of matched) {
-      const res = extractor.extractSlices(projectRoot, domainId);
-      if (Array.isArray(res)) {
-        combinedSlices.push(...res);
-      }
-    }
-
-    return combinedSlices;
-  }
 }

@@ -1,3 +1,4 @@
+import { getLanguageCapability } from "../language-capabilities.ts";
 import type {
   ExtractedDependency,
   ExtractedSymbol,
@@ -10,7 +11,7 @@ export class FrontendExtractor implements CodeExtractor {
   private readonly tsExtractor = new TypeScriptExtractor();
 
   public canHandle(filePath: string): boolean {
-    return /\.(vue|astro|svelte)$/i.test(filePath);
+    return getLanguageCapability(filePath)?.extractor === "frontend";
   }
 
   public async extract(filePath: string, content: string): Promise<ParsedFileAST> {

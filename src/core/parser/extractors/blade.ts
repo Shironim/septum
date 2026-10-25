@@ -1,3 +1,4 @@
+import { getLanguageCapability } from "../language-capabilities.ts";
 import type {
   ExtractedDependency,
   ExtractedSymbol,
@@ -7,7 +8,7 @@ import type { CodeExtractor } from "./base.ts";
 
 export class BladeExtractor implements CodeExtractor {
   public canHandle(filePath: string): boolean {
-    return /\.blade\.php$/i.test(filePath);
+    return getLanguageCapability(filePath)?.extractor === "blade";
   }
 
   public async extract(filePath: string, content: string): Promise<ParsedFileAST> {

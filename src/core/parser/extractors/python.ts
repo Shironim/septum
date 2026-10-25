@@ -1,3 +1,4 @@
+import { getLanguageCapability } from "../language-capabilities.ts";
 import type { ExtractedDependency, ExtractedSymbol, ParsedFileAST, Visibility } from "../../../types/index.ts";
 import type { CodeExtractor } from "./base.ts";
 
@@ -52,7 +53,7 @@ import {
   calculatePythonNesting,
   findPythonBlockEnd,
 } from "../boundary-tracker.ts";
-import { calculateAstControlFlowNesting, parseWithTreeSitter } from "../wasm-loader.ts";
+import { calculateAstControlFlowNesting, getNodeHeader, parseSourceWithTreeSitter } from "../wasm-loader.ts";
 
 const PYTHON_CONTROL_FLOW_NODES = new Set([
   "if_statement",
@@ -71,15 +72,16 @@ const PYTHON_FUNCTION_BOUNDARY_NODES = new Set([
 
 export class PythonExtractor implements CodeExtractor {
   public canHandle(filePath: string): boolean {
-    return /\.py$/i.test(filePath);
+    return getLanguageCapability(filePath)?.extractor === "python";
   }
 
   public async extract(_filePath: string, content: string): Promise<ParsedFileAST> {
-    const astResult = await parseWithTreeSitter("python", content, (rootNode) =>
-      this.extractFromAst(rootNode, content)
+    const astResult = await parseSourceWithTreeSitter("python", content, (rootNode) =>
+      this.extractFromAst(rootNode, content),
+      () => this.extractFallback(content)
     );
     if (astResult) {
-      return { ...astResult, status: "parsed" };
+      return astResult;
     }
 
     return { ...this.extractFallback(content), status: "degraded" };
@@ -171,7 +173,9 @@ export class PythonExtractor implements CodeExtractor {
         currentClass = className;
         currentClassIndent = indent;
 
-        const visibility: Visibility = className.startsWith("__")
+        const visibility: Visibility = className.startsWith("__") && className.endsWith("__")
+          ? "public"
+          : className.startsWith("__")
           ? "private"
           : className.startsWith("_")
           ? "protected"
@@ -243,7 +247,9 @@ export class PythonExtractor implements CodeExtractor {
         const funcName = funcMatch[1];
         const isMethod = currentClass !== null && indent > currentClassIndent;
 
-        const visibility: Visibility = funcName.startsWith("__")
+        const visibility: Visibility = funcName.startsWith("__") && funcName.endsWith("__")
+          ? "public"
+          : funcName.startsWith("__")
           ? "private"
           : funcName.startsWith("_")
           ? "protected"
@@ -276,9 +282,15 @@ export class PythonExtractor implements CodeExtractor {
     const lines = content.split("\n");
 
     const getVisibility = (name: string): Visibility =>
-      name.startsWith("__") ? "private" : name.startsWith("_") ? "protected" : "public";
+      name.startsWith("__") && name.endsWith("__")
+        ? "public"
+        : name.startsWith("__")
+        ? "private"
+        : name.startsWith("_")
+        ? "protected"
+        : "public";
 
-    const processNode = (node: Parser.SyntaxNode, currentClass: string | null): void => {
+    const processNode = (node: Parser.SyntaxNode, currentClass: string | null, pendingDecorators?: string[]): void => {
       if (node.type === "import_from_statement") {
         const modNode =
           node.childForFieldName("module_name") ??
@@ -347,11 +359,17 @@ export class PythonExtractor implements CodeExtractor {
       }
 
       if (node.type === "decorated_definition") {
+        const decorators: string[] = [];
+        for (const child of node.namedChildren) {
+          if (child.type === "decorator") {
+            decorators.push(child.text.trim());
+          }
+        }
         const defNode =
           node.childForFieldName("definition") ??
           node.namedChildren.find((c) => c.type === "class_definition" || c.type === "function_definition");
         if (defNode) {
-          processNode(defNode, currentClass);
+          processNode(defNode, currentClass, decorators);
         }
         return;
       }
@@ -361,14 +379,17 @@ export class PythonExtractor implements CodeExtractor {
         if (!nameNode) return;
 
         const className = nameNode.text;
+        const qualifiedName = currentClass ? `${currentClass}::${className}` : className;
         const lineStart = node.startPosition.row + 1;
         const lineEnd = Math.max(lineStart, node.endPosition.row + 1);
-        const headerLine = (lines[node.startPosition.row] ?? "").trim().replace(/:$/, "").trim();
+        const headerLine = getNodeHeader(node).replace(/:$/, "").trim();
+        const baseSignature = headerLine || `class ${className}`;
+        const signature = pendingDecorators?.length ? `${pendingDecorators.join("\n")}\n${baseSignature}` : baseSignature;
 
         symbols.push({
-          name: className,
+          name: qualifiedName,
           kind: "class",
-          signature: headerLine || `class ${className}`,
+          signature,
           visibility: getVisibility(className),
           line_start: lineStart,
           line_end: lineEnd,
@@ -378,7 +399,7 @@ export class PythonExtractor implements CodeExtractor {
         const bodyNode = node.childForFieldName("body") ?? node.namedChildren.find((c) => c.type === "block");
         if (bodyNode) {
           for (const stmt of bodyNode.namedChildren) {
-            processNode(stmt, className);
+            processNode(stmt, qualifiedName);
           }
         }
         return;
@@ -389,10 +410,17 @@ export class PythonExtractor implements CodeExtractor {
         if (!nameNode) return;
 
         const funcName = nameNode.text;
-        const isMethod = currentClass !== null;
+        let parentNode = node.parent;
+        if (parentNode?.type === "decorated_definition") {
+          parentNode = parentNode.parent;
+        }
+        const isDirectClassMethod = parentNode?.parent?.type === "class_definition";
+        const isProperty = pendingDecorators?.some((d) => d === "@property");
         const lineStart = node.startPosition.row + 1;
         const lineEnd = Math.max(lineStart, node.endPosition.row + 1);
-        const headerLine = (lines[node.startPosition.row] ?? "").trim().replace(/:$/, "").trim();
+        const headerLine = getNodeHeader(node).replace(/:$/, "").trim();
+        const baseSignature = headerLine || `def ${funcName}()`;
+        const signature = pendingDecorators?.length ? `${pendingDecorators.join("\n")}\n${baseSignature}` : baseSignature;
         const nestingDepth = calculateAstControlFlowNesting(
           node,
           PYTHON_CONTROL_FLOW_NODES,
@@ -400,15 +428,25 @@ export class PythonExtractor implements CodeExtractor {
         );
 
         symbols.push({
-          name: isMethod ? `${currentClass}::${funcName}` : funcName,
-          kind: isMethod ? "method" : "function",
-          signature: headerLine || `def ${funcName}()`,
+          name: currentClass ? `${currentClass}::${funcName}` : funcName,
+          kind: isProperty ? "property" : isDirectClassMethod ? "method" : "function",
+          signature,
           visibility: getVisibility(funcName),
           line_start: lineStart,
           line_end: lineEnd,
           line_count: Math.max(1, lineEnd - lineStart + 1),
           nesting_depth: nestingDepth,
         });
+
+        const bodyNode = node.childForFieldName("body") ?? node.namedChildren.find((c) => c.type === "block");
+        if (bodyNode) {
+          for (const stmt of bodyNode.namedChildren) {
+            if (stmt.type === "function_definition" || stmt.type === "class_definition" || stmt.type === "decorated_definition") {
+              const scopeName = currentClass ? `${currentClass}::${funcName}` : funcName;
+              processNode(stmt, scopeName);
+            }
+          }
+        }
         return;
       }
 

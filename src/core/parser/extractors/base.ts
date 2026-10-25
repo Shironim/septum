@@ -18,6 +18,7 @@ export function detectArchetype(filePath: string, archetypesMap: Record<string, 
   // Built-in convention heuristics
   const lower = normalized.toLowerCase();
   if (lower.includes("controller")) return "controller";
+  if (lower.endsWith("views.py") || (lower.includes("views/") && lower.endsWith(".py"))) return "controller";
   if (lower.includes("service")) return "service";
   if (lower.includes("repository") || lower.includes("repo")) return "repository";
   if (lower.includes("model") || lower.includes("entities") || lower.includes("entity")) return "model";
@@ -26,7 +27,7 @@ export function detectArchetype(filePath: string, archetypesMap: Record<string, 
   if (lower.includes("event")) return "event";
   if (lower.includes("listener")) return "listener";
   if (lower.includes("middleware")) return "middleware";
-  if (lower.includes("request")) return "request";
+  if (lower.includes("request") || lower.includes("serializer") || lower.includes("schema")) return "request";
   if (lower.includes("resource")) return "resource";
   if (lower.includes(".blade.php") || lower.includes("views/") || lower.includes("templates/")) return "view";
   if (lower.includes("route") || lower.includes("router")) return "route";

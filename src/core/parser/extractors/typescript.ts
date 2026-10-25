@@ -1,3 +1,4 @@
+import { getLanguageCapability } from "../language-capabilities.ts";
 import type Parser from "web-tree-sitter";
 import type {
   ExtractedDependency,
@@ -11,7 +12,7 @@ import {
   calculateControlFlowNesting,
   findBraceBlockEnd,
 } from "../boundary-tracker.ts";
-import { calculateAstControlFlowNesting, parseWithTreeSitter } from "../wasm-loader.ts";
+import { calculateAstControlFlowNesting, getNodeHeader, parseSourceWithTreeSitter } from "../wasm-loader.ts";
 import type { CodeExtractor } from "./base.ts";
 
 const TS_CONTROL_FLOW_NODES = new Set([
@@ -36,27 +37,21 @@ const TS_FUNCTION_BOUNDARY_NODES = new Set([
 
 export class TypeScriptExtractor implements CodeExtractor {
   public canHandle(filePath: string): boolean {
-    return /\.(ts|tsx|mts|cts|js|jsx|mjs|cjs)$/i.test(filePath);
+    return getLanguageCapability(filePath)?.extractor === "typescript";
   }
 
   public async extract(filePath: string, content: string): Promise<ParsedFileAST> {
-    const langKey = this.resolveLanguageKey(filePath);
-    const treeSitterResult = await parseWithTreeSitter(langKey, content, (rootNode) =>
-      this.extractFromAst(rootNode, content)
+    const langKey = filePath;
+    const treeSitterResult = await parseSourceWithTreeSitter(langKey, content, (rootNode) =>
+      this.extractFromAst(rootNode, content),
+      () => this.extractFallback(content)
     );
 
     if (treeSitterResult) {
-      return { ...treeSitterResult, status: "parsed" };
+      return treeSitterResult;
     }
 
     return { ...this.extractFallback(content), status: "degraded" };
-  }
-
-  private resolveLanguageKey(filePath: string): string {
-    const lower = filePath.toLowerCase();
-    if (lower.endsWith(".tsx")) return "tsx";
-    if (/\.(js|jsx|mjs|cjs)$/.test(lower)) return "javascript";
-    return "typescript";
   }
 
   private extractFallback(content: string): ParsedFileAST {
@@ -271,10 +266,6 @@ export class TypeScriptExtractor implements CodeExtractor {
     const lines = content.split("\n");
 
     const stripQuotes = (raw: string): string => raw.replace(/^['"`]|['"`]$/g, "");
-    const getHeaderSignature = (node: Parser.SyntaxNode): string => {
-      const firstLine = lines[node.startPosition.row] ?? "";
-      return firstLine.trim().replace(/\{$/, "").replace(/;$/, "").trim();
-    };
 
     const walkDependencies = (node: Parser.SyntaxNode): void => {
       if (node.type === "import_statement") {
@@ -303,6 +294,9 @@ export class TypeScriptExtractor implements CodeExtractor {
         const argsNode = node.childForFieldName("arguments") ?? node.namedChildren.find((c) => c.type === "arguments");
         if (fnNode && (fnNode.text === "require" || fnNode.type === "import") && argsNode) {
           const firstArg = argsNode.namedChildren[0];
+          if (firstArg && (firstArg.type !== "string" && firstArg.type !== "template_string" || firstArg.text.includes("${"))) {
+            dependencies.push({ target: `dynamic:${node.text}`, statement: node.text, line_number: node.startPosition.row + 1, is_external: false });
+          }
           if (firstArg && (firstArg.type === "string" || firstArg.type === "template_string")) {
             const target = stripQuotes(firstArg.text.trim());
             if (target && !target.includes("${")) {
@@ -359,7 +353,7 @@ export class TypeScriptExtractor implements CodeExtractor {
         symbols.push({
           name: className,
           kind,
-          signature: getHeaderSignature(stmtNode),
+          signature: getNodeHeader(stmtNode),
           visibility: "public",
           line_start: lineStart,
           line_end: lineEnd,
@@ -386,7 +380,7 @@ export class TypeScriptExtractor implements CodeExtractor {
         symbols.push({
           name: nameNode.text,
           kind: stmtNode.type === "enum_declaration" ? "enum" : "type",
-          signature: getHeaderSignature(stmtNode),
+          signature: getNodeHeader(stmtNode),
           visibility: "public",
           line_start: lineStart,
           line_end: lineEnd,

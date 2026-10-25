@@ -3,50 +3,13 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import Parser from "web-tree-sitter";
 import { WASM_ASSETS } from "./wasm-assets.ts";
-
-const GRAMMAR_BY_KEY: Record<string, string> = {
-  // Extensions
-  ".ts": "tree-sitter-typescript.wasm",
-  ".mts": "tree-sitter-typescript.wasm",
-  ".cts": "tree-sitter-typescript.wasm",
-  ".tsx": "tree-sitter-tsx.wasm",
-  ".js": "tree-sitter-javascript.wasm",
-  ".mjs": "tree-sitter-javascript.wasm",
-  ".cjs": "tree-sitter-javascript.wasm",
-  ".jsx": "tree-sitter-javascript.wasm",
-  ".php": "tree-sitter-php.wasm",
-  ".py": "tree-sitter-python.wasm",
-  ".go": "tree-sitter-go.wasm",
-  ".rs": "tree-sitter-rust.wasm",
-  ".java": "tree-sitter-java.wasm",
-  ".cs": "tree-sitter-c_sharp.wasm",
-  ".rb": "tree-sitter-ruby.wasm",
-  // Language names
-  ts: "tree-sitter-typescript.wasm",
-  typescript: "tree-sitter-typescript.wasm",
-  tsx: "tree-sitter-tsx.wasm",
-  js: "tree-sitter-javascript.wasm",
-  jsx: "tree-sitter-javascript.wasm",
-  javascript: "tree-sitter-javascript.wasm",
-  php: "tree-sitter-php.wasm",
-  py: "tree-sitter-python.wasm",
-  python: "tree-sitter-python.wasm",
-  go: "tree-sitter-go.wasm",
-  golang: "tree-sitter-go.wasm",
-  rs: "tree-sitter-rust.wasm",
-  rust: "tree-sitter-rust.wasm",
-  java: "tree-sitter-java.wasm",
-  cs: "tree-sitter-c_sharp.wasm",
-  csharp: "tree-sitter-c_sharp.wasm",
-  c_sharp: "tree-sitter-c_sharp.wasm",
-  rb: "tree-sitter-ruby.wasm",
-  ruby: "tree-sitter-ruby.wasm",
-};
+import { grammarFileForKey } from "./language-capabilities.ts";
+import type { ParserDiagnostic, ParsedFileAST } from "../../types/index.ts";
 
 let initPromise: Promise<boolean> | null = null;
 let sharedParser: Parser | null = null;
 const languageCache = new Map<string, Parser.Language>();
-const languageLoadingPromises = new Map<string, Promise<Parser.Language | null>>();
+const languageLoadingPromises = new Map<string, Promise<LanguageResult>>();
 
 function getModuleDir(): string {
   if (typeof import.meta.dir === "string") {
@@ -119,18 +82,7 @@ export function resolveWasmPath(fileName: string, isCoreRuntime: boolean = false
  * Resolves a language key or file path/extension to its WASM grammar filename.
  */
 export function resolveGrammarFileName(langKeyOrPath: string): string | null {
-  const normalized = langKeyOrPath.trim().toLowerCase();
-  if (GRAMMAR_BY_KEY[normalized]) {
-    return GRAMMAR_BY_KEY[normalized];
-  }
-  if (normalized.endsWith(".wasm")) {
-    return normalized;
-  }
-  const ext = path.extname(normalized);
-  if (ext && GRAMMAR_BY_KEY[ext]) {
-    return GRAMMAR_BY_KEY[ext];
-  }
-  return null;
+  return grammarFileForKey(langKeyOrPath);
 }
 
 /**
@@ -167,14 +119,20 @@ export async function ensureTreeSitterInitialized(): Promise<boolean> {
  * Loads and caches a Tree-Sitter Language grammar from its WASM file.
  */
 export async function loadTreeSitterLanguage(langKeyOrPath: string): Promise<Parser.Language | null> {
+  const result = await loadLanguageResult(langKeyOrPath);
+  return "language" in result ? result.language : null;
+}
+
+type LanguageResult = { language: Parser.Language } | { error: ParserDiagnostic };
+async function loadLanguageResult(langKeyOrPath: string): Promise<LanguageResult> {
   const wasmFileName = resolveGrammarFileName(langKeyOrPath);
   if (!wasmFileName) {
-    return null;
+    return { error: { code: "grammar_unsupported", message: `No grammar mapped for '${langKeyOrPath}'.` } };
   }
 
   const cached = languageCache.get(wasmFileName);
   if (cached) {
-    return cached;
+    return { language: cached };
   }
 
   const inFlight = languageLoadingPromises.get(wasmFileName);
@@ -182,24 +140,24 @@ export async function loadTreeSitterLanguage(langKeyOrPath: string): Promise<Par
     return inFlight;
   }
 
-  const loadPromise = (async () => {
+  const loadPromise = (async (): Promise<LanguageResult> => {
     try {
       const initialized = await ensureTreeSitterInitialized();
       if (!initialized) {
-        return null;
+        return { error: { code: "runtime_unavailable", message: "Tree-sitter runtime initialization failed." } };
       }
 
       const wasmPath = resolveWasmPath(wasmFileName, false);
       if (!wasmPath) {
-        return null;
+        return { error: { code: "grammar_missing", message: `Grammar asset not found: ${wasmFileName}` } };
       }
 
       const wasmBytes = fs.readFileSync(wasmPath);
       const lang = await Parser.Language.load(wasmBytes);
       languageCache.set(wasmFileName, lang);
-      return lang;
+      return { language: lang };
     } catch {
-      return null;
+      return { error: { code: "grammar_invalid", message: `Cannot load grammar asset: ${wasmFileName}` } };
     } finally {
       languageLoadingPromises.delete(wasmFileName);
     }
@@ -211,33 +169,75 @@ export async function loadTreeSitterLanguage(langKeyOrPath: string): Promise<Par
 
 /**
  * Parses source content using web-tree-sitter and executes a visitor over the root SyntaxNode.
- * Guarantees 0 WASM memory leaks by always invoking `tree.delete()` inside `finally`.
+ * Releases the parsed tree inside `finally`, including when the visitor throws.
  */
 export async function parseWithTreeSitter<T>(
   langKey: string,
   content: string,
-  visitor: (rootNode: Parser.SyntaxNode) => T
+  visitor: (rootNode: Parser.SyntaxNode) => T,
+  onFailure?: (diagnostic: ParserDiagnostic) => void
 ): Promise<T | null> {
-  const language = await loadTreeSitterLanguage(langKey);
-  if (!language || !sharedParser) {
+  const loaded = await loadLanguageResult(langKey);
+  if ("error" in loaded) {
+    onFailure?.(loaded.error);
     return null;
   }
+  if (!sharedParser) {
+    onFailure?.({ code: "runtime_unavailable", message: "Tree-sitter parser unavailable." });
+    return null;
+  }
+  const language = loaded.language;
 
   let tree: Parser.Tree | null = null;
   try {
     sharedParser.setLanguage(language);
     tree = sharedParser.parse(content);
     if (!tree) {
+      onFailure?.({ code: "parse_failed", message: "Tree-sitter returned no tree." });
       return null;
     }
-    return visitor(tree.rootNode);
+    try {
+      return visitor(tree.rootNode);
+    } catch {
+      onFailure?.({ code: "extraction_failed", message: "AST visitor failed." });
+      return null;
+    }
   } catch {
+    onFailure?.({ code: "parse_failed", message: "Tree-sitter parsing failed." });
     return null;
   } finally {
     if (tree) {
       tree.delete();
     }
   }
+}
+
+export async function parseSourceWithTreeSitter(
+  langKey: string,
+  content: string,
+  visitor: (rootNode: Parser.SyntaxNode) => ParsedFileAST,
+  fallback?: () => ParsedFileAST
+): Promise<ParsedFileAST | null> {
+  let failure: ParserDiagnostic | undefined;
+  const result = await parseWithTreeSitter(langKey, content, rootNode => ({
+    ...visitor(rootNode),
+    status: rootNode.hasError ? "degraded" as const : "parsed" as const,
+    extraction: { method: "tree-sitter" as const, coverage: "partial" as const },
+    diagnostics: rootNode.hasError ? [{ code: "syntax_recovery" as const, message: "Grammar recovered from syntax errors; extraction may be incomplete." }] : [],
+  }), diagnostic => { failure = diagnostic; });
+  if (result || !fallback) return result;
+  return {
+    ...fallback(), status: "degraded",
+    extraction: { method: "fallback", coverage: "partial" },
+    diagnostics: failure ? [failure] : [],
+  };
+}
+
+export function getNodeHeader(node: Parser.SyntaxNode): string {
+  const body = node.childForFieldName("body");
+  const end = body ?? node.children.findLast(child => child.type === "end");
+  return (end ? node.text.slice(0, end.startIndex - node.startIndex) : node.text)
+    .trim().replace(/;$/, "");
 }
 
 /**
