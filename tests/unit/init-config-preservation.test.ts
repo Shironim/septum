@@ -47,18 +47,16 @@ describe("F2-06: Config & Template Preservation on Init", () => {
     }
   });
 
-  it("should preserve malformed Goose YAML bytes without overwriting", () => {
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "septum-cfg-malformed-yaml-"));
+  it("should preserve malformed Opencode JSON bytes without overwriting", () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "septum-cfg-malformed-opencode-"));
     try {
-      const gooseDir = path.join(tmpDir, ".goose");
-      fs.mkdirSync(gooseDir, { recursive: true });
-      const gooseConfigPath = path.join(gooseDir, "config.yaml");
-      const malformedYaml = "extensions: [ USER_INVALID_YAML";
-      fs.writeFileSync(gooseConfigPath, malformedYaml, "utf-8");
+      const opencodeConfigPath = path.join(tmpDir, "opencode.json");
+      const malformedJson = "{ USER_INVALID_OPENCODE";
+      fs.writeFileSync(opencodeConfigPath, malformedJson, "utf-8");
 
-      configureHarness("goose", tmpDir, false);
+      configureHarness("opencode", tmpDir, false);
 
-      expect(fs.readFileSync(gooseConfigPath, "utf-8")).toBe(malformedYaml);
+      expect(fs.readFileSync(opencodeConfigPath, "utf-8")).toBe(malformedJson);
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
@@ -182,5 +180,121 @@ describe("F2-06: Config & Template Preservation on Init", () => {
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
+  });
+
+  describe("Focused 5 AI Agent Harnesses Architecture", () => {
+    it("should strictly support only the 5 target harnesses (antigravity, claude, codex, opencode, agents)", async () => {
+      const { SUPPORTED_HARNESSES } = await import("../../src/cli/scaffold/harness-config.ts");
+      const ids = SUPPORTED_HARNESSES.map((h) => h.id);
+
+      expect(ids).toEqual(["antigravity", "claude", "codex", "opencode", "agents"]);
+      expect(ids).not.toContain("cursor");
+      expect(ids).not.toContain("goose");
+      expect(ids).not.toContain("pi");
+    });
+
+    it("should scaffold skills, rules, hooks, and mcp for Antigravity (.gemini)", () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "septum-test-antigravity-"));
+      try {
+        const res = configureHarness("antigravity", tmpDir, false);
+        expect(res).toContain(".gemini/");
+
+        expect(fs.existsSync(path.join(tmpDir, ".gemini", "skills", "septum-map", "SKILL.md"))).toBe(true);
+        expect(fs.existsSync(path.join(tmpDir, ".gemini", "rules", "septum-boundary.md"))).toBe(true);
+        expect(fs.existsSync(path.join(tmpDir, ".gemini", "hooks", "septum-pre-write.sh"))).toBe(true);
+        expect(fs.existsSync(path.join(tmpDir, ".gemini", "hooks", "septum-post-write.sh"))).toBe(true);
+        expect(fs.existsSync(path.join(tmpDir, ".gemini", "hooks.json"))).toBe(true);
+
+        const mcp = JSON.parse(fs.readFileSync(path.join(tmpDir, ".gemini", "mcp_config.json"), "utf-8"));
+        expect(mcp.mcpServers.septum).toBeDefined();
+      } finally {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      }
+    });
+
+    it("should scaffold skills, hooks, CLAUDE.md and mcp in .claude and root for Claude Code (.claude)", () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "septum-test-claude-"));
+      try {
+        const res = configureHarness("claude", tmpDir, false);
+        expect(res).toContain(".mcp.json");
+
+        expect(fs.existsSync(path.join(tmpDir, ".claude", "skills", "septum-map", "SKILL.md"))).toBe(true);
+        // Rules must NOT be generated for Claude Code
+        expect(fs.existsSync(path.join(tmpDir, ".claude", "rules", "septum-boundary.md"))).toBe(false);
+        expect(fs.existsSync(path.join(tmpDir, "CLAUDE.md"))).toBe(true);
+        expect(fs.existsSync(path.join(tmpDir, ".claude", "hooks", "septum-pre-write.sh"))).toBe(true);
+        expect(fs.existsSync(path.join(tmpDir, ".claude", "settings.json"))).toBe(true);
+
+        // MCP server must be configured in both .claude/mcp.json and root .mcp.json
+        expect(fs.existsSync(path.join(tmpDir, ".claude", "mcp.json"))).toBe(true);
+        const claudeMcp = JSON.parse(fs.readFileSync(path.join(tmpDir, ".claude", "mcp.json"), "utf-8"));
+        expect(claudeMcp.mcpServers.septum).toBeDefined();
+
+        expect(fs.existsSync(path.join(tmpDir, ".mcp.json"))).toBe(true);
+        const rootMcp = JSON.parse(fs.readFileSync(path.join(tmpDir, ".mcp.json"), "utf-8"));
+        expect(rootMcp.mcpServers.septum).toBeDefined();
+      } finally {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      }
+    });
+
+    it("should scaffold skills, hooks, and mcp for Codex (.codex) without rules", () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "septum-test-codex-"));
+      try {
+        const res = configureHarness("codex", tmpDir, false);
+        expect(res).toContain(".codex/");
+
+        expect(fs.existsSync(path.join(tmpDir, ".codex", "skills", "septum-map", "SKILL.md"))).toBe(true);
+        // Rules must NOT be generated for Codex
+        expect(fs.existsSync(path.join(tmpDir, ".codex", "rules", "septum-boundary.md"))).toBe(false);
+        expect(fs.existsSync(path.join(tmpDir, ".codex", "hooks", "septum-pre-write.sh"))).toBe(true);
+        expect(fs.existsSync(path.join(tmpDir, ".codex", "hooks.json"))).toBe(true);
+
+        const tomlContent = fs.readFileSync(path.join(tmpDir, ".codex", "config.toml"), "utf-8");
+        expect(tomlContent).toContain("[mcp_servers.septum]");
+      } finally {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      }
+    });
+
+    it("should scaffold skills, hooks, and mcp for Opencode (opencode/) without rules", () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "septum-test-opencode-"));
+      try {
+        const res = configureHarness("opencode", tmpDir, false);
+        expect(res).toContain("opencode");
+
+        expect(fs.existsSync(path.join(tmpDir, "opencode", "skills", "septum-map", "SKILL.md"))).toBe(true);
+        // Rules must NOT be generated for Opencode
+        expect(fs.existsSync(path.join(tmpDir, "opencode", "rules", "septum-boundary.md"))).toBe(false);
+        expect(fs.existsSync(path.join(tmpDir, "opencode", "hooks", "septum-pre-write.sh"))).toBe(true);
+        expect(fs.existsSync(path.join(tmpDir, "opencode", "hooks.json"))).toBe(true);
+
+        const mcp = JSON.parse(fs.readFileSync(path.join(tmpDir, "opencode.json"), "utf-8"));
+        expect(mcp.mcp.septum).toBeDefined();
+        expect(mcp.mcp.septum.type).toBe("local");
+      } finally {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      }
+    });
+
+    it("should scaffold skills, hooks, AGENTS.md, and mcp for .agents standard without rules", () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "septum-test-agents-"));
+      try {
+        const res = configureHarness("agents", tmpDir, false);
+        expect(res).toContain(".agents");
+
+        expect(fs.existsSync(path.join(tmpDir, ".agents", "skills", "septum-map", "SKILL.md"))).toBe(true);
+        // Rules must NOT be generated for .agents standard
+        expect(fs.existsSync(path.join(tmpDir, ".agents", "rules", "septum-boundary.md"))).toBe(false);
+        expect(fs.existsSync(path.join(tmpDir, "AGENTS.md"))).toBe(true);
+        expect(fs.existsSync(path.join(tmpDir, ".agents", "hooks", "septum-pre-write.sh"))).toBe(true);
+        expect(fs.existsSync(path.join(tmpDir, ".agents", "hooks.json"))).toBe(true);
+
+        const mcp = JSON.parse(fs.readFileSync(path.join(tmpDir, ".agents", "mcp.json"), "utf-8"));
+        expect(mcp.mcpServers.septum).toBeDefined();
+      } finally {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      }
+    });
   });
 });

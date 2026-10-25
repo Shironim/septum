@@ -23,16 +23,24 @@ export async function handleInitCommand(force: boolean = false): Promise<void> {
   console.log("\n\x1b[36m◆\x1b[0m  \x1b[1mSeptum Architecture Guard & SSOT Initializer\x1b[0m\n\x1b[36m│\x1b[0m");
 
   // 1. Auto-discover project topology and persist to SQLite SSOT
-  console.log("\x1b[36m◇\x1b[0m  Analyzing codebase topology, modular boundaries, and 6-layer environment plane...");
+  console.log("\x1b[36m◇\x1b[0m  Analyzing codebase topology, modular boundaries, and deployment infrastructure...");
   const db = new SeptumDatabase(dbPath);
   try {
     const repo = new SeptumRepository(db.raw);
     const domains = TopologyDetector.discoverAndPersist(repo, workspaceRoot);
     EnvironmentDetector.detect(workspaceRoot, repo);
     const domainNames = Object.keys(domains);
-    console.log(`\x1b[36m│\x1b[0m  \x1b[32m✓\x1b[0m Discovered and registered ${domainNames.length} domain(s) in SQLite:`);
+    console.log(`\x1b[36m│\x1b[0m  \x1b[32m✓\x1b[0m Discovered and registered ${domainNames.length} domain(s) in SQLite SSOT:`);
     for (const name of domainNames) {
       console.log(`\x1b[36m│\x1b[0m    - \x1b[1m${name}\x1b[0m: root -> '${domains[name].root}'`);
+    }
+    const scanned = JSON.parse(repo.getMeta("scanned_folders") || "[]");
+    const ignored = JSON.parse(repo.getMeta("ignored_folders") || "[]");
+    if (scanned.length > 0) {
+      console.log(`\x1b[36m│\x1b[0m  \x1b[32m✓\x1b[0m Mapped source directories to analyze: ${scanned.join(", ")}`);
+    }
+    if (ignored.length > 0) {
+      console.log(`\x1b[36m│\x1b[0m  \x1b[32m✓\x1b[0m Excluded non-source, build, and vendor directories: ${ignored.join(", ")}`);
     }
   } finally {
     db.close();
@@ -44,7 +52,7 @@ export async function handleInitCommand(force: boolean = false): Promise<void> {
 
   // 3. Configure local project artifacts
   const forceNotice = force ? " (force regeneration of Septum-owned artifacts)" : "";
-  console.log(`\x1b[36m◇\x1b[0m  Scaffolding project-local guards & harness configurations${forceNotice}...`);
+  console.log(`\x1b[36m◇\x1b[0m  Configuring project architectural rules & agent integrations${forceNotice}...`);
   ensureGitIgnore(workspaceRoot);
   const hookResult = installGitHook(workspaceRoot, force);
 
@@ -59,15 +67,15 @@ export async function handleInitCommand(force: boolean = false): Promise<void> {
     }
   }
   if (configuredFiles.length > 0) {
-    console.log(`\x1b[36m│\x1b[0m  \x1b[32m✓\x1b[0m Configured local harness artifacts for: ${configuredFiles.join(", ")}`);
+    console.log(`\x1b[36m│\x1b[0m  \x1b[32m✓\x1b[0m Configured agent integrations for: ${configuredFiles.join(", ")}`);
   }
   console.log("\x1b[36m│\x1b[0m");
 
   // 4. Run initial codebase ingestion
-  console.log("\x1b[36m◇\x1b[0m  Running initial Tree-Sitter AST ingestion to build symbol & dependency catalog...");
+  console.log("\x1b[36m◇\x1b[0m  Indexing codebase AST (Tree-Sitter) to build symbol table & dependency graph...");
   try {
     await handleSyncCommand({ workspaceRoot, dbPath });
-    console.log("\x1b[36m│\x1b[0m  \x1b[32m✓\x1b[0m Ingestion completed successfully.");
+    console.log("\x1b[36m│\x1b[0m  \x1b[32m✓\x1b[0m AST indexing completed successfully.");
     console.log("\x1b[36m│\x1b[0m");
 
     // Inspect index coverage & unindexed files from SSOT
@@ -107,7 +115,7 @@ export async function handleInitCommand(force: boolean = false): Promise<void> {
       }
       process.exitCode = 1;
     } else {
-      console.log("\x1b[32m└  ✓ Septum successfully initialized and ready for production use (full index coverage)!\x1b[0m");
+      console.log("\x1b[32m└  ✓ Septum successfully initialized with complete index coverage!\x1b[0m");
     }
 
     if (hasPartialCoverage && harnessErrors.length > 0) {
@@ -137,8 +145,17 @@ export async function handleInitCommand(force: boolean = false): Promise<void> {
       console.log("   • Notice: Git pre-commit hook could not be set active (permission or configuration issue).");
     }
 
-    if (selectedHarnesses.includes("antigravity")) {
-      console.log("   • AI Agent skills and boundary rules are active in '.gemini/'.");
+    const harnessSummaryMap: Record<string, string> = {
+      antigravity: "Antigravity skills, rules, and boundary hooks active in '.gemini/'",
+      claude: "Claude Code skills, boundary hooks, and MCP server active in '.claude/', '.mcp.json', and 'CLAUDE.md'",
+      codex: "Codex CLI skills, boundary hooks, and MCP server active in '.codex/'",
+      opencode: "Opencode skills, boundary hooks, and MCP server active in 'opencode/' and 'opencode.json'",
+      agents: "Standard agent skills, boundary hooks, and MCP server active in '.agents/' and 'AGENTS.md'",
+    };
+    for (const hId of selectedHarnesses) {
+      if (harnessSummaryMap[hId]) {
+        console.log(`   • ${harnessSummaryMap[hId]}.`);
+      }
     }
     console.log("   • MCP server is ready for AI coding agents via 'septum serve'.\n");
   } catch (err: unknown) {

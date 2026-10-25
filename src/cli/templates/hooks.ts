@@ -6,7 +6,7 @@ export const SEPTUM_HOOKS_CONFIG = {
         "hooks": [
           {
             "type": "command",
-            "command": "sh -c 'ROOT=\"$(git rev-parse --show-toplevel 2>/dev/null || pwd)\"; if [ -f \"$ROOT/.gemini/hooks/septum-pre-write.sh\" ]; then exec \"$ROOT/.gemini/hooks/septum-pre-write.sh\"; elif [ -f \"$ROOT/.agents/hooks/septum-pre-write.sh\" ]; then exec \"$ROOT/.agents/hooks/septum-pre-write.sh\"; else exit 0; fi'",
+            "command": "sh -c 'ROOT=\"$(git rev-parse --show-toplevel 2>/dev/null || pwd)\"; for d in .gemini .claude .codex opencode .agents; do if [ -f \"$ROOT/$d/hooks/septum-pre-write.sh\" ]; then exec \"$ROOT/$d/hooks/septum-pre-write.sh\" \"$@\"; fi; done; exit 0'",
             "timeout": 10,
           },
         ],
@@ -18,7 +18,7 @@ export const SEPTUM_HOOKS_CONFIG = {
         "hooks": [
           {
             "type": "command",
-            "command": "sh -c 'ROOT=\"$(git rev-parse --show-toplevel 2>/dev/null || pwd)\"; if [ -f \"$ROOT/.gemini/hooks/septum-post-write.sh\" ]; then exec \"$ROOT/.gemini/hooks/septum-post-write.sh\"; elif [ -f \"$ROOT/.agents/hooks/septum-post-write.sh\" ]; then exec \"$ROOT/.agents/hooks/septum-post-write.sh\"; else exit 0; fi'",
+            "command": "sh -c 'ROOT=\"$(git rev-parse --show-toplevel 2>/dev/null || pwd)\"; for d in .gemini .claude .codex opencode .agents; do if [ -f \"$ROOT/$d/hooks/septum-post-write.sh\" ]; then exec \"$ROOT/$d/hooks/septum-post-write.sh\" \"$@\"; fi; done; exit 0'",
             "timeout": 15,
           },
         ],
