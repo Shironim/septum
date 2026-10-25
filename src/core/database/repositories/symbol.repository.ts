@@ -1,3 +1,4 @@
+import { symbolReference, matchesSymbolName, matchesSymbolReference } from "../../resolver/symbol-reference.ts";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { Database } from "bun:sqlite";
@@ -11,6 +12,8 @@ import type {
   SymbolComplexitySmell,
   SymbolKind,
   SymbolRecord,
+  SymbolCandidate,
+  SymbolSelectionOptions,
 } from "../../../types/index.ts";
 import { DependencyRepository } from "./dependency.repository.ts";
 
@@ -70,17 +73,24 @@ export class SymbolRepository {
       .all(fileId);
   }
 
-  public findSymbolsByName(name: string): Array<SymbolRecord & { file_path: string }> {
-    const query = `
-      SELECT s.*, f.path AS file_path
-      FROM symbols s
-      JOIN files f ON s.file_id = f.id
-      WHERE s.name = ? OR s.name LIKE ?
-      ORDER BY s.line_start ASC
-    `;
-    return this.db
-      .query<SymbolRecord & { file_path: string }, [string, string]>(query)
-      .all(name, `%::${name}`);
+  public findSymbolsByName(
+    name: string,
+    options: SymbolSelectionOptions = {}
+  ): SymbolCandidate[] {
+    const target = name.trim().replace(/\(\)$/, "");
+    const leaf = target.split(/::|->|[.#\\]/).pop() ?? target;
+    let query = `SELECT s.*, f.path AS file_path, f.content_hash AS indexed_content_hash, d.name AS domain_name
+      FROM symbols s JOIN files f ON s.file_id = f.id JOIN domains d ON f.domain_id = d.id
+      WHERE (s.name = ? OR substr(s.name, -length(?)) = ?)`;
+    const params: string[] = [target, leaf, leaf];
+    if (options.domain) { query += " AND d.name = ?"; params.push(options.domain); }
+    const filePath = options.filePath ?? options.reference?.file_path;
+    if (filePath) { query += " AND f.path = ?"; params.push(filePath); }
+    query += " ORDER BY f.path, s.line_start, s.line_end, s.signature, s.id";
+    return this.db.query<SymbolCandidate, string[]>(query).all(...params)
+      .filter(row => matchesSymbolName(row, target))
+      .map(row => ({ ...row, symbol_ref: symbolReference(row) }))
+      .filter(row => !options.reference || matchesSymbolReference(row.symbol_ref, options.reference));
   }
 
   public findContainers(
@@ -314,69 +324,24 @@ export class SymbolRepository {
 
   public getSymbolDetails(
     symbolQuery: string,
-    options: { domain?: string; includeDependencies?: boolean; workspaceRoot?: string } = {}
+    options: SymbolSelectionOptions & { includeDependencies?: boolean; workspaceRoot?: string } = {}
   ): GetSymbolDetailsResponse | null {
     const trimmed = symbolQuery.trim();
     if (!trimmed) return null;
 
-    let sql = `
-      SELECT 
-        s.id,
-        s.file_id,
-        s.name,
-        s.kind,
-        s.signature,
-        s.visibility,
-        s.line_start,
-        s.line_end,
-        s.line_count,
-        f.path AS file_path,
-        d.name AS domain_name
-      FROM symbols s
-      JOIN files f ON s.file_id = f.id
-      JOIN domains d ON f.domain_id = d.id
-      WHERE (s.name = ? OR s.name LIKE ? OR s.name LIKE ?)
-    `;
-
-    const params: any[] = [trimmed, `%::${trimmed}`, `${trimmed}::%`];
-
-    if (options.domain) {
-      sql += " AND d.name = ?";
-      params.push(options.domain);
-    }
-
-    sql += " ORDER BY CASE WHEN s.name = ? THEN 1 WHEN s.name LIKE ? THEN 2 ELSE 3 END, s.line_start ASC LIMIT 1";
-    params.push(trimmed, `%::${trimmed}`);
-
-    const row = this.db.query<any, any[]>(sql).get(...params);
-    if (!row) return null;
+    const candidates = this.findSymbolsByName(trimmed, options);
+    if (candidates.length !== 1) return null;
+    const row = candidates[0]!;
 
     // 1. Sibling methods
-    let containerName = "";
-    if (row.name.includes("::")) {
-      containerName = row.name.split("::")[0];
-    }
-
-    let siblingMethods: string[] = [];
-    if (containerName) {
-      const siblings = this.db
-        .query<{ name: string }, [number, string, string]>(
-          `SELECT name FROM symbols 
-           WHERE file_id = ? AND kind = 'method' AND name != ? AND name LIKE ? 
-           ORDER BY line_start ASC LIMIT 30`
-        )
-        .all(row.file_id, row.name, `${containerName}::%`);
-      siblingMethods = siblings.map((s) => s.name.replace(`${containerName}::`, ""));
-    } else if (row.kind === "class" || row.kind === "interface" || row.kind === "trait") {
-      const classMethods = this.db
-        .query<{ name: string }, [number, string]>(
-          `SELECT name FROM symbols 
-           WHERE file_id = ? AND kind = 'method' AND name LIKE ? 
-           ORDER BY line_start ASC LIMIT 30`
-        )
-        .all(row.file_id, `${row.name}::%`);
-      siblingMethods = classMethods.map((s) => s.name.replace(`${row.name}::`, ""));
-    }
+    const isRust = /\.rs$/i.test(row.file_path);
+    const containerName = row.symbol_ref.container ?? "";
+    const owner = ["class", "interface", "trait", "struct", "enum"].includes(row.kind) ? row.name
+      : row.kind === "method" ? containerName : "";
+    let siblingMethods: string[] = owner ? this.getSymbolsByFileId(row.file_id)
+      .filter(s => s.kind === "method" && s.id !== row.id)
+      .filter(s => symbolReference({ ...s, file_path: row.file_path, indexed_content_hash: row.indexed_content_hash }).container === owner)
+      .map(s => s.name.split(/::|[.#]/).pop()!) : [];
 
     siblingMethods = Array.from(new Set(siblingMethods)).filter(
       (m) => !SQL_KEYWORD_BLACKLIST.has(m.toUpperCase())
@@ -411,10 +376,11 @@ export class SymbolRepository {
         }
       };
 
-      extractTypeHints(row.signature);
+      // Rust parameter types do not establish a dependency injection binding.
+      if (!isRust) extractTypeHints(row.signature);
 
       // Also check constructor injection if this is a method
-      if (containerName) {
+      if (containerName && !isRust) {
         const ctor = this.db
           .query<{ signature: string }, [number, string, string]>(
             "SELECT signature FROM symbols WHERE file_id = ? AND (name = ? OR name LIKE ?) LIMIT 1"
@@ -471,38 +437,13 @@ export class SymbolRepository {
       }
 
       const depRepo = new DependencyRepository(this.db);
-      connectedFiles = depRepo.getFileConnections(row.file_path);
+      connectedFiles = depRepo.getFileConnections(row.file_path,options.workspaceRoot);
 
       // 4. Resolve Outbound Calls to target symbol line ranges
-      const lookupStmt = this.db.query<
-        {
-          name: string;
-          line_start: number;
-          line_end: number;
-          line_count: number;
-          file_path: string;
-          domain_name: string;
-        },
-        [string, string, string, string]
-      >(`
-        SELECT
-          s.name,
-          s.line_start,
-          s.line_end,
-          s.line_count,
-          f.path AS file_path,
-          d.name AS domain_name
-        FROM symbols s
-        JOIN files f ON s.file_id = f.id
-        JOIN domains d ON f.domain_id = d.id
-        WHERE (s.name = ? OR s.name LIKE ? OR s.name LIKE ?)
-        ORDER BY CASE WHEN s.name = ? THEN 1 ELSE 2 END, s.line_start ASC
-        LIMIT 1
-      `);
-
       for (const call of outboundCalls) {
         try {
-          const target = lookupStmt.get(call, `%::${call}`, `${call}::%`, call);
+          const matches = this.findSymbolsByName(call);
+          const target = matches.length === 1 ? matches[0] : undefined;
           if (target) {
             resolvedOutboundCalls.push({
               symbol: call,
@@ -541,6 +482,8 @@ export class SymbolRepository {
         : undefined;
 
     return {
+      symbol_ref: row.symbol_ref,
+      visibility_semantics: "legacy_normalized",
       symbol: row.name,
       kind: row.kind,
       file_path: row.file_path,
@@ -554,10 +497,11 @@ export class SymbolRepository {
       visibility: row.visibility,
       dependencies_injected: Array.from(dependenciesInjected),
       outbound_calls: Array.from(outboundCalls),
-      resolved_outbound_calls: resolvedOutboundCalls.length > 0 ? resolvedOutboundCalls : undefined,
+      resolved_outbound_calls: resolvedOutboundCalls.length > 0 ? resolvedOutboundCalls.map(call => ({ ...call, derivation: "inferred" as const })) : undefined,
       complexity_smell: complexitySmell,
       sibling_methods: siblingMethods.length > 0 ? siblingMethods : undefined,
       connected_files: connectedFiles,
+      ...(shouldIncludeDeps ? { relationships: new DependencyRepository(this.db).getImportRelationships(options.workspaceRoot).filter(edge => edge.source.file === row.file_path) } : {}),
     };
   }
 

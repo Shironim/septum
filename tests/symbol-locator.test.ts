@@ -1,4 +1,6 @@
-import { describe, expect, test } from "bun:test";
+import { SeptumDatabase } from "../src/core/database/client.ts";
+import { SeptumRepository } from "../src/core/database/repository.ts";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { calculateSimilarity, SymbolLocator } from "../src/core/resolver/symbol-locator.ts";
 
 describe("SymbolLocator Query Parser", () => {
@@ -83,49 +85,32 @@ describe("calculateSimilarity & Fuzzy Matching", () => {
   });
 });
 
-describe("SymbolLocator Mock Resolution", () => {
+describe("SymbolLocator catalog resolution", () => {
+  let db: SeptumDatabase;
+  let repo: SeptumRepository;
+  let fileId: number;
+  const filePath = "app/Http/Controllers/OrderController.php";
+  beforeEach(() => {
+    db = new SeptumDatabase(":memory:");
+    repo = new SeptumRepository(db.raw);
+    const domain = repo.upsertDomain("orders", { root: "app" });
+    fileId = repo.upsertFile(domain, filePath, "controller", "fixture", 50);
+    repo.replaceFileSymbols(fileId, [
+      { name: "OrderController", kind: "class", signature: "class OrderController", visibility: "public", line_start: 1, line_end: 50, line_count: 50 },
+      ...["index", "store", "destroy", "recalculateOrder"].map((name, i) => ({ name: `OrderController::${name}`, kind: "method" as const, signature: `public function ${name}()`, visibility: "public" as const, line_start: 12 + i * 6, line_end: 15 + i * 6, line_count: 4 })),
+    ]);
+  });
+  afterEach(() => db.close());
   test("resolves missing method and suggests sibling recalculateOrder", () => {
-    const mockRepo: any = {
-      findContainers: (name: string) => [
-        {
-          file: { id: 1, path: "app/Http/Controllers/OrderController.php" },
-          symbol: { id: 10, name: "OrderController", kind: "class" },
-        },
-      ],
-      getSymbolsByFileId: (fileId: number) => [
-        { name: "OrderController::index", kind: "method", signature: "public function index()", line_start: 12, line_end: 15 },
-        { name: "OrderController::store", kind: "method", signature: "public function store(Request $req)", line_start: 17, line_end: 25 },
-        { name: "OrderController::destroy", kind: "method", signature: "public function destroy($id)", line_start: 27, line_end: 32 },
-        { name: "OrderController::recalculateOrder", kind: "method", signature: "public function recalculateOrder($id)", line_start: 35, line_end: 50 },
-      ],
-    };
-
-    const locator = new SymbolLocator(mockRepo);
-    const result = locator.locate("Method OrderController::calculateTotal() does not exist");
-
+    const result = new SymbolLocator(repo).locate("Method OrderController::calculateTotal() does not exist");
     expect(result.found).toBe(false);
-    expect(result.file_path).toBe("app/Http/Controllers/OrderController.php");
-    expect(result.sibling_methods).toContain("recalculateOrder");
-    expect(result.sibling_methods).toContain("index");
-    expect(result.sibling_methods).toContain("store");
-    expect(result.sibling_methods).toContain("destroy");
+    expect(result.file_path).toBe(filePath);
+    for (const name of ["recalculateOrder", "index", "store", "destroy"]) expect(result.sibling_methods).toContain(name);
     expect(result.suggestions.length).toBeGreaterThan(0);
     expect(result.suggestions[0].name).toBe("recalculateOrder");
   });
-
   test("suggests candidate container and scoped member when container name has a typo", () => {
-    const mockRepo: any = {
-      findContainers: () => [],
-      getAllSymbolsWithFiles: () => [
-        { name: "OrderController", kind: "class", signature: "class OrderController", line_start: 1, line_end: 50, file_path: "app/Http/Controllers/OrderController.php" },
-        { name: "OrderController::calculateTotal", kind: "method", signature: "public function calculateTotal()", line_start: 15, line_end: 25, file_path: "app/Http/Controllers/OrderController.php" },
-      ],
-      getSymbolsByFileId: () => [],
-    };
-
-    const locator = new SymbolLocator(mockRepo);
-    const result = locator.locate("Method OrderControllr::calculateTotal() does not exist");
-
+    const result = new SymbolLocator(repo).locate("Method OrderControllr::calculateTotal() does not exist");
     expect(result.found).toBe(false);
     expect(result.suggestions.length).toBeGreaterThan(0);
     expect(result.message).toContain("OrderController");

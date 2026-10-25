@@ -12,6 +12,8 @@ import type {
   InboundCaller,
   SymbolKind,
   SymbolRecord,
+  SymbolCandidate,
+  SymbolSelectionOptions,
   VerticalSliceRecord,
 } from "../../types/index.ts";
 
@@ -138,7 +140,7 @@ export class SeptumRepository {
   public getDomainCatalog(
     domainName: string,
     archetypeFilter?: string,
-    options?: { detailLevel?: "compact" | "full"; fileFilter?: string }
+    options?: { detailLevel?: "compact" | "full"; fileFilter?: string; workspaceRoot?: string }
   ): DomainCatalogResponse | null {
     return this.domains.getDomainCatalog(domainName, archetypeFilter, options);
   }
@@ -152,8 +154,11 @@ export class SeptumRepository {
     return this.symbols.getSymbolsByFileId(fileId);
   }
 
-  public findSymbolsByName(name: string): Array<SymbolRecord & { file_path: string }> {
-    return this.symbols.findSymbolsByName(name);
+  public findSymbolsByName(
+    name: string,
+    options: SymbolSelectionOptions = {}
+  ): SymbolCandidate[] {
+    return this.symbols.findSymbolsByName(name, options);
   }
 
   public findContainers(
@@ -193,12 +198,16 @@ export class SeptumRepository {
     this.dependencies.clearVerticalSlices(domainId);
   }
 
-  public getDomainFileConnections(domainId?: number) {
-    return this.dependencies.getDomainFileConnections(domainId);
+  public getImportRelationships(workspaceRoot?: string) {
+    return this.dependencies.getImportRelationships(workspaceRoot);
   }
 
-  public getFileConnections(filePath: string) {
-    return this.dependencies.getFileConnections(filePath);
+  public getDomainFileConnections(domainId?: number, workspaceRoot?: string) {
+    return this.dependencies.getDomainFileConnections(domainId,workspaceRoot);
+  }
+
+  public getFileConnections(filePath: string, workspaceRoot?: string) {
+    return this.dependencies.getFileConnections(filePath,workspaceRoot);
   }
 
   public getAllDependenciesWithDomains(): Array<{
@@ -256,7 +265,7 @@ export class SeptumRepository {
 
   public getSymbolDetails(
     symbolQuery: string,
-    options: { domain?: string; includeDependencies?: boolean; workspaceRoot?: string } = {}
+    options: SymbolSelectionOptions & { includeDependencies?: boolean; workspaceRoot?: string } = {}
   ): GetSymbolDetailsResponse | null {
     return this.symbols.getSymbolDetails(symbolQuery, options);
   }

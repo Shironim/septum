@@ -1,5 +1,10 @@
+import { assertPathContained } from "../../resolver/path-resolver.ts";
+import { ImportResolver } from "../../resolver/import-resolver.ts";
+import { readSourceFile } from "../../resources/source-files.ts";
+import { computeContentHash } from "../../ingestion/hasher.ts";
+import type { ImportRelationship } from "../../../types/index.ts";
 import * as fs from "node:fs";
-import { dirname, join, posix, resolve } from "node:path";
+import { dirname, join, posix, resolve, sep } from "node:path";
 import type { Database } from "bun:sqlite";
 import type {
   ExtractedDependency,
@@ -148,7 +153,55 @@ export class DependencyRepository {
     return this.db.query<any, []>(query).all();
   }
 
-  public getDomainFileConnections(domainId?: number): Map<string, FileConnectionsSummary> {
+  public getImportRelationships(workspaceRoot?: string): ImportRelationship[] {
+    const root = workspaceRoot ?? this.db.query<{ value: string }, [string]>("SELECT value FROM repo_meta WHERE key = ?").get("workspace_root")?.value;
+    if (!root) return [];
+    const files = this.db.query<{ path: string; content_hash: string; domain_id: number }, []>("SELECT path, content_hash, domain_id FROM files").all();
+    const domains = this.db.query<{ name: string; root_path: string }, []>("SELECT name, root_path FROM domains").all().sort((a,b)=>b.root_path.length-a.root_path.length);
+    const resolver = new ImportResolver(root, domains.map(domain => domain.root_path));
+    const freshness = new Map<string, ImportRelationship["freshness"]>();
+    const hashes = new Map(files.map(f => [f.path, f.content_hash]));
+    return this.getAllDependenciesWithDomains().map(dep => {
+      if (!freshness.has(dep.source_file)) {
+        try { assertPathContained(dep.source_file, root, "Import source"); freshness.set(dep.source_file, computeContentHash(readSourceFile(resolve(root,dep.source_file))) === hashes.get(dep.source_file) ? "current" : "stale"); }
+        catch { freshness.set(dep.source_file,"unavailable"); }
+      }
+      const resolution = resolver.resolve(dep.target,dep.source_file);
+      const current = freshness.get(dep.source_file)!;
+      if (current !== "current") { resolution.status = "unresolved"; resolution.reason = `source_${current}`; resolution.targets = []; }
+      const targetDomains = resolution.targets.flatMap(target => target.files.map(file => domains.find(domain => {
+        const targetPath = resolve(root,file), domainPath = resolve(root,domain.root_path);
+        return targetPath === domainPath || targetPath.startsWith(domainPath + sep);
+      })?.name).filter((name): name is string => !!name));
+      return {
+        kind: "imports", derivation: "source",
+        source: { file: dep.source_file, line: dep.line_number, statement: dep.statement, indexed_content_hash: hashes.get(dep.source_file) ?? "" },
+        resolution, target_domains: [...new Set(targetDomains)], freshness: current,
+        index_coverage: resolution.targets.every(target => target.files.every(file => hashes.has(file))) ? "complete" : "partial",
+        ...(dep.source_file.endsWith(".go") ? { import_binding: (() => {
+          const alias = dep.statement.replace(/^\s*import\s+/, "").match(/^\s*([A-Za-z_]\w*|\.)\s+["`]/)?.[1];
+          return { kind: alias === "_" ? "blank" : alias === "." ? "dot" : alias ? "named" : "default", alias };
+        })() } : {}),
+        ...(dep.source_file.endsWith(".py") ? { import_binding: (() => {
+          if (/^\s*from\s+.*\s+import\s+\*/.test(dep.statement)) return { kind: "star" };
+          const asMatch = dep.statement.match(/\bas\s+([A-Za-z_]\w*)\s*$/);
+          return { kind: asMatch ? "named" : "default", alias: asMatch?.[1] };
+        })() } : {}),
+      };
+    });
+  }
+
+  public getDomainFileConnections(domainId?: number, workspaceRoot?: string): Map<string, FileConnectionsSummary> {
+    const root = workspaceRoot ?? this.db.query<{ value: string }, [string]>("SELECT value FROM repo_meta WHERE key = ?").get("workspace_root")?.value;
+    if (root) {
+      const files = this.db.query<{ path: string; domain_id: number }, []>("SELECT path, domain_id FROM files").all();
+      const edges = this.getImportRelationships(root);
+      return new Map(files.filter(f => domainId === undefined || f.domain_id === domainId).map(file => {
+        const imports = edges.filter(edge => edge.source.file === file.path && edge.resolution.status === "resolved").flatMap(edge => edge.resolution.targets.flatMap(target => target.files));
+        const inbound = edges.filter(edge => edge.resolution.status === "resolved" && edge.resolution.targets.some(target => target.files.includes(file.path))).map(edge => edge.source.file);
+        return [file.path, { imports_from: [...new Set(imports)].sort(), imported_by: [...new Set(inbound)].sort(), imported_by_count: new Set(inbound).size }];
+      }));
+    }
     const allFiles = this.db
       .query<{ id: number; domain_id: number; path: string }, []>(
         "SELECT id, domain_id, path FROM files ORDER BY path ASC"
@@ -236,9 +289,9 @@ export class DependencyRepository {
     return result;
   }
 
-  public getFileConnections(filePath: string): FileConnectionsSummary {
+  public getFileConnections(filePath: string, workspaceRoot?: string): FileConnectionsSummary {
     const clean = filePath.replace(/\\/g, "/").replace(/^\.\//, "");
-    const allConns = this.getDomainFileConnections();
+    const allConns = this.getDomainFileConnections(undefined,workspaceRoot);
     return (
       allConns.get(clean) ??
       allConns.get(filePath) ?? {

@@ -1,3 +1,4 @@
+import { RESOLVER_REVISION } from "../resolver/import-resolver.ts";
 import { shouldIgnoreSourcePath } from "../resources/ignore.ts";
 import { RESOURCE_LIMITS } from "../resources/limits.ts";
 import { readSourceFile, SourceFileLimitError, collectSourceSkips, type SkippedSourceFile, type SourceReadFingerprint } from "../resources/source-files.ts";
@@ -10,6 +11,7 @@ import type { SeptumRepository } from "../database/repository.ts";
 import { detectArchetype } from "../parser/extractors/base.ts";
 import { SemanticSliceExtractorRegistry } from "../parser/extractors/registry.ts";
 import { TopologyDetector } from "../discovery/topology-detector.ts";
+import { PARSER_REVISION } from "../parser/language-capabilities.ts";
 import { ASTParserEngine } from "../parser/tree-sitter.ts";
 import { CallGraphTracer } from "../resolver/call-graph-tracer.ts";
 import { ModuleResolver } from "../resolver/module-resolver.ts";
@@ -39,6 +41,8 @@ export class IngestionPipeline {
   }
 
   public async run(config: ValidatedSeptumConfig, options: { verifyContent?: boolean; signal?: AbortSignal } = {}): Promise<IngestionMetrics> {
+    this.repo.setMeta("workspace_root", this.resolveWorkspaceRoot(config, Object.values(config.domains)[0]?.root ?? "."));
+    this.repo.setMeta("resolver_revision", RESOLVER_REVISION);
     this.repo.setMeta("sync_state", "running");
     try {
       const result = await this.runSync(config, options);
@@ -250,7 +254,7 @@ export class IngestionPipeline {
           this.repo.setMeta("slices_dirty", "1");
           continue;
         }
-        if (ast.status === "degraded") throw new Error(`Cannot reliably index '${relPath}': parser is degraded.`);
+        if (ast.status === "degraded") throw new Error(`Cannot reliably index '${relPath}': parser is degraded. ${ast.diagnostics?.map(d => `${d.code}: ${d.message}`).join("; ") ?? ""}`);
 
         filesUpdated++;
         batchBytes += sizeBytes;
@@ -305,13 +309,19 @@ export class IngestionPipeline {
       catch (error) { if (error instanceof SourceFileLimitError) semanticInputChanged = input.hash !== "file_too_large"; else throw error; }
       if (semanticInputChanged) break;
     }
-    const extractorRevision = "1"; // Bump when extractor or inferred-chain semantics change.
+    const extractorRevision = "3"; // Bump when extractor or inferred-chain semantics change.
     if (this.repo.getMeta("semantic_extractor_revision") !== extractorRevision || this.repo.getMeta("semantic_inventory") !== inventoryRevision || semanticInputChanged || filesUpdated > 0 || removedFiles > 0 || this.repo.getMeta("slices_dirty") === "1" || this.repo.getMeta("semantic_revision") !== semanticRevision) {
       const extracted = await collectSourceSkips(projectRoot, async () => {
         const detectedTopology = TopologyDetector.detect(projectRoot);
-        const semanticSlices = await SemanticSliceExtractorRegistry.extractAllSlices(projectRoot, detectedTopology.framework);
+        const semanticSlices = await SemanticSliceExtractorRegistry.extractAllSlices(projectRoot, detectedTopology.framework, undefined, options.signal);
         return semanticSlices.length > 0 ? semanticSlices : new CallGraphTracer(this.repo, projectRoot).traceAllSlices();
       });
+      options.signal?.throwIfAborted();
+      if (extracted.skipped.length) {
+        this.repo.setMeta("skipped_files", JSON.stringify([...skippedFiles,...extracted.skipped]));
+        this.repo.setMeta("slices_dirty", "1");
+        throw new Error("Semantic extraction incomplete: source read limit exceeded.");
+      }
       skippedFiles.push(...extracted.skipped);
       this.repo.runInTransaction(() => {
         this.repo.clearVerticalSlices();
@@ -647,7 +657,7 @@ export class IngestionPipeline {
   }
 
   private ensureParserRevision(): void {
-    const revision = "2";
+    const revision = PARSER_REVISION;
     if (this.repo.getMeta("parser_revision") === revision) return;
     this.repo.runInTransaction(() => {
       for (const file of this.repo.getAllFiles()) {
@@ -726,7 +736,7 @@ export class IngestionPipeline {
       this.repo.setMeta("unsupported_files", JSON.stringify([...unsupported]));
       return false;
     }
-    if (ast.status === "degraded") throw new Error(`Cannot reliably index '${relPath}': parser is degraded.`);
+    if (ast.status === "degraded") throw new Error(`Cannot reliably index '${relPath}': parser is degraded. ${ast.diagnostics?.map(d => `${d.code}: ${d.message}`).join("; ") ?? ""}`);
 
     this.repo.runInTransaction(() => {
       const fileId = this.repo.upsertFile(

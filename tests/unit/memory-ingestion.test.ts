@@ -30,6 +30,33 @@ describe('bounded ingestion and incomplete index safety', () => {
   const result=await handleCheckBoundary(new BoundaryEvaluator(repo,new ModuleResolver(root,repo)),config(),{scope:'all'},repo,root);
   expect(JSON.parse(result.content[0].text).status).toBe('unknown');
  });
+ it('rejects recovered syntax trees and restores a reliable index after repair',async()=>{
+  const file=join(root,'src/a.ts');
+  writeFileSync(file,'export function valid() {}');
+  await pipeline.run(config());
+  writeFileSync(file,'export function valid() {}\nfunction broken( {');
+  await expect(pipeline.run(config(),{verifyContent:true})).rejects.toThrow('parser is degraded');
+  expect(repo.getMeta('sync_state')).toBe('error');
+  const evaluator=new BoundaryEvaluator(repo,new ModuleResolver(root,repo));
+  const result=await handleCheckBoundary(evaluator,config(),{scope:'all'},repo,root);
+  expect(JSON.parse(result.content[0].text).status).toBe('unknown');
+  writeFileSync(file,'export function repaired() {}');
+  await pipeline.run(config(),{verifyContent:true});
+  expect(repo.getMeta('sync_state')).toBe('complete');
+  expect(repo.getAllSymbolsWithFiles().some(s=>s.name==='repaired')).toBe(true);
+ });
+ it('reparses unchanged source when the parser revision changes',async()=>{
+  const file=join(root,'src/a.rs');
+  writeFileSync(file,'mod billing { pub struct Invoice; }');
+  await pipeline.run(config());
+  const indexed=repo.getFileByPath('src/a.rs')!;
+  repo.replaceFileSymbols(indexed.id,[]);
+  repo.setMeta('parser_revision','3');
+  const result=await pipeline.run(config());
+  expect(result.files_updated).toBe(1);
+  expect(repo.getSymbolsByFileId(indexed.id).some(s=>s.name==='billing::Invoice')).toBe(true);
+  expect(repo.getMeta('parser_revision')).toBe('4');
+ });
  it('marks completion and does not replace slices on unchanged sync',async()=>{
   writeFileSync(join(root,'src/a.ts'),'export function example() {}'); await pipeline.run(config());
   repo.setMeta('slices_dirty',''); const before=repo.getMeta('semantic_revision');
@@ -50,7 +77,7 @@ describe('source read admission',()=>{
  it('does not read oversized semantic files outside indexed domains',async()=>{
   const root=mkdtempSync(join(tmpdir(),'septum-semantic-limit-'));mkdirSync(join(root,'src/mcp/tools'),{recursive:true});mkdirSync(join(root,'other'));
   const db=new SeptumDatabase(':memory:'),repo=new SeptumRepository(db.raw);
-  try{writeFileSync(join(root,'package.json'),'{"name":"semantic-limit","dependencies":{"@modelcontextprotocol/sdk":"1"}}');writeFileSync(join(root,'src/mcp/tools/big.ts'),'/*'+'x'.repeat(2*1024*1024)+'*/\nexport function handler() {}');const c=ConfigLoader.getDefaultConfig();c.domains={other:{root:'other',allowed_dependencies:[],forbidden_dependencies:[],archetypes:{}}};const pipeline=new IngestionPipeline(repo,root);await pipeline.run(c);expect(JSON.parse(repo.getMeta('skipped_files')||'[]').some((file:any)=>file.path==='src/mcp/tools/big.ts')).toBe(true);await pipeline.run(c);expect(JSON.parse(repo.getMeta('skipped_files')||'[]').some((file:any)=>file.path==='src/mcp/tools/big.ts')).toBe(true);}finally{db.close();rmSync(root,{recursive:true,force:true});}
+  try{writeFileSync(join(root,'package.json'),'{"name":"semantic-limit","dependencies":{"@modelcontextprotocol/sdk":"1"}}');writeFileSync(join(root,'src/mcp/tools/big.ts'),'/*'+'x'.repeat(2*1024*1024)+'*/\nexport function handler() {}');const c=ConfigLoader.getDefaultConfig();c.domains={other:{root:'other',allowed_dependencies:[],forbidden_dependencies:[],archetypes:{}}};const pipeline=new IngestionPipeline(repo,root);await expect(pipeline.run(c)).rejects.toThrow("Semantic extraction incomplete");expect(JSON.parse(repo.getMeta('skipped_files')||'[]').some((file:any)=>file.path==='src/mcp/tools/big.ts')).toBe(true);await expect(pipeline.run(c)).rejects.toThrow("Semantic extraction incomplete");expect(JSON.parse(repo.getMeta('skipped_files')||'[]').some((file:any)=>file.path==='src/mcp/tools/big.ts')).toBe(true);}finally{db.close();rmSync(root,{recursive:true,force:true});}
  });
  it('records an error when a later parse fails after committing the first batch',async()=>{
   const root=mkdtempSync(join(tmpdir(),'septum-batch-error-'));mkdirSync(join(root,'src'));const db=new SeptumDatabase(':memory:'),repo=new SeptumRepository(db.raw);

@@ -1,3 +1,7 @@
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { computeContentHash } from "../../src/core/ingestion/hasher.ts";
 import { describe, expect, it, beforeEach, afterEach } from "bun:test";
 import { SeptumDatabase } from "../../src/core/database/client.ts";
 import { SeptumRepository } from "../../src/core/database/repository.ts";
@@ -20,6 +24,7 @@ import { SEPTUM_HOOKS_CONFIG } from "../../src/cli/templates/hooks.ts";
 describe("Refactored Capabilities & Regression Verification", () => {
   let db: SeptumDatabase;
   let repo: SeptumRepository;
+  let catalogRoot: string | undefined;
 
   const mockConfig: ValidatedSeptumConfig = {
     version: "1.0",
@@ -57,6 +62,8 @@ describe("Refactored Capabilities & Regression Verification", () => {
 
   afterEach(() => {
     db.close();
+    if (catalogRoot) rmSync(catalogRoot,{recursive:true,force:true});
+    catalogRoot = undefined;
   });
 
   describe("1. web-tree-sitter WASM Multi-Language Extraction Without SQL Leakage", () => {
@@ -113,7 +120,7 @@ class InvoiceRepository {
       expect(symbolNames.some((n) => n.toUpperCase().includes("WHERE"))).toBe(false);
     });
 
-    it("should filter SQL keywords from sibling_methods in handleGetSymbol", () => {
+    it("should filter SQL keywords from sibling_methods in handleGetSymbol", async () => {
       const domainId = repo.upsertDomain("core", mockConfig.domains.core);
       const fileId = repo.upsertFile(
         domainId,
@@ -175,7 +182,7 @@ class InvoiceRepository {
   });
 
   describe("2. getSymbolImpact on Named Imports like SymbolRepository", () => {
-    it("should track dependents and callers through named imports", () => {
+    it("should track dependents and callers through named imports", async () => {
       const coreDomainId = repo.upsertDomain("core", mockConfig.domains.core);
 
       // 1. Defining file with SymbolRepository
@@ -232,7 +239,7 @@ class InvoiceRepository {
   });
 
   describe("3. getDomainCatalog Compact Mode + archetype_filter + Bidirectional connections", () => {
-    it("should produce compact mode, filter archetypes correctly, and provide bidirectional connections", () => {
+    it("should produce compact mode, filter archetypes correctly, and provide bidirectional connections", async () => {
       const coreDomainId = repo.upsertDomain("core", mockConfig.domains.core);
 
       const repoFileId = repo.upsertFile(
@@ -286,9 +293,19 @@ class InvoiceRepository {
         },
       ]);
 
+      catalogRoot = mkdtempSync(join(tmpdir(),"septum-catalog-evidence-"));
+      const repositorySource = "export class UserRepository {}";
+      const serviceSource = 'import { UserRepository } from "../database/repositories/user.repository.ts";\nexport class UserService {}';
+      mkdirSync(join(catalogRoot,"src/core/database/repositories"),{recursive:true});
+      mkdirSync(join(catalogRoot,"src/core/services"),{recursive:true});
+      writeFileSync(join(catalogRoot,"src/core/database/repositories/user.repository.ts"),repositorySource);
+      writeFileSync(join(catalogRoot,"src/core/services/user.service.ts"),serviceSource);
+      repo.upsertFile(coreDomainId,"src/core/database/repositories/user.repository.ts","repository",computeContentHash(repositorySource),1);
+      repo.upsertFile(coreDomainId,"src/core/services/user.service.ts","service",computeContentHash(serviceSource),2);
+
       // 1. Compact mode check
       const parsedCompact = GetDomainCatalogSchema.parse({ domain: "core", detail_level: "compact" });
-      const compactRes = handleGetDomainCatalog(repo, mockConfig, parsedCompact);
+      const compactRes = handleGetDomainCatalog(repo, mockConfig, parsedCompact,catalogRoot);
       const compactJson = JSON.parse(compactRes.content[0].text);
 
       expect(compactJson.detail_level).toBe("compact");
@@ -307,7 +324,7 @@ class InvoiceRepository {
         domain: "core",
         archetype_filter: "repository",
       });
-      const filteredRes = handleGetDomainCatalog(repo, mockConfig, parsedFilter);
+      const filteredRes = handleGetDomainCatalog(repo, mockConfig, parsedFilter,catalogRoot);
       const filteredJson = JSON.parse(filteredRes.content[0].text);
 
       expect(filteredJson.showing_files).toBe(1);
@@ -419,7 +436,7 @@ class InvoiceRepository {
   });
 
   describe("5. trace-vertical-slice max_depth Clamping [1, 8]", () => {
-    it("should clamp max_depth via TraceVerticalSliceSchema preprocessor", () => {
+    it("should clamp max_depth via TraceVerticalSliceSchema preprocessor", async () => {
       const parsedZero = TraceVerticalSliceSchema.parse({ query: "test", max_depth: 0 });
       expect(parsedZero.max_depth).toBe(1);
 
@@ -433,9 +450,9 @@ class InvoiceRepository {
       expect(parsedNormal.max_depth).toBe(6);
     });
 
-    it("should clamp max_depth in handleTraceVerticalSlice execution", () => {
+    it("should clamp max_depth in handleTraceVerticalSlice execution", async () => {
       // 1. Min clamping test (<= 0 -> 1)
-      const resMin = handleTraceVerticalSlice(repo, mockConfig, {
+      const resMin = await handleTraceVerticalSlice(repo, mockConfig, {
         query: "GET /api/nonexistent",
         max_depth: 0,
       });
@@ -443,7 +460,7 @@ class InvoiceRepository {
       expect(jsonMin.max_depth_applied).toBe(1);
 
       // 2. Max clamping test (> 8 -> 8)
-      const resMax = handleTraceVerticalSlice(repo, mockConfig, {
+      const resMax = await handleTraceVerticalSlice(repo, mockConfig, {
         query: "GET /api/nonexistent",
         max_depth: 42,
       });
@@ -451,7 +468,7 @@ class InvoiceRepository {
       expect(jsonMax.max_depth_applied).toBe(8);
 
       // 3. In-range test (4 -> 4)
-      const resMid = handleTraceVerticalSlice(repo, mockConfig, {
+      const resMid = await handleTraceVerticalSlice(repo, mockConfig, {
         query: "GET /api/nonexistent",
         max_depth: 4,
       });
@@ -461,7 +478,7 @@ class InvoiceRepository {
   });
 
   describe("6. Agentic Scaffolding Templates & 5-Tool MCP Contracts", () => {
-    it("should include all 5 Unified MCP tools in SEPTUM_MAP_SKILL_TEMPLATE with compact mode, max_depth, and circular_dependency", () => {
+    it("should include all 5 Unified MCP tools in SEPTUM_MAP_SKILL_TEMPLATE with compact mode, max_depth, and circular_dependency", async () => {
       const expectedTools = [
         "septum_domain",
         "septum_symbol",
@@ -479,14 +496,14 @@ class InvoiceRepository {
       expect(SEPTUM_MAP_SKILL_TEMPLATE).toContain("circular_dependency");
     });
 
-    it("should include compact mode, max_depth, and circular_dependency in SEPTUM_RULES_TEMPLATE", () => {
+    it("should include compact mode, max_depth, and circular_dependency in SEPTUM_RULES_TEMPLATE", async () => {
       expect(SEPTUM_RULES_TEMPLATE).toContain('detail_level: "compact"');
       expect(SEPTUM_RULES_TEMPLATE).toContain("max_depth");
       expect(SEPTUM_RULES_TEMPLATE).toContain("circular_dependency");
       expect(SEPTUM_RULES_TEMPLATE).toContain("inbound_callers");
     });
 
-    it("should configure multi-agent hook matchers in SEPTUM_HOOKS_CONFIG", () => {
+    it("should configure multi-agent hook matchers in SEPTUM_HOOKS_CONFIG", async () => {
       const guard = SEPTUM_HOOKS_CONFIG["septum-boundary-guard"];
       expect(guard).toBeDefined();
 

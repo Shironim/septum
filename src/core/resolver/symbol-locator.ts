@@ -1,4 +1,6 @@
-import type { FileRecord, SymbolKind, SymbolRecord } from "../database/repository.ts";
+import { symbolReference } from "./symbol-reference.ts";
+import type { SymbolReference, SymbolSelectionOptions } from "../../types/index.ts";
+import type { SymbolKind } from "../database/repository.ts";
 import type { SeptumRepository } from "../database/repository.ts";
 
 export interface ParsedSymbolQuery {
@@ -22,6 +24,9 @@ export interface SymbolLocationResult {
   query: string;
   parsed: ParsedSymbolQuery;
   found: boolean;
+  status?: "ambiguous" | "stale_reference";
+  candidates?: Array<{ name: string; file_path: string; signature: string; symbol_ref: SymbolReference }>;
+  symbol_ref?: SymbolReference;
   file_path?: string;
   container_name?: string;
   exact_symbol?: {
@@ -124,331 +129,59 @@ export class SymbolLocator {
   /**
    * Locate the symbol or diagnostic resolution in the database.
    */
-  public locate(rawQuery: string, domainFilter?: string): SymbolLocationResult {
+  public locate(rawQuery: string, domainFilter?: string, options: SymbolSelectionOptions = {}): SymbolLocationResult {
     const parsed = this.parseQuery(rawQuery);
-
-    // If a container (Class / Interface) is specified
-    if (parsed.container) {
-      return this.locateWithContainer(parsed, domainFilter);
-    }
-
-    // If only member or bare name is provided
-    return this.locateBareMember(parsed, domainFilter);
-  }
-
-  private locateWithContainer(
-    parsed: ParsedSymbolQuery,
-    domainFilter?: string
-  ): SymbolLocationResult {
-    const containerQuery = parsed.container!;
-    const simpleContainerName = containerQuery.split(/\\|\//).pop() || containerQuery;
-    const memberName = parsed.member;
-
-    // Search for container in symbols table or files table
-    const containers = this.repo.findContainers(simpleContainerName);
-
-    if (containers.length === 0) {
-      // Container not found directly: search for fuzzy container matches across the catalog
-      const allSymbols = this.repo.getAllSymbolsWithFiles();
-      const containerCandidates = allSymbols.filter((s) =>
-        ["class", "interface", "trait", "enum", "struct"].includes(s.kind)
-      );
-
-      // Score containers by similarity
-      const scoredContainers = containerCandidates
-        .map((s) => {
-          const bare = s.name.includes("::")
-            ? s.name.split("::")[0]
-            : s.name.split(/\\|\//).pop() || s.name;
-          const score = calculateSimilarity(simpleContainerName, bare);
-          return {
-            name: s.name,
-            bare,
-            kind: s.kind,
-            signature: s.signature,
-            line_start: s.line_start,
-            line_end: s.line_end,
-            file_path: s.file_path,
-            similarity_score: Math.round(score * 100) / 100,
-          };
-        })
-        .filter((c) => c.similarity_score >= 0.3)
-        .sort((a, b) => b.similarity_score - a.similarity_score);
-
-      // Deduplicate by name + file_path
-      const seenContainers = new Set<string>();
-      const uniqueContainers = scoredContainers.filter((c) => {
-        const key = `${c.name}@${c.file_path}`;
-        if (seenContainers.has(key)) return false;
-        seenContainers.add(key);
-        return true;
-      }).slice(0, 5);
-
-      // If a member was requested, prioritize methods within top fuzzy candidate containers
-      let memberSuggestions: SuggestionMatch[] = [];
-      if (memberName) {
-        const topCandidateFilePaths = new Set(uniqueContainers.map((c) => c.file_path));
-
-        const candidateMethods = allSymbols.filter(
-          (s) =>
-            (s.kind === "method" || s.kind === "function") &&
-            topCandidateFilePaths.has(s.file_path)
-        );
-
-        const methodsToScore =
-          candidateMethods.length > 0
-            ? candidateMethods
-            : allSymbols
-                .filter(
-                  (s) =>
-                    (s.kind === "method" || s.kind === "function") &&
-                    Math.abs(s.name.length - memberName.length) <= 8
-                )
-                .slice(0, 100);
-
-        memberSuggestions = methodsToScore
-          .map((s) => {
-            const bare = s.name.includes("::") ? s.name.split("::")[1] : s.name;
-            const score = calculateSimilarity(memberName, bare);
-            return {
-              name: s.name,
-              kind: s.kind,
-              signature: `${s.signature} (${s.file_path}:${s.line_start})`,
-              line_start: s.line_start,
-              line_end: s.line_end,
-              similarity_score: Math.round(score * 100) / 100,
-              file_path: s.file_path,
-            };
-          })
-          .filter((s) => s.similarity_score >= 0.35)
-          .sort((a, b) => b.similarity_score - a.similarity_score)
-          .slice(0, 5);
+    const selection = { ...options, domain: domainFilter ?? options.domain };
+    const base = { query: parsed.raw, parsed, found: false, suggestions: [] };
+    if (selection.reference) {
+      const file = this.repo.getFileByPath(selection.reference.file_path);
+      if (!file || file.content_hash !== selection.reference.indexed_content_hash) {
+        return { ...base, status: "stale_reference", message: "Declaration reference is stale; locate the symbol again." };
       }
-
-      const suggestions: SuggestionMatch[] = uniqueContainers.map((c) => ({
-        name: c.name,
-        kind: c.kind,
-        signature: `${c.signature || c.kind} (${c.file_path}:${c.line_start})`,
-        line_start: c.line_start,
-        line_end: c.line_end,
-        similarity_score: c.similarity_score,
-        file_path: c.file_path,
-      }));
-
-      // Combine container suggestions with member suggestions if available
-      const combinedSuggestions = [...suggestions, ...memberSuggestions]
-        .sort((a, b) => b.similarity_score - a.similarity_score)
-        .slice(0, 7);
-
-      const topSuggestion = combinedSuggestions.length > 0 ? combinedSuggestions[0].name : null;
-      const hint = topSuggestion
-        ? ` Container '${containerQuery}' was not found. Did you mean '${topSuggestion}'?`
-        : ` Container '${containerQuery}' was not found in cataloged files.`;
-
+    }
+    const container = parsed.container?.split(/\\|\//).pop();
+    const qualified = parsed.raw === `${parsed.container}.${parsed.member}` ? parsed.raw : `${container}::${parsed.member}`;
+    const query = selection.reference?.name ?? (container ? qualified : parsed.member ?? parsed.raw);
+    const candidates = this.repo.findSymbolsByName(query, selection);
+    if (candidates.length > 1) {
       return {
-        query: parsed.raw,
-        parsed,
-        found: false,
-        suggestions: combinedSuggestions,
-        message: `${hint} Run 'septum ingest' if this file was recently added.`,
+        ...base, status: "ambiguous",
+        candidates: candidates.map(c => ({ name: c.name, file_path: c.file_path, signature: c.signature, symbol_ref: c.symbol_ref })),
+        message: "Multiple matching declarations; select a candidate with symbol_ref.",
       };
     }
-
-    // Pick primary container matching
-    const primary = containers[0];
-    const fileSymbols = this.repo.getSymbolsByFileId(primary.file.id);
-
-    // Extract methods in this container / file
-    const methodSymbols = fileSymbols.filter(
-      (s) => s.kind === "method" || s.kind === "function"
-    );
-
-    const siblingMethodNames = Array.from(
-      new Set(
-        methodSymbols.map((m) => {
-          if (m.name.includes("::")) {
-            return m.name.split("::")[1];
-          }
-          return m.name;
-        })
-      )
-    );
-
-    if (!memberName) {
-      // User only asked for the container
+    if (candidates.length === 1) {
+      const exact = candidates[0]!;
+      const details = this.repo.getSymbolDetails(exact.name, { ...selection, reference: exact.symbol_ref, includeDependencies: false });
       return {
-        query: parsed.raw,
-        parsed,
-        found: true,
-        file_path: primary.file.path,
-        container_name: simpleContainerName,
-        exact_symbol: primary.symbol
-          ? {
-              name: primary.symbol.name,
-              kind: primary.symbol.kind,
-              signature: primary.symbol.signature,
-              visibility: primary.symbol.visibility,
-              line_start: primary.symbol.line_start,
-              line_end: primary.symbol.line_end,
-            }
-          : undefined,
-        sibling_methods: siblingMethodNames,
-        suggestions: [],
-        message: `Found container '${simpleContainerName}' in ${primary.file.path} with ${siblingMethodNames.length} methods.`,
+        ...base, found: true, file_path: exact.file_path, container_name: exact.symbol_ref.container,
+        symbol_ref: exact.symbol_ref,
+        exact_symbol: { name: exact.name, kind: exact.kind, signature: exact.signature, visibility: exact.visibility, line_start: exact.line_start, line_end: exact.line_end },
+        sibling_methods: details?.sibling_methods,
+        message: `Found exact symbol '${exact.name}' in ${exact.file_path}:${exact.line_start}`,
       };
     }
-
-    // Search for exact member match
-    const exactMatch = methodSymbols.find((s) => {
-      const bareName = s.name.includes("::") ? s.name.split("::")[1] : s.name;
-      return bareName.toLowerCase() === memberName.toLowerCase();
-    });
-
-    if (exactMatch) {
-      return {
-        query: parsed.raw,
-        parsed,
-        found: true,
-        file_path: primary.file.path,
-        container_name: simpleContainerName,
-        exact_symbol: {
-          name: exactMatch.name,
-          kind: exactMatch.kind,
-          signature: exactMatch.signature,
-          visibility: exactMatch.visibility,
-          line_start: exactMatch.line_start,
-          line_end: exactMatch.line_end,
-        },
-        sibling_methods: siblingMethodNames,
-        suggestions: [],
-        message: `Exact method '${memberName}' found in ${primary.file.path} at line ${exactMatch.line_start}.`,
-      };
-    }
-
-    // Member NOT found in container: calculate fuzzy suggestions
-    const suggestions: SuggestionMatch[] = methodSymbols
-      .map((s) => {
-        const bareName = s.name.includes("::") ? s.name.split("::")[1] : s.name;
-        const score = calculateSimilarity(memberName, bareName);
-        return {
-          name: bareName,
-          kind: s.kind,
-          signature: s.signature,
-          line_start: s.line_start,
-          line_end: s.line_end,
-          similarity_score: Math.round(score * 100) / 100,
-        };
-      })
-      .filter((s) => s.similarity_score >= 0.25)
-      .sort((a, b) => b.similarity_score - a.similarity_score)
-      .slice(0, 5);
-
-    const topSuggestion = suggestions.length > 0 ? suggestions[0].name : null;
-    const hint = topSuggestion
-      ? ` Method '${memberName}' does not exist! Did you mean '${topSuggestion}'?`
-      : ` Method '${memberName}' does not exist.`;
-
-    return {
-      query: parsed.raw,
-      parsed,
-      found: false,
-      file_path: primary.file.path,
-      container_name: simpleContainerName,
-      sibling_methods: siblingMethodNames,
-      suggestions,
-      message: `File: ${primary.file.path}.${hint} Available methods: [${siblingMethodNames.join(", ")}].`,
-    };
+    const target = parsed.member ?? parsed.raw;
+    const owners = container ? this.repo.findSymbolsByName(container, selection)
+      .filter(s => ["class", "interface", "trait", "struct", "enum"].includes(s.kind)) : [];
+    const owner = owners.length === 1 ? owners[0] : undefined;
+    const siblings = owner ? this.repo.getSymbolDetails(owner.name, { ...selection, reference: owner.symbol_ref, includeDependencies: false })?.sibling_methods : undefined;
+    const searchable = owner ? this.repo.getSymbolsByFileId(owner.file_id)
+      .filter(s => s.kind === "method" && symbolReference({ ...s, file_path: owner.file_path, indexed_content_hash: owner.indexed_content_hash }).container === owner.name)
+      .map(s => ({ ...s, file_path: owner.file_path })) : this.repo.getAllSymbolsWithFiles();
+    const domainId = selection.domain ? this.repo.getAllDomains().find(d => d.name.toLowerCase() === selection.domain!.toLowerCase())?.id : undefined;
+    const suggestions = searchable
+      .filter(s => !selection.filePath || s.file_path === selection.filePath)
+      .filter(s => !selection.domain || this.repo.getFileByPath(s.file_path)?.domain_id === domainId)
+      .map(s => ({
+        name: owner ? s.name.split(/::|[.#]/).pop()! : s.name, kind: s.kind, signature: s.signature, line_start: s.line_start, line_end: s.line_end, file_path: s.file_path,
+        similarity_score: Math.round(Math.max(calculateSimilarity(target, s.name.split(/::|[.#]/).pop()!), calculateSimilarity(parsed.raw, s.name)) * 100) / 100,
+      }))
+      .filter(s => s.similarity_score >= 0.3)
+      .sort((a, b) => b.similarity_score - a.similarity_score).slice(0, 10);
+    return { ...base, file_path: owner?.file_path, container_name: owner?.name, sibling_methods: siblings, suggestions, message: `Symbol '${parsed.raw}' not found.${suggestions.length ? ` Did you mean '${suggestions[0]!.name}'?` : ""}` };
   }
 
-  private locateBareMember(
-    parsed: ParsedSymbolQuery,
-    domainFilter?: string
-  ): SymbolLocationResult {
-    const targetName = parsed.member!;
-    const directMatches = this.repo.findSymbolsByName(targetName);
-
-    if (directMatches.length > 0) {
-      const first = directMatches[0];
-      return {
-        query: parsed.raw,
-        parsed,
-        found: true,
-        file_path: first.file_path,
-        container_name: first.name.includes("::") ? first.name.split("::")[0] : undefined,
-        exact_symbol: {
-          name: first.name,
-          kind: first.kind,
-          signature: first.signature,
-          visibility: first.visibility,
-          line_start: first.line_start,
-          line_end: first.line_end,
-        },
-        suggestions: [],
-        message: `Found exact symbol '${first.name}' in ${first.file_path}:${first.line_start}`,
-      };
-    }
-
-    // If bare name is a class name
-    const containers = this.repo.findContainers(targetName);
-    if (containers.length > 0) {
-      const primary = containers[0];
-      const fileSymbols = this.repo.getSymbolsByFileId(primary.file.id);
-      const siblingMethods = fileSymbols
-        .filter((s) => s.kind === "method" || s.kind === "function")
-        .map((s) => (s.name.includes("::") ? s.name.split("::")[1] : s.name));
-
-      return {
-        query: parsed.raw,
-        parsed,
-        found: true,
-        file_path: primary.file.path,
-        container_name: targetName,
-        exact_symbol: primary.symbol
-          ? {
-              name: primary.symbol.name,
-              kind: primary.symbol.kind,
-              signature: primary.symbol.signature,
-              visibility: primary.symbol.visibility,
-              line_start: primary.symbol.line_start,
-              line_end: primary.symbol.line_end,
-            }
-          : undefined,
-        sibling_methods: Array.from(new Set(siblingMethods)),
-        suggestions: [],
-        message: `Found container '${targetName}' in ${primary.file.path}`,
-      };
-    }
-
-    // Nothing found directly: Search all symbols for fuzzy suggestions
-    const allSymbols = this.repo.getAllSymbolsWithFiles();
-    const suggestions: SuggestionMatch[] = allSymbols
-      .map((s) => {
-        const bareName = s.name.includes("::") ? s.name.split("::")[1] : s.name;
-        const scoreBare = calculateSimilarity(targetName, bareName);
-        const scoreFull = calculateSimilarity(targetName, s.name);
-        const score = Math.max(scoreBare, scoreFull);
-        return {
-          name: s.name,
-          kind: s.kind,
-          signature: `${s.signature} (${s.file_path}:${s.line_start})`,
-          line_start: s.line_start,
-          line_end: s.line_end,
-          similarity_score: Math.round(score * 100) / 100,
-          file_path: s.file_path,
-        };
-      })
-      .filter((s) => s.similarity_score >= 0.3)
-      .sort((a, b) => b.similarity_score - a.similarity_score)
-      .slice(0, 5);
-
-    return {
-      query: parsed.raw,
-      parsed,
-      found: false,
-      suggestions,
-      message: `Symbol '${targetName}' not found. ${suggestions.length > 0 ? `Did you mean '${suggestions[0].name}'?` : ""}`,
-    };
-  }
 }
 
 /**

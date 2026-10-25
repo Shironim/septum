@@ -1,3 +1,4 @@
+import { symbolReference } from "../../resolver/symbol-reference.ts";
 import type { Database } from "bun:sqlite";
 import type {
   DomainCatalogResponse,
@@ -133,7 +134,7 @@ export class DomainRepository {
   public getDomainCatalog(
     domainName: string,
     archetypeFilter?: string,
-    options?: { detailLevel?: "compact" | "full"; fileFilter?: string }
+    options?: { detailLevel?: "compact" | "full"; fileFilter?: string; workspaceRoot?: string }
   ): DomainCatalogResponse | null {
     const domain = this.getDomainByName(domainName);
     if (!domain) return null;
@@ -190,7 +191,7 @@ export class DomainRepository {
 
     // Batch compute file connections for the domain (zero N+1)
     const depRepo = new DependencyRepository(this.db);
-    const connectionsByPath = depRepo.getDomainFileConnections(domain.id);
+    const connectionsByPath = depRepo.getDomainFileConnections(domain.id,options?.workspaceRoot);
 
     for (const file of files) {
       const symbols = symbolsByFileId.get(file.id) ?? [];
@@ -282,6 +283,7 @@ export class DomainRepository {
       };
 
       catalogFiles.push({
+        ...(detailLevel === "full" ? { declarations: symbols.map(sym => symbolReference({ ...sym, file_path: file.path, indexed_content_hash: file.content_hash })) } : {}),
         path: file.path,
         archetype: file.archetype,
         line_count: file.line_count,
