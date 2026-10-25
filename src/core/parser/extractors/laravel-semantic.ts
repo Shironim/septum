@@ -1,8 +1,9 @@
 import { readOptionalSourceFile } from "../../resources/source-files.ts";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { ImportResolver } from "../../resolver/import-resolver.ts";
 import type { ExecutionChainNode, VerticalSliceRecord } from "../../../types/index.ts";
-import { BehavioralAnalyzer } from "../behavioral-analyzer.ts";
+import { BehavioralAnalyzer, type MethodBehavioralSummary } from "../behavioral-analyzer.ts";
 import { blankCommentsAndStrings } from "../boundary-tracker.ts";
 import { SchemaProviderRegistry } from "../schema/schema-provider-registry.ts";
 import type {
@@ -64,13 +65,18 @@ export class LaravelSemanticExtractor implements SemanticSliceExtractor {
 
     for (const routeFile of routeFiles) {
       const content = readOptionalSourceFile(routeFile, "utf-8");
-      parsedRoutes.push(...this.parseRoutesContent(content));
+      const relativeRouteFile = path.relative(root, routeFile).replace(/\\/g, "/");
+      const routesFromFile = this.parseRoutesContent(content);
+      for (const r of routesFromFile) {
+        r.file = relativeRouteFile;
+      }
+      parsedRoutes.push(...routesFromFile);
     }
 
     const slices: Array<Omit<VerticalSliceRecord, "id" | "created_at">> = [];
 
     for (const route of parsedRoutes) {
-      const controllerInfo = this.resolveController(route.controllerClass, route.actionName);
+      const controllerInfo = this.resolveController(route.controllerClass, route.actionName, route.file);
 
       let formRequestInfo: {
         className: string;
@@ -96,7 +102,7 @@ export class LaravelSemanticExtractor implements SemanticSliceExtractor {
         isService: boolean;
       }> = [];
 
-      let behavioralInfo: import("../behavioral-analyzer.ts").MethodBehavioralSummary | null = null;
+      let behavioralInfo: MethodBehavioralSummary | null = null;
       if (controllerInfo.filePath && fs.existsSync(controllerInfo.filePath)) {
         const controllerCode = readOptionalSourceFile(controllerInfo.filePath, "utf-8");
         const actionBody = this.extractActionBody(controllerCode, route.actionName);
@@ -312,6 +318,31 @@ export class LaravelSemanticExtractor implements SemanticSliceExtractor {
       }
     }
 
+    // 1b. Process Route::apiResource
+    const apiResourceRegex = /Route::apiResource\s*\(\s*['"]([^'"]+)['"]\s*,\s*([\\A-Za-z0-9_]+)::class\s*\)/gi;
+    let apiResMatch;
+    while ((apiResMatch = apiResourceRegex.exec(content)) !== null) {
+      const baseUri = apiResMatch[1].replace(/^\//, "");
+      const controllerClass = apiResMatch[2];
+      const apiResourceActions = [
+        { method: "GET", sub: "", action: "index" },
+        { method: "POST", sub: "", action: "store" },
+        { method: "GET", sub: "/{id}", action: "show" },
+        { method: "PUT", sub: "/{id}", action: "update" },
+        { method: "DELETE", sub: "/{id}", action: "destroy" },
+      ];
+
+      for (const res of apiResourceActions) {
+        routes.push({
+          httpMethod: res.method,
+          uri: `/${baseUri}${res.sub}`,
+          routeName: `${baseUri}.${res.action}`,
+          controllerClass,
+          actionName: res.action,
+        });
+      }
+    }
+
     // 2. Parse routes with group context tracking (prefix, controller, name prefix)
     const lines = content.split(/\r?\n/);
     const cleanLines = blankCommentsAndStrings(content, { hashComments: true }).split(/\r?\n/);
@@ -500,26 +531,64 @@ export class LaravelSemanticExtractor implements SemanticSliceExtractor {
     return null;
   }
 
-  private resolveController(controllerClass: string, actionName: string): { filePath?: string; line: number } {
-    const simpleName = controllerClass.split(/\\|\//).pop() || controllerClass;
-    const candidates = [
-      path.join(this.projectRoot, `app/Http/Controllers/${simpleName}.php`),
-      path.join(this.projectRoot, `app/Http/Controllers/Api/${simpleName}.php`),
-      path.join(this.projectRoot, `app/Http/Controllers/Admin/${simpleName}.php`),
-    ];
+  private resolveController(
+    controllerClass: string,
+    actionName: string,
+    routeFilePath?: string
+  ): { filePath?: string; line: number } {
+    let resolvedFilePath: string | undefined;
 
-    for (const c of candidates) {
-      if (fs.existsSync(c)) {
-        const lines = readOptionalSourceFile(c, "utf-8").split("\n");
-        let targetLine = 1;
-        for (let i = 0; i < lines.length; i++) {
-          if (new RegExp(`function\\s+${actionName}\\s*\\(`, "i").test(lines[i])) {
-            targetLine = i + 1;
-            break;
-          }
-        }
-        return { filePath: c, line: targetLine };
+    // 1. Try ImportResolver via PSR-4 if routeFilePath or full namespace provided
+    const resolver = new ImportResolver(this.projectRoot);
+    const sourceRef = routeFilePath
+      ? path.resolve(this.projectRoot, routeFilePath)
+      : path.join(this.projectRoot, "routes/web.php");
+
+    if (controllerClass.includes("\\")) {
+      const res = resolver.resolve(controllerClass, sourceRef);
+      if (res.status === "resolved" && res.targets[0]?.files?.[0]) {
+        resolvedFilePath = path.resolve(this.projectRoot, res.targets[0].files[0]);
       }
+    } else if (routeFilePath && fs.existsSync(sourceRef)) {
+      const routeContent = readOptionalSourceFile(sourceRef, "utf-8");
+      const useRegex = new RegExp(`use\\s+([^;]+?\\\\${controllerClass})(?:\\s+as\\s+[A-Za-z0-9_]+)?;`, "i");
+      const match = useRegex.exec(routeContent);
+      if (match) {
+        const fqn = match[1].trim();
+        const res = resolver.resolve(fqn, sourceRef);
+        if (res.status === "resolved" && res.targets[0]?.files?.[0]) {
+          resolvedFilePath = path.resolve(this.projectRoot, res.targets[0].files[0]);
+        }
+      }
+    }
+
+    // 2. Fallback heuristics if not found via PSR-4
+    if (!resolvedFilePath) {
+      const simpleName = controllerClass.split(/\\|\//).pop() || controllerClass;
+      const candidates = [
+        path.join(this.projectRoot, `app/Http/Controllers/${simpleName}.php`),
+        path.join(this.projectRoot, `app/Http/Controllers/Api/${simpleName}.php`),
+        path.join(this.projectRoot, `app/Http/Controllers/Admin/${simpleName}.php`),
+      ];
+
+      for (const c of candidates) {
+        if (fs.existsSync(c)) {
+          resolvedFilePath = c;
+          break;
+        }
+      }
+    }
+
+    if (resolvedFilePath && fs.existsSync(resolvedFilePath)) {
+      const lines = readOptionalSourceFile(resolvedFilePath, "utf-8").split("\n");
+      let targetLine = 1;
+      for (let i = 0; i < lines.length; i++) {
+        if (new RegExp(`function\\s+${actionName}\\s*\\(`, "i").test(lines[i])) {
+          targetLine = i + 1;
+          break;
+        }
+      }
+      return { filePath: resolvedFilePath, line: targetLine };
     }
 
     return { line: 0 };
@@ -752,6 +821,13 @@ export class LaravelSemanticExtractor implements SemanticSliceExtractor {
     // Direct app/ fallback for older Laravel
     const flatPath = path.join(this.projectRoot, `app/${className}.php`);
     if (fs.existsSync(flatPath)) return flatPath;
+
+    if (className.includes("\\")) {
+      const res = new ImportResolver(this.projectRoot).resolve(className, path.join(this.projectRoot, "routes/web.php"));
+      if (res.status === "resolved" && res.targets[0]?.files?.[0]) {
+        return path.resolve(this.projectRoot, res.targets[0].files[0]);
+      }
+    }
 
     return null;
   }

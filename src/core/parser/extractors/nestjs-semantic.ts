@@ -2,6 +2,7 @@ import { readOptionalSourceFile } from "../../resources/source-files.ts";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { SemanticSliceExtractor, VerticalSliceCandidate } from "./semantic-extractor.interface.ts";
+import { blankCommentsAndStrings, findClosingParenthesis } from "../boundary-tracker.ts";
 
 export class NestJsSemanticExtractor implements SemanticSliceExtractor {
   public readonly id = "nestjs";
@@ -34,6 +35,7 @@ export class NestJsSemanticExtractor implements SemanticSliceExtractor {
     for (const file of controllerFiles) {
       const relPath = path.relative(projectRoot, file).replace(/\\/g, "/");
       const content = readOptionalSourceFile(file, "utf-8");
+      const masked = blankCommentsAndStrings(content);
 
       // Extract @Controller('prefix')
       const controllerMatch = /@Controller\s*\(\s*['"]?([^'")]*)['"]?\s*\)[\s\S]*?export\s+class\s+([A-Za-z0-9_]+)/.exec(
@@ -52,7 +54,7 @@ export class NestJsSemanticExtractor implements SemanticSliceExtractor {
 
       // Extract methods: @Get('path'), @Post('path'), etc.
       const methodRegex =
-        /@(Get|Post|Put|Patch|Delete)\s*\(\s*['"]?([^'")]*)['"]?\s*\)\s*(?:@[A-Za-z0-9_]+\s*\([^)]*\)\s*)*\s*(?:(?:public|protected|private)\s+)?(?:async\s+)?([a-zA-Z0-9_]+)\s*\(([^)]*)\)/g;
+        /@(Get|Post|Put|Patch|Delete)\s*\(\s*['"]?([^'")]*)['"]?\s*\)\s*(?:@[A-Za-z0-9_]+\s*\([^)]*\)\s*)*\s*(?:(?:public|protected|private)\s+)?(?:async\s+)?([a-zA-Z0-9_]+)\s*\(/g;
       let match: RegExpExecArray | null;
 
       while ((match = methodRegex.exec(content)) !== null) {
@@ -60,14 +62,24 @@ export class NestJsSemanticExtractor implements SemanticSliceExtractor {
         const subPath = match[2] ? `/${match[2].replace(/^\/+|\/+$/g, "")}` : "";
         const fullUri = `${routePrefix}${subPath}` || "/";
         const actionName = match[3];
-        const params = match[4];
+        const paramsStart = methodRegex.lastIndex;
+        const paramsEnd = findClosingParenthesis(masked, paramsStart - 1);
+        if (paramsEnd < 0) continue;
+        const params = content.slice(paramsStart, paramsEnd);
+        methodRegex.lastIndex = paramsEnd + 1;
 
         const decoratorLine = content.slice(0, match.index).split("\n").length;
         const actionOffset = match.index + match[0].lastIndexOf(actionName);
         const actionLine = content.slice(0, actionOffset).split("\n").length || controllerClassLine;
 
         // Extract DTO from parameters: e.g. @Body() createDto: CreateUserDto
-        const dtoMatch = params.match(/@Body\s*\([^)]*\)\s*[a-zA-Z0-9_]+\s*:\s*([A-Za-z0-9_]+Dto)/);
+        const bodyDecorator = /@Body\s*\(/.exec(blankCommentsAndStrings(params));
+        const bodyEnd = bodyDecorator
+          ? findClosingParenthesis(masked, paramsStart + bodyDecorator.index + bodyDecorator[0].length - 1)
+          : -1;
+        const dtoMatch = bodyEnd >= 0
+          ? content.slice(bodyEnd + 1, paramsEnd).match(/^\s*[a-zA-Z0-9_]+\s*:\s*([A-Za-z0-9_]+Dto)\b/)
+          : null;
         const formRequestClass = dtoMatch ? dtoMatch[1] : null;
 
         const chain: Array<{ stage: string; symbol: string; file?: string; line?: number; description?: string }> = [
