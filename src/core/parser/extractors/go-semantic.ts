@@ -448,6 +448,9 @@ export class GoSemanticExtractor implements SemanticSliceExtractor {
     let entityFile: string | undefined;
     let entityLine: number | undefined;
 
+    let targetMethod: any = undefined;
+    let targetStruct: any = undefined;
+
     if (handlerInfo?.serviceCall) {
       const parts = handlerInfo.serviceCall.split("::");
       const callVar = parts[0];
@@ -455,8 +458,8 @@ export class GoSemanticExtractor implements SemanticSliceExtractor {
 
       const handlerStruct = goStructs.get(controllerClass);
       const svcType = handlerStruct?.fields.get(callVar) || callVar;
-      const targetMethod = goMethods.get(`${svcType}.${callMethod}`) || goMethods.get(`${callVar}.${callMethod}`);
-      const targetStruct = goStructs.get(svcType);
+      targetMethod = goMethods.get(`${svcType}.${callMethod}`) || goMethods.get(`${callVar}.${callMethod}`);
+      targetStruct = goStructs.get(svcType);
 
       serviceFile = targetMethod?.relPath || targetStruct?.relPath;
       serviceLine = targetMethod?.line || targetStruct?.line;
@@ -464,7 +467,7 @@ export class GoSemanticExtractor implements SemanticSliceExtractor {
       // Scan service body for repo or DB persistence
       if (targetMethod?.body) {
         const rMatch = targetMethod.body.match(
-          /(?:([a-zA-Z0-9_]+(?:Repo|Repository))\s*\.\s*([A-Z][a-zA-Z0-9_]+)|db\s*\.\s*(?:Create|Save|Find|First|Update|Delete)\s*\(\s*&?([A-Z][a-zA-Z0-9_]+)\s*\))/i
+          /(?:(?:[a-zA-Z0-9_]+\.)?([a-zA-Z0-9_]*(?:repo|repository))\s*\.\s*([A-Z][a-zA-Z0-9_]+)|db\s*\.\s*(?:Create|Save|Find|First|Update|Delete)\s*\(\s*&?([A-Z][a-zA-Z0-9_]+)\s*\))/i
         );
         if (rMatch && !repoCall) {
           repoCall = rMatch[1] ? `${rMatch[1]}::${rMatch[2]}` : `DB::${rMatch[3]}`;
