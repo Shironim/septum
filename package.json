@@ -18,7 +18,7 @@
     "check": "bun run bin/septum.ts check",
     "test": "bun test",
     "build": "bun build ./bin/septum.ts --compile --outfile dist/septum",
-    "compile:all": "bun run build && bun build ./bin/septum.ts --compile --target=bun-linux-x64 --outfile dist/septum-linux-x64 && bun build ./bin/septum.ts --compile --target=bun-linux-arm64 --outfile dist/septum-linux-arm64 && bun build ./bin/septum.ts --compile --target=bun-darwin-x64 --outfile dist/septum-darwin-x64 && bun build ./bin/septum.ts --compile --target=bun-darwin-arm64 --outfile dist/septum-darwin-arm64 && bun build ./bin/septum.ts --compile --target=bun-windows-x64 --outfile dist/septum-windows-x64.exe",
+    "compile:all": "bun run scripts/compile.ts",
     "typecheck": "tsc --noEmit",
     "test:integration": "python3 tests/integration/mcp-reliability.py",
     "postinstall": "bun run scripts/postinstall.ts || true"
