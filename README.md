@@ -1,26 +1,44 @@
 # Septum
 
-> **Deterministic Bounded-Context & Anti-Poisoning Architecture Guard for AI Coding Agents.**
+> **Architecture boundary guard and codebase intelligence for AI coding agents.**
 
-[![Version: 0.1.8](https://img.shields.io/badge/Version-0.1.8-blue)](package.json)
+[![Version: 0.1.9](https://img.shields.io/badge/Version-0.1.9-blue)](package.json)
 [![Runtime: Bun](https://img.shields.io/badge/Runtime-Bun-black?logo=bun)](https://bun.sh)
 [![Protocol: Model Context Protocol](https://img.shields.io/badge/Protocol-MCP-green)](https://modelcontextprotocol.io/)
 [![Database: SQLite WAL](https://img.shields.io/badge/Database-SQLite%20(bun:sqlite)-003B57?logo=sqlite)](https://sqlite.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue)](LICENSE)
 
-Septum helps AI coding agents navigate code and respect declared architectural boundaries. It indexes your codebase into an embedded SQLite SSOT (`.septum/septum.db`), enforces strict bounded-context domains, and intercepts unauthorized cross-domain edits before they hit disk.
+Septum helps AI coding agents understand codebase architecture and respect modular boundaries. It parses and indexes your codebase into a local SQLite database (`.septum/septum.db`), validates module dependencies, and prevents unauthorized cross-boundary modifications.
 
 ---
 
 ## Installation
 
-Install Septum globally using [Bun](https://bun.sh):
+### Option 1: Standalone Binary (Recommended)
+
+No need to install Bun, Node.js, or package managers. Download and install the prebuilt binary:
+
+**Linux & macOS:**
+```bash
+curl -fsSL https://raw.githubusercontent.com/Shironim/septum/master/install.sh | bash
+```
+
+**Windows (PowerShell):**
+```powershell
+irm https://raw.githubusercontent.com/Shironim/septum/master/install.ps1 | iex
+```
+
+> **Manual Downloads:** Precompiled binaries are also available on [GitHub Releases](https://github.com/Shironim/septum/releases) for `linux-x64`, `linux-arm64`, `darwin-x64`, `darwin-arm64`, and `windows-x64.exe`.
+
+### Option 2: Via Bun
+
+If you already use [Bun](https://bun.sh):
 
 ```bash
 bun add -g septum
 ```
 
-> **Note:** You can also run commands on-the-fly without global installation using `bunx septum <command>`.
+> **Zero-Install:** You can also run commands directly using `bunx septum <command>`.
 
 ---
 
@@ -37,17 +55,18 @@ bunx septum init
 ```
 
 Septum automatically:
-1. **Detects Architecture & Topology:** Discovers bounded domains across Monorepos, Laravel, Next.js, Go, NestJS, and more.
-2. **Builds AST Symbol SSOT:** Ingests symbols, interfaces, and dependencies into `.septum/septum.db`.
-3. **Scaffolds AI Agent Harnesses:** Interactively configures MCP servers, guardrail rules, and pre-write boundary hooks for your favorite agent environments:
-   - **Claude Code** (`.mcp.json`, `.claude/settings.json`)
+1. **Detects Project Structure:** Identifies module boundaries across Monorepos, Laravel, Next.js, NestJS, Express, Fastify, Hono, Elysia, Django, Flask, FastAPI, and Go.
+2. **Indexes Codebase AST:** Ingests symbols, interfaces, and dependencies into `.septum/septum.db`.
+3. **Scaffolds Agent Configurations:** Sets up MCP servers, skills, and pre-write hooks for supported environments:
    - **Antigravity** (`.gemini/`)
-   - **Cursor** (`.cursor/mcp.json`, `.cursor/hooks.json`)
-   - **Opencode** (`opencode.json`)
+   - **Claude Code** (`.claude/`, `.mcp.json`, `CLAUDE.md`)
+   - **Codex** (`.codex/`)
+   - **Opencode** (`opencode/`, `opencode.json`)
+   - **.agents Standard** (`.agents/`, `AGENTS.md`)
 
 ### 2. Manual MCP Client Configuration (Optional)
 
-If your MCP client is not configured via `septum init`, add Septum manually (`mcp.json` or `claude_desktop_config.json`):
+If your MCP client is not configured via `septum init`, add Septum to your MCP configuration (`.mcp.json` or `claude_desktop_config.json`):
 
 ```json
 {
@@ -67,36 +86,36 @@ If your MCP client is not configured via `septum init`, add Septum manually (`mc
 
 | Command | Description |
 |---|---|
-| `septum init [--force]` | Detect topology, scaffold boundary guards, and build initial catalog. `--force` regenerates Septum-owned hooks and harness artifacts while strictly preserving SQLite DB, manual domain policies, and user Git hooks |
-| `septum sync [--json]` | AST synchronization and catalog update into `.septum/septum.db` (full or incremental) |
-| `septum check [--strict] [--staged] [--feature <name>] [--json]` | CI/CD gate & pre-commit hook: verify boundary integrity & fail on cross-domain violations |
-| `septum feature [status|clear] [--force]` | View or release active feature lease and editing scope (`--force` for other owner's session) |
-| `septum hook [subhook]` | Internal pre-tool guardrail hook (e.g. pre-write, post-write) for AI agent tools |
-| `septum topology [subcommand]` | Inspect 6-layer environment topology plane & distributed nodes (`env` alias available). Subcommands: `resolve <layer> <platform>`, `add-node`, `remove-node`, `clear` |
-| `septum serve` | Launch stdio MCP server for AI coding agents |
+| `septum init [--force]` | Detect project topology, scaffold agent integrations, and build initial symbol catalog. `--force` regenerates Septum-managed configs while preserving existing database and user git hooks |
+| `septum sync [--json]` | Synchronize AST and update symbol catalog into `.septum/septum.db` (full or incremental) |
+| `septum check [--strict] [--staged] [--feature <name>] [--json]` | Verify boundary rules and detect cross-domain or circular dependency violations |
+| `septum feature [status\|clear] [--force]` | View or release active feature editing scope |
+| `septum hook pre-write` | Pre-tool guard hook to validate proposed changes before file edits |
+| `septum topology [subcommand]` | Inspect environment topology and infrastructure services |
+| `septum serve` | Start stdio Model Context Protocol (MCP) server |
 
 ---
 
-## Core Capabilities & MCP Tools
+## MCP Tools
 
-All tools expose typed schemas automatically via the Model Context Protocol:
+All tools provide structured schemas via the Model Context Protocol:
 
-- **Domain Catalog, Registration & Environment Topology (`septum_domain`):**
-  - `action: "catalog"`: Whole-project macro architecture map and file connections in < 400 tokens (`detail_level: "compact" | "full"`).
-  - `action: "register"`: Dynamically registers or updates bounded-context domains with allowed/forbidden dependencies and layer archetypes.
-  - `action: "topology"`: Maps and verifies the 6-layer production architecture (Edge/WAF, Gateway/Web Server, Host, Runtime, Storage/Cache, Telemetry) and distributed nodes with cross-layer invariants.
-- **Unified Symbol Engine (`septum_symbol`):**
-  - `action: "locate"`: Fast fuzzy search and error log resolution to pinpoint symbols across workspaces.
-  - `action: "inspect"`: Deep inspection of physical coordinates, declarations, and full typed signatures.
-  - `action: "impact"`: Refactoring blast radius, call graphs, and inbound/outbound dependency analysis.
-  - `action: "hotspots"`: God function and Single Responsibility Principle (SRP) detector ranked by physical lines, cyclomatic nesting depth, and composite risk score.
-- **Omni-Trigger Vertical Slice Tracer (`septum_slice`):**
-  - Traces end-to-end execution flow (*Ingress ➔ Validation ➔ Controller ➔ Service ➔ Repository ➔ Entity*) from route URIs, controller actions, or high-level intent across HTTP routes, queue jobs, console commands, and events up to 8 levels deep.
-- **Architecture Guard & Circular Dependency Gate (`septum_boundary`):**
-  - Validates proposed edits, additions, and imports against domain rules and feature touchpoints before files are modified on disk (`scope: "file"`).
-  - Audits staged files (`scope: "staged"`), domain boundaries (`scope: "domain"`), or the entire repository (`scope: "all"`) for cross-domain leaks and dependency cycles.
-- **Active Touchpoint & Scope Lock Engine (`septum_feature`):**
-  - Locks active feature task context, touchpoints, and contracts (`action: "lock"` / `action: "get"` / `action: "release"`) via `.septum/session.json` to eliminate AI context drift and unintended edits.
+- **Domain & Architecture Overview (`septum_domain`):**
+  - `action: "catalog"`: High-level architecture map and module dependencies (`detail_level: "compact" | "full"`).
+  - `action: "register"`: Register or update domain boundaries with allowed and forbidden dependencies.
+  - `action: "topology"`: Inspect deployment environment and infrastructure services.
+- **Symbol Inspection & Impact Analysis (`septum_symbol`):**
+  - `action: "locate"`: Search and find symbols across the codebase.
+  - `action: "inspect"`: Inspect symbol declarations, signatures, and source snippets.
+  - `action: "impact"`: Analyze call graphs, dependents, and refactoring blast radius.
+  - `action: "hotspots"`: Identify complex functions based on line count and nesting depth.
+- **Execution Flow Tracer (`septum_slice`):**
+  - Trace call chains across application layers (*Route ➔ Controller ➔ Service ➔ Repository ➔ Entity*) from HTTP endpoints, queue jobs, CLI commands, or event handlers.
+- **Dependency & Boundary Validator (`septum_boundary`):**
+  - Validate proposed file imports against defined architectural rules (`scope: "file"`).
+  - Check staged files (`scope: "staged"`), specific domains (`scope: "domain"`), or the whole codebase (`scope: "all"`) for circular dependencies and boundary violations.
+- **Feature Scope Management (`septum_feature`):**
+  - Restrict agent editing scope to designated touchpoint files during feature work to prevent unintended changes.
 
 ---
 

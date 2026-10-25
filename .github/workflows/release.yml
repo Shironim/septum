@@ -58,6 +58,8 @@ jobs:
             dist/septum-darwin-arm64
             dist/septum-windows-x64.exe
             dist/checksums.txt
+            install.sh
+            install.ps1
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
