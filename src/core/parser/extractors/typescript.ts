@@ -63,7 +63,7 @@ export class TypeScriptExtractor implements CodeExtractor {
     const cleanLines = cleanContent.split("\n");
 
     const importRegex =
-      /^\s*(?:import\s+(?:type\s+)?(?:([\w*\s{},]+)\s+from\s+)?['"]([^'"]+)['"]|(?:const|let|var)\s+([\w\s{},:$]+)\s*=\s*require\s*\(\s*['"]([^'"]+)['"]\s*\)|require\s*\(\s*['"]([^'"]+)['"]\s*\))/;
+      /^\s*(?:(?:import|export)\s+(?:type\s+)?(?:([\w*\s{},]+)\s+from\s+)?['"]([^'"]+)['"]|(?:const|let|var)\s+([\w\s{},:$]+)\s*=\s*require\s*\(\s*['"]([^'"]+)['"]\s*\)|require\s*\(\s*['"]([^'"]+)['"]\s*\))/;
 
     for (let i = 0; i < rawLines.length; i++) {
       if (!cleanLines[i]?.trim()) continue;
@@ -289,6 +289,27 @@ export class TypeScriptExtractor implements CodeExtractor {
         return;
       }
 
+      if (node.type === "export_statement") {
+        const sourceNode =
+          node.childForFieldName("source") ??
+          node.namedChildren.find((c) => c.type === "string");
+        if (sourceNode) {
+          const target = stripQuotes(sourceNode.text.trim());
+          if (target) {
+            const importedSymbols = this.extractExportedSymbols(node);
+            const isExternal = !target.startsWith(".") && !target.startsWith("/");
+            dependencies.push({
+              target,
+              statement: (lines[node.startPosition.row] ?? node.text).trim(),
+              line_number: node.startPosition.row + 1,
+              is_external: isExternal,
+              ...(importedSymbols.length > 0 ? { imported_symbols: importedSymbols } : {}),
+            });
+          }
+        }
+        return;
+      }
+
       if (node.type === "call_expression") {
         const fnNode = node.childForFieldName("function") ?? node.namedChildren[0];
         const argsNode = node.childForFieldName("arguments") ?? node.namedChildren.find((c) => c.type === "arguments");
@@ -334,6 +355,34 @@ export class TypeScriptExtractor implements CodeExtractor {
           stmtNode.namedChildren.find((c) => c.type !== "decorator" && c.type !== "export_clause");
         if (decl) {
           processTopLevelNode(decl, true, stmtNode.startPosition.row);
+          return;
+        }
+
+        const sourceNode =
+          stmtNode.childForFieldName("source") ??
+          stmtNode.namedChildren.find((c) => c.type === "string");
+        if (!sourceNode) {
+          const exportClause = stmtNode.namedChildren.find((c) => c.type === "export_clause");
+          if (exportClause) {
+            for (const spec of exportClause.namedChildren) {
+              if (spec.type !== "export_specifier") continue;
+              const origName = spec.childForFieldName("name") ?? spec.namedChildren[0];
+              const aliasName = spec.childForFieldName("alias");
+              const exportedName = aliasName ? aliasName.text.trim() : origName ? origName.text.trim() : "";
+              if (!exportedName) continue;
+              if (aliasName && origName) {
+                symbols.push({
+                  name: exportedName,
+                  kind: "constant",
+                  signature: `export { ${origName.text.trim()} as ${exportedName} }`,
+                  visibility: "public",
+                  line_start: lineStart,
+                  line_end: lineEnd,
+                  line_count: lineCount,
+                });
+              }
+            }
+          }
         }
         return;
       }
@@ -446,16 +495,32 @@ export class TypeScriptExtractor implements CodeExtractor {
     for (const child of stmtNode.namedChildren) {
       if (child.type !== "variable_declarator") continue;
       const nameNode = child.childForFieldName("name") ?? child.namedChildren[0];
-      if (!nameNode || nameNode.type !== "identifier") continue;
+      if (!nameNode) continue;
+
+      const dStart = (outerStartRow ?? child.startPosition.row) + 1;
+      const dEnd = Math.max(dStart, child.endPosition.row + 1);
+      const dCount = Math.max(1, dEnd - dStart + 1);
+
+      if (nameNode.type !== "identifier") {
+        const patternVars = this.extractPatternIdentifiers(nameNode);
+        for (const varName of patternVars) {
+          symbols.push({
+            name: varName,
+            kind: isConst ? "constant" : "variable",
+            signature: `${declKeyword} ${varName}`,
+            visibility: isExported ? "public" : "private",
+            line_start: dStart,
+            line_end: dEnd,
+            line_count: dCount,
+          });
+        }
+        continue;
+      }
 
       const varName = nameNode.text;
       const typeNode = child.childForFieldName("type");
       const valueNode = child.childForFieldName("value");
       const typeStr = typeNode ? `: ${typeNode.text.replace(/^:\s*/, "")}` : "";
-
-      const dStart = (outerStartRow ?? child.startPosition.row) + 1;
-      const dEnd = Math.max(dStart, child.endPosition.row + 1);
-      const dCount = Math.max(1, dEnd - dStart + 1);
 
       if (
         valueNode &&
@@ -529,6 +594,11 @@ export class TypeScriptExtractor implements CodeExtractor {
         const paramsNode =
           member.childForFieldName("parameters") ??
           member.namedChildren.find((c) => c.type === "formal_parameters");
+
+        if (methodName === "constructor" && paramsNode) {
+          this.extractConstructorParameterProperties(className, paramsNode, symbols);
+        }
+
         const retNode = member.childForFieldName("return_type");
         const paramsText = paramsNode ? paramsNode.text : "()";
         const retText = retNode ? `: ${retNode.text.replace(/^:\s*/, "")}` : "";
@@ -655,6 +725,100 @@ export class TypeScriptExtractor implements CodeExtractor {
       }
     }
     return Array.from(names);
+  }
+
+  private extractExportedSymbols(exportNode: Parser.SyntaxNode): string[] {
+    const names = new Set<string>();
+    const walk = (node: Parser.SyntaxNode): void => {
+      if (node.type === "export_specifier") {
+        const origName = node.childForFieldName("name") ?? node.namedChildren[0];
+        const aliasName = node.childForFieldName("alias");
+        if (origName?.text) names.add(origName.text.trim());
+        if (aliasName?.text) names.add(aliasName.text.trim());
+        return;
+      }
+      if (node.type === "namespace_export") {
+        const idNode = node.namedChildren.find((c) => c.type === "identifier");
+        if (idNode?.text) names.add(idNode.text.trim());
+        return;
+      }
+      for (const child of node.namedChildren) {
+        if (child.type !== "string") {
+          walk(child);
+        }
+      }
+    };
+    walk(exportNode);
+    return Array.from(names);
+  }
+
+  private extractConstructorParameterProperties(
+    className: string,
+    paramsNode: Parser.SyntaxNode,
+    symbols: ExtractedSymbol[]
+  ): void {
+    for (const param of paramsNode.namedChildren) {
+      if (param.type !== "required_parameter" && param.type !== "optional_parameter") continue;
+
+      const hasAccessibility = param.namedChildren.some((c) => c.type === "accessibility_modifier");
+      const hasReadonly = param.namedChildren.some((c) => c.type === "readonly");
+      if (!hasAccessibility && !hasReadonly) continue;
+
+      const nameNode =
+        param.childForFieldName("pattern") ??
+        param.childForFieldName("name") ??
+        param.namedChildren.find((c) => c.type === "identifier");
+      if (!nameNode) continue;
+
+      const propName = nameNode.text.trim();
+      const vis = this.extractVisibility(param, propName);
+      const typeNode = param.childForFieldName("type");
+      const typeStr = typeNode ? `: ${typeNode.text.replace(/^:\s*/, "")}` : "";
+      const pStart = param.startPosition.row + 1;
+      const pEnd = Math.max(pStart, param.endPosition.row + 1);
+
+      symbols.push({
+        name: `${className}::${propName}`,
+        kind: "property",
+        signature: `${vis} ${propName}${typeStr}`,
+        visibility: vis,
+        line_start: pStart,
+        line_end: pEnd,
+        line_count: Math.max(1, pEnd - pStart + 1),
+      });
+    }
+  }
+
+  private extractPatternIdentifiers(node: Parser.SyntaxNode): string[] {
+    const results: string[] = [];
+    const walk = (n: Parser.SyntaxNode): void => {
+      if (n.type === "identifier" || n.type === "shorthand_property_identifier_pattern") {
+        results.push(n.text.trim());
+        return;
+      }
+      if (n.type === "pair_pattern") {
+        const val = n.childForFieldName("value") ?? n.namedChildren[1];
+        if (val) walk(val);
+        return;
+      }
+      if (n.type === "assignment_pattern" || n.type === "object_assignment_pattern") {
+        const left = n.childForFieldName("left") ?? n.namedChildren[0];
+        if (left) walk(left);
+        return;
+      }
+      if (n.type === "rest_pattern") {
+        const arg = n.namedChildren[0];
+        if (arg) walk(arg);
+        return;
+      }
+      if (n.type === "object_pattern" || n.type === "array_pattern") {
+        for (const child of n.namedChildren) {
+          walk(child);
+        }
+      }
+    };
+    walk(node);
+    return results;
   }
 }
 
