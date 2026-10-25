@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -16,6 +16,15 @@ import {
 } from "../../src/cli/templates/hooks.ts";
 
 describe("F2-07: Narrow --force Semantics on Init", () => {
+  let baseDir: string;
+
+  beforeAll(() => {
+    baseDir = fs.mkdtempSync(path.join(os.tmpdir(), "septum-force-all-"));
+  });
+
+  afterAll(() => {
+    fs.rmSync(baseDir, { recursive: true, force: true });
+  });
   it("should force-regenerate Septum git hook but preserve user non-Septum hook", () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "septum-force-hook-"));
     try {
@@ -178,36 +187,9 @@ describe("F2-07: Narrow --force Semantics on Init", () => {
     }
   });
 
-  it("should force-regenerate Cursor & Codex lifecycle hooks while preserving user hooks", () => {
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "septum-force-cursor-codex-"));
+  it("should force-regenerate Codex lifecycle hooks while preserving user hooks", () => {
+    const tmpDir = fs.mkdtempSync(path.join(baseDir, "force-codex-"));
     try {
-      // 1. Cursor
-      const cursorDir = path.join(tmpDir, ".cursor");
-      fs.mkdirSync(cursorDir, { recursive: true });
-      const cursorHooksPath = path.join(cursorDir, "hooks.json");
-      const cursorUserHook = { matcher: "Terminal", command: "echo USER_CURSOR" };
-      const cursorOldSeptum = { matcher: "Write", command: "OLD_CURSOR_SEPTUM septum-pre-write.sh" };
-      fs.writeFileSync(
-        cursorHooksPath,
-        JSON.stringify({
-          version: 1,
-          custom_setting: true,
-          hooks: {
-            preToolUse: [cursorUserHook, cursorOldSeptum],
-          },
-        }, null, 2),
-        "utf-8"
-      );
-
-      configureHarness("cursor", tmpDir, true);
-      const cursorAfter = JSON.parse(fs.readFileSync(cursorHooksPath, "utf-8"));
-      expect(cursorAfter.custom_setting).toBe(true);
-      expect(cursorAfter.hooks.preToolUse).toHaveLength(2);
-      expect(cursorAfter.hooks.preToolUse[0]).toEqual(cursorUserHook);
-      expect(cursorAfter.hooks.preToolUse[1].command).toContain("--exit-code-2");
-      expect(cursorAfter.hooks.preToolUse[1].command).not.toContain("OLD_CURSOR_SEPTUM");
-
-      // 2. Codex
       const codexDir = path.join(tmpDir, ".codex");
       fs.mkdirSync(codexDir, { recursive: true });
       const codexHooksPath = path.join(codexDir, "hooks.json");

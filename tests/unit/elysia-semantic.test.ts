@@ -1,32 +1,31 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { ElysiaSemanticExtractor } from "../../src/core/parser/extractors/elysia-semantic.ts";
 
 describe("TS-Elysia — Elysia TypeBox Composition Extractor (L1-L5)", () => {
-  let tmpDir: string;
+  let baseDir: string;
+  let directAppDir: string;
+  let groupedAppDir: string;
   const extractor = new ElysiaSemanticExtractor();
 
-  beforeEach(() => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "septum-elysia-"));
-  });
+  beforeAll(() => {
+    baseDir = fs.mkdtempSync(path.join(os.tmpdir(), "septum-elysia-"));
+    directAppDir = path.join(baseDir, "direct-app");
+    groupedAppDir = path.join(baseDir, "grouped-app");
 
-  afterEach(() => {
-    fs.rmSync(tmpDir, { recursive: true, force: true });
-  });
-
-  it("extracts direct routes and TypeBox validation schema options", async () => {
+    // 1. Fixture for direct routes
+    fs.mkdirSync(directAppDir, { recursive: true });
     fs.writeFileSync(
-      path.join(tmpDir, "package.json"),
+      path.join(directAppDir, "package.json"),
       JSON.stringify({ dependencies: { elysia: "^1.0.0" } })
     );
-    expect(extractor.canHandle(tmpDir)).toBe(true);
-
-    const appFile = path.join(tmpDir, "src/index.ts");
+    const appFile = path.join(directAppDir, "src/index.ts");
     fs.mkdirSync(path.dirname(appFile), { recursive: true });
-
-    const code = `
+    fs.writeFileSync(
+      appFile,
+      `
 import { Elysia, t } from "elysia";
 
 const app = new Elysia();
@@ -38,10 +37,65 @@ app.post("/items", ({ body }) => body, {
     price: t.Number()
   })
 });
-`;
-    fs.writeFileSync(appFile, code);
+`
+    );
 
-    const slices = await extractor.extractSlices(tmpDir);
+    // 2. Fixture for grouped routes with imported controllers, services, and persistence
+    fs.mkdirSync(groupedAppDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(groupedAppDir, "package.json"),
+      JSON.stringify({ dependencies: { elysia: "^1.0.0" } })
+    );
+    const srcDir = path.join(groupedAppDir, "src");
+    fs.mkdirSync(path.join(srcDir, "controllers"), { recursive: true });
+    fs.mkdirSync(path.join(srcDir, "services"), { recursive: true });
+
+    fs.writeFileSync(
+      path.join(srcDir, "services/product.service.ts"),
+      `
+import { prisma } from "../db";
+export class ProductService {
+  async findProducts() {
+    return prisma.product.findMany();
+  }
+}
+      `.trim()
+    );
+
+    fs.writeFileSync(
+      path.join(srcDir, "controllers/product.controller.ts"),
+      `
+import { ProductService } from "../services/product.service";
+const productService = new ProductService();
+
+export const getProducts = async () => {
+  return productService.findProducts();
+};
+      `.trim()
+    );
+
+    fs.writeFileSync(
+      path.join(srcDir, "index.ts"),
+      `
+import { Elysia } from "elysia";
+import { getProducts } from "./controllers/product.controller";
+
+const app = new Elysia();
+app.group("/api/v1", (api) =>
+  api.get("/products", getProducts)
+);
+      `.trim()
+    );
+  });
+
+  afterAll(() => {
+    fs.rmSync(baseDir, { recursive: true, force: true });
+  });
+
+  it("extracts direct routes and TypeBox validation schema options", async () => {
+    expect(extractor.canHandle(directAppDir)).toBe(true);
+
+    const slices = await extractor.extractSlices(directAppDir);
     expect(slices).toHaveLength(2);
 
     const health = slices.find((s) => s.route_uri === "/health");
@@ -59,56 +113,7 @@ app.post("/items", ({ body }) => body, {
   });
 
   it("resolves grouped routes with imported controllers, services, and persistence (L5)", async () => {
-    fs.writeFileSync(
-      path.join(tmpDir, "package.json"),
-      JSON.stringify({ dependencies: { elysia: "^1.0.0" } })
-    );
-
-    const srcDir = path.join(tmpDir, "src");
-    fs.mkdirSync(path.join(srcDir, "controllers"), { recursive: true });
-    fs.mkdirSync(path.join(srcDir, "services"), { recursive: true });
-
-    // 1. Service with Prisma
-    fs.writeFileSync(
-      path.join(srcDir, "services/product.service.ts"),
-      `
-import { prisma } from "../db";
-export class ProductService {
-  async findProducts() {
-    return prisma.product.findMany();
-  }
-}
-      `.trim()
-    );
-
-    // 2. Controller calling service
-    fs.writeFileSync(
-      path.join(srcDir, "controllers/product.controller.ts"),
-      `
-import { ProductService } from "../services/product.service";
-const productService = new ProductService();
-
-export const getProducts = async () => {
-  return productService.findProducts();
-};
-      `.trim()
-    );
-
-    // 3. Main app with group prefix
-    fs.writeFileSync(
-      path.join(srcDir, "index.ts"),
-      `
-import { Elysia } from "elysia";
-import { getProducts } from "./controllers/product.controller";
-
-const app = new Elysia();
-app.group("/api/v1", (api) =>
-  api.get("/products", getProducts)
-);
-      `.trim()
-    );
-
-    const slices = await extractor.extractSlices(tmpDir);
+    const slices = await extractor.extractSlices(groupedAppDir);
     expect(slices).toHaveLength(1);
 
     const productSlice = slices[0];

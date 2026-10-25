@@ -1,20 +1,25 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { FastifySemanticExtractor } from "../../src/core/parser/extractors/fastify-semantic.ts";
 
 describe("TS-05 — Fastify Plugin Scoping Extractor", () => {
+  let baseDir: string;
   let tmpDir: string;
   let extractor: FastifySemanticExtractor;
 
-  beforeEach(() => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "septum-fastify-"));
+  beforeAll(() => {
+    baseDir = fs.mkdtempSync(path.join(os.tmpdir(), "septum-fastify-"));
     extractor = new FastifySemanticExtractor();
   });
 
-  afterEach(() => {
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+  afterAll(() => {
+    fs.rmSync(baseDir, { recursive: true, force: true });
+  });
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(baseDir, "test-"));
   });
 
   it("extracts shorthand routes with hooks and TypeScript body DTO", async () => {

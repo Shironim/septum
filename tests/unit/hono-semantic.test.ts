@@ -1,32 +1,31 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { HonoSemanticExtractor } from "../../src/core/parser/extractors/hono-semantic.ts";
 
 describe("TS-Hono — Hono Router & Middleware Extractor (L1-L5)", () => {
-  let tmpDir: string;
+  let baseDir: string;
+  let directAppDir: string;
+  let mountedAppDir: string;
   const extractor = new HonoSemanticExtractor();
 
-  beforeEach(() => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "septum-hono-"));
-  });
+  beforeAll(() => {
+    baseDir = fs.mkdtempSync(path.join(os.tmpdir(), "septum-hono-"));
+    directAppDir = path.join(baseDir, "direct-app");
+    mountedAppDir = path.join(baseDir, "mounted-app");
 
-  afterEach(() => {
-    fs.rmSync(tmpDir, { recursive: true, force: true });
-  });
-
-  it("extracts direct routes and zValidator validation schemas", async () => {
+    // 1. Fixture for direct routes
+    fs.mkdirSync(directAppDir, { recursive: true });
     fs.writeFileSync(
-      path.join(tmpDir, "package.json"),
+      path.join(directAppDir, "package.json"),
       JSON.stringify({ dependencies: { hono: "^4.0.0", "@hono/zod-validator": "^0.2.0" } })
     );
-    expect(extractor.canHandle(tmpDir)).toBe(true);
-
-    const appFile = path.join(tmpDir, "src/index.ts");
-    fs.mkdirSync(path.dirname(appFile), { recursive: true });
-
-    const code = `
+    const directAppFile = path.join(directAppDir, "src/index.ts");
+    fs.mkdirSync(path.dirname(directAppFile), { recursive: true });
+    fs.writeFileSync(
+      directAppFile,
+      `
 import { Hono } from "hono";
 import { zValidator } from "@hono/zod-validator";
 import { createOrderSchema } from "./schemas/order";
@@ -35,10 +34,78 @@ const app = new Hono();
 
 app.get("/health", (c) => c.text("ok"));
 app.post("/orders", zValidator("json", createOrderSchema), (c) => c.json({ status: "created" }));
-`;
-    fs.writeFileSync(appFile, code);
+`
+    );
 
-    const slices = await extractor.extractSlices(tmpDir);
+    // 2. Fixture for mounted sub-routers with penetration to service & persistence
+    fs.mkdirSync(mountedAppDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(mountedAppDir, "package.json"),
+      JSON.stringify({ dependencies: { hono: "^4.0.0" } })
+    );
+    const mountedSrcDir = path.join(mountedAppDir, "src");
+    fs.mkdirSync(path.join(mountedSrcDir, "controllers"), { recursive: true });
+    fs.mkdirSync(path.join(mountedSrcDir, "services"), { recursive: true });
+    fs.mkdirSync(path.join(mountedSrcDir, "routes"), { recursive: true });
+
+    fs.writeFileSync(
+      path.join(mountedSrcDir, "services/user.service.ts"),
+      `
+import { prisma } from "../db";
+export class UserService {
+  async getAllUsers() {
+    return prisma.user.findMany();
+  }
+}
+      `.trim()
+    );
+
+    fs.writeFileSync(
+      path.join(mountedSrcDir, "controllers/user.controller.ts"),
+      `
+import { UserService } from "../services/user.service";
+const userService = new UserService();
+
+export const listUsers = async (c: any) => {
+  const users = await userService.getAllUsers();
+  return c.json(users);
+};
+      `.trim()
+    );
+
+    fs.writeFileSync(
+      path.join(mountedSrcDir, "routes/users.ts"),
+      `
+import { Hono } from "hono";
+import { listUsers } from "../controllers/user.controller";
+
+const userRoutes = new Hono();
+userRoutes.get("/", listUsers);
+
+export default userRoutes;
+      `.trim()
+    );
+
+    fs.writeFileSync(
+      path.join(mountedSrcDir, "index.ts"),
+      `
+import { Hono } from "hono";
+import userRoutes from "./routes/users";
+
+const app = new Hono();
+app.route("/api/v1/users", userRoutes);
+      `.trim()
+    );
+  });
+
+  afterAll(() => {
+    fs.rmSync(baseDir, { recursive: true, force: true });
+  });
+
+  it("extracts direct routes and zValidator validation schemas", async () => {
+    expect(extractor.canHandle(directAppDir)).toBe(true);
+
+    const slices = await extractor.extractSlices(directAppDir);
     expect(slices).toHaveLength(2);
 
     const health = slices.find((s) => s.route_uri === "/health");
@@ -56,70 +123,7 @@ app.post("/orders", zValidator("json", createOrderSchema), (c) => c.json({ statu
   });
 
   it("resolves mounted sub-routers with prefix composition and penetrates to service & persistence (L5)", async () => {
-    fs.writeFileSync(
-      path.join(tmpDir, "package.json"),
-      JSON.stringify({ dependencies: { hono: "^4.0.0" } })
-    );
-
-    const srcDir = path.join(tmpDir, "src");
-    fs.mkdirSync(path.join(srcDir, "controllers"), { recursive: true });
-    fs.mkdirSync(path.join(srcDir, "services"), { recursive: true });
-    fs.mkdirSync(path.join(srcDir, "routes"), { recursive: true });
-
-    // 1. Service with Prisma call
-    fs.writeFileSync(
-      path.join(srcDir, "services/user.service.ts"),
-      `
-import { prisma } from "../db";
-export class UserService {
-  async getAllUsers() {
-    return prisma.user.findMany();
-  }
-}
-      `.trim()
-    );
-
-    // 2. Controller calling UserService
-    fs.writeFileSync(
-      path.join(srcDir, "controllers/user.controller.ts"),
-      `
-import { UserService } from "../services/user.service";
-const userService = new UserService();
-
-export const listUsers = async (c: any) => {
-  const users = await userService.getAllUsers();
-  return c.json(users);
-};
-      `.trim()
-    );
-
-    // 3. User sub-routes
-    fs.writeFileSync(
-      path.join(srcDir, "routes/users.ts"),
-      `
-import { Hono } from "hono";
-import { listUsers } from "../controllers/user.controller";
-
-const userRoutes = new Hono();
-userRoutes.get("/", listUsers);
-
-export default userRoutes;
-      `.trim()
-    );
-
-    // 4. Main app mounting sub-router
-    fs.writeFileSync(
-      path.join(srcDir, "index.ts"),
-      `
-import { Hono } from "hono";
-import userRoutes from "./routes/users";
-
-const app = new Hono();
-app.route("/api/v1/users", userRoutes);
-      `.trim()
-    );
-
-    const slices = await extractor.extractSlices(tmpDir);
+    const slices = await extractor.extractSlices(mountedAppDir);
     expect(slices).toHaveLength(1);
 
     const userSlice = slices[0];

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test";
+import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
@@ -75,11 +75,12 @@ async def get_order_by_id(order_id: str):
       }
     });
 
-    it("resolves physical service file and connects to SQLAlchemy ORM model (L5)", async () => {
-      const tempDir = createTempDir("fastapi-l5");
+    describe("resolves physical service file and connects to SQLAlchemy ORM model (L5)", () => {
+      let tempDir: string;
       const extractor = new FastApiSemanticExtractor();
 
-      try {
+      beforeAll(() => {
+        tempDir = createTempDir("fastapi-l5");
         fs.writeFileSync(path.join(tempDir, "requirements.txt"), "fastapi\nsqlalchemy\n");
 
         const routersDir = path.join(tempDir, "app", "routers");
@@ -127,7 +128,13 @@ def place_order(payload: dict):
     return OrderService.create_order(None, payload)
           `.trim()
         );
+      });
 
+      afterAll(() => {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      });
+
+      it("resolves physical service file and connects to SQLAlchemy ORM model (L5)", async () => {
         const slices = await extractor.extractSlices(tempDir);
         expect(slices).toHaveLength(1);
 
@@ -144,9 +151,7 @@ def place_order(payload: dict):
         expect(modelNode).toBeDefined();
         expect(modelNode?.symbol).toBe("Order");
         expect(modelNode?.file).toBe("app/models/order.py");
-      } finally {
-        fs.rmSync(tempDir, { recursive: true, force: true });
-      }
+      });
     });
   });
 

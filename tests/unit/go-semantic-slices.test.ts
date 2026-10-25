@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test";
+import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
@@ -506,10 +506,11 @@ func SetupFiber(h *FiberOrderHandler) *fiber.App {
     }
   });
 
-  it("resolves physical service, repository, and entity files across Clean Architecture layers (L5)", () => {
-    const tempDir = createTempDir("go-clean-arch-l5");
+  describe("resolves physical service, repository, and entity files across Clean Architecture layers (L5)", () => {
+    let tempDir: string;
 
-    try {
+    beforeAll(() => {
+      tempDir = createTempDir("go-clean-arch-l5");
       fs.writeFileSync(path.join(tempDir, "go.mod"), "module shop\n\ngo 1.22\nrequire github.com/gin-gonic/gin v1.9.1\n");
 
       // 1. Entity: internal/domain/order.go
@@ -602,7 +603,13 @@ func SetupRoutes(r *gin.Engine, h *OrderHandler) {
 }
         `.trim()
       );
+    });
 
+    afterAll(() => {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    });
+
+    it("resolves physical service, repository, and entity files across Clean Architecture layers (L5)", () => {
       const slices = extractor.extractSlices(tempDir);
       expect(slices).toHaveLength(1);
 
@@ -630,8 +637,6 @@ func SetupRoutes(r *gin.Engine, h *OrderHandler) {
       expect(entNode).toBeDefined();
       expect(entNode?.symbol).toBe("Order");
       expect(entNode?.file).toBe("internal/domain/order.go");
-    } finally {
-      fs.rmSync(tempDir, { recursive: true, force: true });
-    }
+    });
   });
 });

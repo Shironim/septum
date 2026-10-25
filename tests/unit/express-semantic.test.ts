@@ -1,19 +1,24 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { ExpressSemanticExtractor } from "../../src/core/parser/extractors/express-semantic.ts";
 
 describe("TS-04 — Express Router Composition Extractor", () => {
+  let baseDir: string;
   let tmpDir: string;
   const extractor = new ExpressSemanticExtractor();
 
-  beforeEach(() => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "septum-express-"));
+  beforeAll(() => {
+    baseDir = fs.mkdtempSync(path.join(os.tmpdir(), "septum-express-"));
   });
 
-  afterEach(() => {
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+  afterAll(() => {
+    fs.rmSync(baseDir, { recursive: true, force: true });
+  });
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(baseDir, "test-"));
   });
 
   it("extracts direct Express app routes with closures and middlewares", async () => {
