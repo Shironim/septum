@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "bun:test";
+import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -6,26 +6,24 @@ import { ExpressSemanticExtractor } from "../../src/core/parser/extractors/expre
 
 describe("TS-04 — Express Router Composition Extractor", () => {
   let baseDir: string;
-  let tmpDir: string;
+  let directAppDir: string;
+  let mountedAppDir: string;
+  let dynamicAppDir: string;
+  let controllerAppDir: string;
   const extractor = new ExpressSemanticExtractor();
 
   beforeAll(() => {
     baseDir = fs.mkdtempSync(path.join(os.tmpdir(), "septum-express-"));
-  });
+    directAppDir = path.join(baseDir, "direct-app");
+    mountedAppDir = path.join(baseDir, "mounted-app");
+    dynamicAppDir = path.join(baseDir, "dynamic-app");
+    controllerAppDir = path.join(baseDir, "controller-app");
 
-  afterAll(() => {
-    fs.rmSync(baseDir, { recursive: true, force: true });
-  });
-
-  beforeEach(() => {
-    tmpDir = fs.mkdtempSync(path.join(baseDir, "test-"));
-  });
-
-  it("extracts direct Express app routes with closures and middlewares", async () => {
-    const appPath = path.join(tmpDir, "src/app.ts");
-    fs.mkdirSync(path.dirname(appPath), { recursive: true });
-
-    const code = `
+    // 1. Direct App Fixture
+    fs.mkdirSync(path.join(directAppDir, "src"), { recursive: true });
+    fs.writeFileSync(
+      path.join(directAppDir, "src/app.ts"),
+      `
 import express from "express";
 import { rateLimiter } from "./middleware/rate";
 import { authHandler } from "./handlers/auth";
@@ -34,10 +32,91 @@ const app = express();
 
 app.get("/health", (req, res) => res.json({ status: "ok" }));
 app.post("/login", rateLimiter, authHandler);
-`;
-    fs.writeFileSync(appPath, code);
+`
+    );
 
-    const slices = await extractor.extractSlices(tmpDir);
+    // 2. Mounted App Fixture across multiple files
+    fs.mkdirSync(path.join(mountedAppDir, "src/routes"), { recursive: true });
+    fs.writeFileSync(
+      path.join(mountedAppDir, "src/app.ts"),
+      `
+import express from "express";
+import apiRouter from "./routes/api";
+
+const app = express();
+app.use("/api/v1", apiRouter);
+`
+    );
+    fs.writeFileSync(
+      path.join(mountedAppDir, "src/routes/api.ts"),
+      `
+import express from "express";
+import userRouter from "./users";
+
+const router = express.Router();
+router.use("/users", userRouter);
+
+export default router;
+`
+    );
+    fs.writeFileSync(
+      path.join(mountedAppDir, "src/routes/users.ts"),
+      `
+import { Router } from "express";
+import { authCheck } from "../middleware/auth";
+import { validateBody, sanitizeInput } from "../middleware/validation";
+import * as userController from "../controllers/user";
+
+const router = Router();
+
+router.get("/", (req, res) => res.send("users"));
+router.get("/:id", userController.getUser);
+router.post("/", authCheck, [validateBody, sanitizeInput], userController.create);
+
+export default router;
+`
+    );
+
+    // 3. Dynamic Routes Fixture
+    fs.mkdirSync(path.join(dynamicAppDir, "src"), { recursive: true });
+    fs.writeFileSync(
+      path.join(dynamicAppDir, "src/server.ts"),
+      `
+import express from "express";
+const app = express();
+const dynamicVerb = "get";
+const dynamicPath = "/dynamic/" + Date.now();
+
+app[dynamicVerb](dynamicPath, (req, res) => res.send("ok"));
+app.get("/static", (req, res) => res.send("static"));
+`
+    );
+
+    // 4. Imported Controller Fixture
+    fs.mkdirSync(path.join(controllerAppDir, "src/routes"), { recursive: true });
+    fs.mkdirSync(path.join(controllerAppDir, "src/controllers"), { recursive: true });
+    fs.writeFileSync(
+      path.join(controllerAppDir, "src/controllers/order.controller.ts"),
+      `export const placeOrder = (req: any, res: any) => res.json({ id: 1 });`
+    );
+    fs.writeFileSync(
+      path.join(controllerAppDir, "src/routes/order.routes.ts"),
+      `
+import express from "express";
+import { placeOrder } from "../controllers/order.controller";
+const router = express.Router();
+router.post("/orders", placeOrder);
+export default router;
+`
+    );
+  });
+
+  afterAll(() => {
+    fs.rmSync(baseDir, { recursive: true, force: true });
+  });
+
+  it("extracts direct Express app routes with closures and middlewares", async () => {
+    const slices = await extractor.extractSlices(directAppDir);
     expect(slices).toHaveLength(2);
 
     const health = slices.find((s) => s.route_uri === "/health");
@@ -56,50 +135,7 @@ app.post("/login", rateLimiter, authHandler);
   });
 
   it("resolves mounted routers across multiple files with prefix composition", async () => {
-    const appFile = path.join(tmpDir, "src/app.ts");
-    const apiFile = path.join(tmpDir, "src/routes/api.ts");
-    const userFile = path.join(tmpDir, "src/routes/users.ts");
-
-    fs.mkdirSync(path.dirname(apiFile), { recursive: true });
-
-    const appCode = `
-import express from "express";
-import apiRouter from "./routes/api";
-
-const app = express();
-app.use("/api/v1", apiRouter);
-`;
-
-    const apiCode = `
-import express from "express";
-import userRouter from "./users";
-
-const router = express.Router();
-router.use("/users", userRouter);
-
-export default router;
-`;
-
-    const userCode = `
-import { Router } from "express";
-import { authCheck } from "../middleware/auth";
-import { validateBody, sanitizeInput } from "../middleware/validation";
-import * as userController from "../controllers/user";
-
-const router = Router();
-
-router.get("/", (req, res) => res.send("users"));
-router.get("/:id", userController.getUser);
-router.post("/", authCheck, [validateBody, sanitizeInput], userController.create);
-
-export default router;
-`;
-
-    fs.writeFileSync(appFile, appCode);
-    fs.writeFileSync(apiFile, apiCode);
-    fs.writeFileSync(userFile, userCode);
-
-    const slices = await extractor.extractSlices(tmpDir);
+    const slices = await extractor.extractSlices(mountedAppDir);
     expect(slices).toHaveLength(3);
 
     // 1. GET /api/v1/users
@@ -124,48 +160,13 @@ export default router;
   });
 
   it("marks dynamic paths as partial/unresolved without inventing routes", async () => {
-    const appFile = path.join(tmpDir, "src/server.ts");
-    fs.mkdirSync(path.dirname(appFile), { recursive: true });
-
-    const code = `
-import express from "express";
-const app = express();
-const dynamicVerb = "get";
-const dynamicPath = "/dynamic/" + Date.now();
-
-app[dynamicVerb](dynamicPath, (req, res) => res.send("ok"));
-app.get("/static", (req, res) => res.send("static"));
-`;
-    fs.writeFileSync(appFile, code);
-
-    const slices = await extractor.extractSlices(tmpDir);
+    const slices = await extractor.extractSlices(dynamicAppDir);
     expect(slices).toHaveLength(1);
     expect(slices[0].route_uri).toBe("/static");
   });
 
   it("resolves imported controller handler to its target controller file", async () => {
-    const routeFile = path.join(tmpDir, "src/routes/order.routes.ts");
-    const controllerFile = path.join(tmpDir, "src/controllers/order.controller.ts");
-    fs.mkdirSync(path.dirname(routeFile), { recursive: true });
-    fs.mkdirSync(path.dirname(controllerFile), { recursive: true });
-
-    fs.writeFileSync(
-      controllerFile,
-      `export const placeOrder = (req: any, res: any) => res.json({ id: 1 });`
-    );
-
-    fs.writeFileSync(
-      routeFile,
-      `
-import express from "express";
-import { placeOrder } from "../controllers/order.controller";
-const router = express.Router();
-router.post("/orders", placeOrder);
-export default router;
-`
-    );
-
-    const slices = await extractor.extractSlices(tmpDir);
+    const slices = await extractor.extractSlices(controllerAppDir);
     const orderSlice = slices.find((s) => s.route_uri === "/orders");
     expect(orderSlice).toBeDefined();
     expect(orderSlice?.controller_file).toBe("src/controllers/order.controller.ts");
@@ -175,4 +176,3 @@ export default router;
     expect(controllerNode?.file).toBe("src/controllers/order.controller.ts");
   });
 });
-
