@@ -2,7 +2,7 @@
 
 > **Architecture boundary guard and codebase intelligence for AI coding agents.**
 
-[![Version: 0.1.9](https://img.shields.io/badge/Version-0.1.9-blue)](package.json)
+[![Version: 0.2.0](https://img.shields.io/badge/Version-0.2.0-blue)](package.json)
 [![Runtime: Bun](https://img.shields.io/badge/Runtime-Bun-black?logo=bun)](https://bun.sh)
 [![Protocol: Model Context Protocol](https://img.shields.io/badge/Protocol-MCP-green)](https://modelcontextprotocol.io/)
 [![Database: SQLite WAL](https://img.shields.io/badge/Database-SQLite%20(bun:sqlite)-003B57?logo=sqlite)](https://sqlite.org/)
