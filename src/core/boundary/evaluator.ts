@@ -49,7 +49,9 @@ export class BoundaryEvaluator {
     const violations: BoundaryViolation[] = [];
     const allDependencies = this.repo.getAllDependenciesWithDomains();
 
+    const evidence = this.repo.getMeta?.("workspace_root") ? this.repo.getImportRelationships(this.resolver.getProjectRoot()) : undefined;
     for (const dep of allDependencies) {
+      if (evidence && !evidence.some(edge => edge.source.file === dep.source_file && edge.source.line === dep.line_number && edge.freshness === "current" && edge.resolution.status === "resolved" && edge.resolution.coverage !== "conditional")) continue;
       const targetDomain = this.resolveTargetDomain(dep.target, config, dep.source_file);
       if (!targetDomain || targetDomain === dep.source_domain) {
         continue;
@@ -91,7 +93,8 @@ export class BoundaryEvaluator {
       }
     }
 
-    violations.push(...this.detectCircularDependencies(config, allDependencies));
+    const currentDependencies = evidence ? allDependencies.filter(dep => evidence.some(edge => edge.source.file === dep.source_file && edge.source.line === dep.line_number && edge.freshness === "current")) : allDependencies;
+    violations.push(...this.detectCircularDependencies(config, currentDependencies));
 
     return violations;
   }
@@ -109,7 +112,11 @@ export class BoundaryEvaluator {
     relevantFiles?: ReadonlySet<string>
   ): BoundaryViolation[] {
     const violations: BoundaryViolation[] = [];
-    const allDependencies = preloadedDeps ?? this.repo.getAllDependenciesWithDomains();
+    let allDependencies = preloadedDeps ?? this.repo.getAllDependenciesWithDomains();
+    if (!preloadedDeps && this.repo.getMeta?.("workspace_root")) {
+      const current = this.repo.getImportRelationships(this.resolver.getProjectRoot());
+      allDependencies = allDependencies.filter(dep => current.some(edge => edge.source.file === dep.source_file && edge.source.line === dep.line_number && edge.freshness === "current"));
+    }
 
     // Prepare file lookup maps for internal file-to-file resolution
     const fileByNormPath = new Map<string, string>();
@@ -135,6 +142,11 @@ export class BoundaryEvaluator {
     }
 
     const resolveTargetFile = (sourceFile: string, rawTarget: string): string | null => {
+      if (this.repo.getMeta?.("workspace_root")) {
+        const result = this.resolver.resolveImport(rawTarget,sourceFile);
+        const files = result.targets.flatMap(target => target.files);
+        return result.status === "resolved" && result.coverage !== "conditional" && files.length === 1 ? files[0]! : null;
+      }
       const cleaned = rawTarget.trim().replace(/^['"]|['"]$/g, "").replace(/\\/g, "/");
       if (!cleaned) return null;
 
@@ -171,7 +183,10 @@ export class BoundaryEvaluator {
     const domainGraph = new Map<string, Map<string, EdgeMeta>>();
 
     for (const dep of allDependencies) {
-      if (dep.is_external) continue;
+      if (this.repo.getMeta?.("workspace_root")) {
+        const result = this.resolver.resolveImport(dep.target,dep.source_file);
+        if (result.status !== "resolved" || result.coverage === "conditional") continue;
+      } else if (dep.is_external) continue;
 
       const targetDomain = this.resolveTargetDomain(dep.target, config, dep.source_file);
 

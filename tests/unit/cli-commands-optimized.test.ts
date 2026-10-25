@@ -1,6 +1,8 @@
 import { describe, expect, it } from "bun:test";
 import { spawnSync } from "node:child_process";
+import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
 
 describe("Optimized 7 CLI Commands Suite", () => {
   const septumBin = join(import.meta.dir, "../../bin/septum.ts");
@@ -55,6 +57,26 @@ describe("Optimized 7 CLI Commands Suite", () => {
     const parsed = JSON.parse(res.stdout);
     expect(parsed.files_scanned).toBeDefined();
     expect(parsed.symbols_indexed).toBeDefined();
+  });
+
+  it("emits machine-readable JSON for check --json", () => {
+    const root = mkdtempSync(join(tmpdir(), "septum-check-json-"));
+    try {
+      const init = spawnSync("git", ["init", "-q"], { cwd: root, encoding: "utf-8" });
+      expect(init.status).toBe(0);
+      const result = spawnSync("bun", ["run", septumBin, "check", "--json", "--staged"], {
+        cwd: root,
+        encoding: "utf-8",
+        timeout: 10000,
+      });
+
+      expect(result.status).toBe(0);
+      const parsed = JSON.parse(result.stdout);
+      expect(parsed.status).toBe("clean");
+      expect(parsed.violations).toEqual([]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 

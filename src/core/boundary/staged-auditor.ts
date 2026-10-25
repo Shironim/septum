@@ -1,7 +1,7 @@
 import { RESOURCE_LIMITS } from "../resources/limits.ts";
 import { execFileSync } from "node:child_process";
 import { resolve } from "node:path";
-import type { BoundaryViolation } from "../../types/index.ts";
+import type { ImportResolution, BoundaryViolation } from "../../types/index.ts";
 import type { ValidatedSeptumConfig } from "../config/schema.ts";
 import { ASTParserEngine } from "../parser/tree-sitter.ts";
 import type { SeptumRepository } from "../database/repository.ts";
@@ -13,7 +13,7 @@ export async function auditStagedFiles(
   workspaceRoot: string,
   featureKey?: string,
   repo?: SeptumRepository
-): Promise<{ files: string[]; violations: BoundaryViolation[] }> {
+): Promise<{ files: string[]; violations: BoundaryViolation[]; resolution_issues: ImportResolution[] }> {
   const output = execFileSync("git", ["diff", "--cached", "--name-only", "--diff-filter=ACMR", "-z"], {
     cwd: workspaceRoot, encoding: "utf-8", timeout: 5000, maxBuffer: 10 * 1024 * 1024,
   });
@@ -23,6 +23,7 @@ export async function auditStagedFiles(
   });
   const deleted = deletedOutput.split("\0").filter(Boolean);
   const violations: BoundaryViolation[] = [];
+  const resolutionIssues: ImportResolution[] = [];
   if (featureKey) for (const file of deleted) violations.push(...evaluator.checkFeatureTouchpoints(featureKey, file, config));
   const stagedDependencies: ReturnType<SeptumRepository["getAllDependenciesWithDomains"]> = [];
   const parser = new ASTParserEngine();
@@ -40,11 +41,16 @@ export async function auditStagedFiles(
     }
     for (const dependency of parsed.dependencies) {
       stagedDependencies.push({ source_file: file, source_domain: evaluator.resolveSourceDomain(file, config)!, target: dependency.target, statement: dependency.statement, line_number: dependency.line_number, is_external: dependency.is_external });
-      violations.push(...evaluator.checkProposedChanges(file, [dependency.target], config).map(violation => ({ ...violation, line: dependency.line_number })));
+      const found = evaluator.checkProposedChanges(file, [dependency.target], config).map(violation => ({ ...violation, line: dependency.line_number }));
+      const resolution = evaluator.getResolver().resolveImport(dependency.target,file);
+      if (found.length === 0 && (!["resolved","external"].includes(resolution.status) || resolution.coverage === "conditional")) {
+        resolutionIssues.push(resolution);
+      }
+      violations.push(...found);
     }
   }
   const staged = new Set([...files, ...deleted]);
   const baseline = (repo?.getAllDependenciesWithDomains() || []).filter(dependency => !staged.has(dependency.source_file));
   violations.push(...evaluator.detectCircularDependencies(config, [...baseline, ...stagedDependencies], staged));
-  return { files: Array.from(staged), violations };
+  return { files: Array.from(staged), violations, resolution_issues: resolutionIssues };
 }
