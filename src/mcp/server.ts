@@ -22,8 +22,7 @@ import {
   BoundaryToolSchema,
   FeatureToolSchema,
 } from "./schemas.ts";
-import { SEPTUM_VERSION } from "../version.ts";
-import { checkRuntimeVersion } from "../utils/version-check.ts";
+import { SEPTUM_VERSION, checkRuntimeVersion } from "../utils/version-check.ts";
 
 const TOOL_SCHEMAS = {
   septum_domain: DomainToolSchema,

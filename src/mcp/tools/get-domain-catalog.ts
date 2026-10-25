@@ -110,6 +110,8 @@ export function handleGetDomainCatalog(
         architecture_style: archStyle,
         total_domains: allDomains.length,
         total_vertical_slices: totalSlices,
+        scanned_folders: JSON.parse(repo.getMeta("scanned_folders") || "[]"),
+        ignored_folders: JSON.parse(repo.getMeta("ignored_folders") || "[]"),
       },
       domains: allDomains.map((d) => ({
         name: d.name,

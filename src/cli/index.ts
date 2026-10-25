@@ -1,7 +1,6 @@
 import { parseArgs } from "node:util";
 import { SessionManager } from "../core/session/session-manager.ts";
-import { SEPTUM_VERSION } from "../version.ts";
-import { checkRuntimeVersion, formatUpdateNotice, type RuntimeVersionMeta } from "../utils/version-check.ts";
+import { SEPTUM_VERSION, checkRuntimeVersion, formatUpdateNotice, type RuntimeVersionMeta } from "../utils/version-check.ts";
 import { handleCheckCommand } from "./commands/check.ts";
 import { handleHookCommand } from "./commands/hook.ts";
 import { handleInitCommand } from "./commands/init.ts";

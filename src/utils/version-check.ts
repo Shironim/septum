@@ -15,8 +15,9 @@ export interface VersionCacheEntry {
   latest_version: string | null;
 }
 
-export const SEPTUM_PACKAGE_NAME = packageJson.name || "septum";
-export const SEPTUM_CURRENT_VERSION = packageJson.version;
+export const SEPTUM_PACKAGE_NAME: string = packageJson.name || "septum";
+export const SEPTUM_CURRENT_VERSION: string = packageJson.version;
+export const SEPTUM_VERSION: string = packageJson.version;
 export const DEFAULT_CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
 export const DEFAULT_TIMEOUT_MS = 1500; // 1.5s strict timeout
 export const DEFAULT_FAILURE_BACKOFF_MS = 15 * 60 * 1000; // 15 mins backoff on network failure

@@ -1,3 +1,1 @@
-import packageJson from "../package.json" with { type: "json" };
-
-export const SEPTUM_VERSION: string = packageJson.version;
+export { SEPTUM_VERSION, SEPTUM_CURRENT_VERSION } from "./utils/version-check.ts";
