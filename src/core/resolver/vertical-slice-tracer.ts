@@ -1,3 +1,8 @@
+import { readSourceFile } from "../resources/source-files.ts";
+import { computeContentHash } from "../ingestion/hasher.ts";
+import { assertPathContained } from "./path-resolver.ts";
+import { resolve } from "node:path";
+import { collectSourceSkips } from "../resources/source-files.ts";
 import type {
   ExecutionChainNode,
   VerticalSliceRecord,
@@ -11,6 +16,45 @@ import { TopologyDetector } from "../discovery/topology-detector.ts";
 export class VerticalSliceTracer {
   constructor(private repo: SeptumRepository, private projectRoot: string = process.cwd()) {}
 
+  public async traceAsync(rawQuery: string, maxDepth = 5, signal?: AbortSignal): Promise<VerticalSliceTraceResponse> {
+    signal?.throwIfAborted();
+    if (this.repo.getMeta("sync_state") === "error" || this.repo.getMeta("sync_state") === "running") {
+      return { query: rawQuery, found: false, coverage: "partial", diagnostics: ["index_incomplete"], message: "Workspace synchronization is incomplete." };
+    }
+    let inputsChanged = false;
+    try {
+      const inputs = JSON.parse(this.repo.getMeta("semantic_inputs") || "[]") as Array<{path:string;hash:string}>;
+      inputsChanged = inputs.some(input => {
+        signal?.throwIfAborted();
+        assertPathContained(input.path,this.projectRoot,"Semantic source");
+        return computeContentHash(readSourceFile(resolve(this.projectRoot,input.path))) !== input.hash;
+      });
+    } catch { signal?.throwIfAborted(); inputsChanged = true; }
+    if (inputsChanged || this.repo.getAllVerticalSlices().length === 0 || this.repo.getMeta("slices_dirty") === "1") {
+      try {
+        const topology = TopologyDetector.detect(this.projectRoot);
+        const extracted = await collectSourceSkips(this.projectRoot, async () => {
+          const slices = await SemanticSliceExtractorRegistry.extractAllSlices(this.projectRoot,topology.framework,undefined,signal);
+          return slices.length ? slices : new CallGraphTracer(this.repo,this.projectRoot).traceAllSlices(maxDepth);
+        });
+        signal?.throwIfAborted();
+        if (extracted.skipped.length) throw new Error("Semantic source exceeds read limits; catalog is incomplete.");
+        this.repo.runInTransaction(() => {
+          signal?.throwIfAborted();
+          this.repo.clearVerticalSlices();
+          for (const slice of extracted.value) this.repo.upsertVerticalSlice(slice);
+          this.repo.setMeta("slices_dirty", "");
+          this.repo.setMeta("semantic_inputs", JSON.stringify(extracted.inputs));
+        });
+      } catch (error) {
+        signal?.throwIfAborted();
+        this.repo.setMeta("slices_dirty", "1");
+        return { query: rawQuery, found: false, coverage: "partial", diagnostics: [error instanceof Error ? error.message : String(error)], message: "Semantic extraction failed; no complete catalog was published." };
+      }
+    }
+    return this.trace(rawQuery,maxDepth);
+  }
+
   /**
    * Trace an end-to-end vertical slice from route/action/intent query.
    * Examples of queries:
@@ -22,49 +66,19 @@ export class VerticalSliceTracer {
    *  - "createOrder"
    *  - "Ubah status order di dashboard"
    */
+  // Synchronous compatibility API reads persisted slices only; use traceAsync for on-demand extraction.
   public trace(rawQuery: string, maxDepth: number = 5): VerticalSliceTraceResponse {
     const effectiveMaxDepth = Math.min(Math.max(Math.trunc(maxDepth || 5), 1), 8);
     const trimmed = rawQuery.trim();
     const lowerTrimmed = trimmed.toLowerCase();
     let allSlices = this.repo.getAllVerticalSlices();
 
-    // Lazy on-demand fallback: If no slices cataloged, extract framework routes or trace call-graph
-    const topology = TopologyDetector.detect(this.projectRoot);
-    const isSupportedFramework = ["laravel", "express", "nestjs", "fastify"].includes(topology.framework);
-    const hasCatalogData = typeof (this.repo as any).getAllDomains === "function" && this.repo.getAllDomains().length > 0;
-    if (allSlices.length === 0 && (hasCatalogData || isSupportedFramework)) {
-      try {
-        const semanticSlices = SemanticSliceExtractorRegistry.extractAllSlicesSync(
-          this.projectRoot,
-          topology.framework
-        );
-        if (semanticSlices.length > 0) {
-          for (const s of semanticSlices) {
-            this.repo.upsertVerticalSlice(s);
-          }
-          allSlices = this.repo.getAllVerticalSlices();
-        } else {
-          const tracer = new CallGraphTracer(this.repo, this.projectRoot);
-          const traced = tracer.traceAllSlices(effectiveMaxDepth);
-          if (traced.length > 0) {
-            for (const s of traced) {
-              this.repo.upsertVerticalSlice(s);
-            }
-            allSlices = this.repo.getAllVerticalSlices();
-          }
-        }
-      } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : String(err);
-        console.error(`[Septum Slice Warning] Failed on-demand trace of vertical slices: ${msg}`);
-      }
-    }
-
     if (allSlices.length === 0) {
       return {
         query: trimmed,
         found: false,
         max_depth_applied: effectiveMaxDepth,
-        message: "No vertical slices cataloged. Run 'septum ingest' to extract framework routes and MVC slices.",
+        message: "No vertical slices cataloged. Run 'septum sync' to extract framework routes and MVC slices.",
       };
     }
 
@@ -251,8 +265,9 @@ export class VerticalSliceTracer {
       }
     }
 
+    // Import expansion is derived per request, so cached depth cannot override the requested hop limit.
+    chain = chain.filter(node => node.relationship?.kind !== "imports" && !node.description?.includes("(dependency)"));
     if (
-      chain.length < effectiveMaxDepth &&
       record.controller_file &&
       typeof (this.repo as any).getAllFiles === "function"
     ) {

@@ -501,6 +501,22 @@ export class TopologyDetector {
   ): string {
     if (language === "php") {
       if (fs.existsSync(path.join(projectRoot, "artisan"))) return "laravel";
+      if (
+        fs.existsSync(path.join(projectRoot, "bin/console")) ||
+        fs.existsSync(path.join(projectRoot, "symfony.lock"))
+      ) {
+        return "symfony";
+      }
+      const composerJson = path.join(projectRoot, "composer.json");
+      if (fs.existsSync(composerJson)) {
+        try {
+          const composer = JSON.parse(fs.readFileSync(composerJson, "utf-8"));
+          const reqs = { ...(composer.require ?? {}), ...(composer["require-dev"] ?? {}) };
+          if (reqs["symfony/framework-bundle"] || reqs["symfony/symfony"]) {
+            return "symfony";
+          }
+        } catch {}
+      }
       return "generic-php";
     }
     if (language === "typescript" || language === "javascript") {
@@ -521,6 +537,45 @@ export class TopologyDetector {
         console.warn(`[Septum Topology] Failed to inspect dependencies in ${pkgJson}: ${msg}`);
       }
       return "generic-node";
+    }
+    if (language === "python") {
+      if (
+        fs.existsSync(path.join(projectRoot, "manage.py")) ||
+        fs.existsSync(path.join(projectRoot, "wsgi.py")) ||
+        fs.existsSync(path.join(projectRoot, "asgi.py"))
+      ) {
+        return "django";
+      }
+      const readSafe = (p: string) => {
+        try {
+          return fs.existsSync(p) ? fs.readFileSync(p, "utf-8").toLowerCase() : "";
+        } catch {
+          return "";
+        }
+      };
+      const deps =
+        readSafe(path.join(projectRoot, "requirements.txt")) +
+        " " +
+        readSafe(path.join(projectRoot, "pyproject.toml")) +
+        " " +
+        readSafe(path.join(projectRoot, "Pipfile"));
+      if (deps.includes("fastapi")) return "fastapi";
+      if (deps.includes("django")) return "django";
+      if (deps.includes("flask")) return "flask";
+      return "generic-python";
+    }
+    if (language === "go") {
+      const goModPath = path.join(projectRoot, "go.mod");
+      if (fs.existsSync(goModPath)) {
+        try {
+          const modContent = fs.readFileSync(goModPath, "utf-8").toLowerCase();
+          if (modContent.includes("github.com/gin-gonic/gin")) return "gin";
+          if (modContent.includes("github.com/labstack/echo")) return "echo";
+          if (modContent.includes("github.com/go-chi/chi")) return "chi";
+          if (modContent.includes("github.com/gofiber/fiber")) return "fiber";
+        } catch {}
+      }
+      return "generic-go";
     }
     return "generic";
   }

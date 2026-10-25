@@ -1,3 +1,4 @@
+import { ImportResolver } from "./import-resolver.ts";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ValidatedSeptumConfig } from "../config/schema.ts";
@@ -27,6 +28,10 @@ export class ModuleResolver {
   constructor(projectRoot: string = process.cwd(), repo?: SeptumRepository) {
     this.projectRoot = path.resolve(projectRoot);
     this.repo = repo;
+  }
+
+  public resolveImport(target: string, sourceFile: string) {
+    return new ImportResolver(this.projectRoot, this.repo?.getAllDomains?.().map(domain => domain.root_path) ?? []).resolve(target, sourceFile);
   }
 
   public setRepository(repo: SeptumRepository): void {
@@ -108,6 +113,13 @@ export class ModuleResolver {
     sourceFilePath: string | undefined,
     config: ValidatedSeptumConfig
   ): string | null {
+    if (sourceFilePath && (fs.existsSync(path.resolve(this.projectRoot,sourceFilePath)) || this.repo?.getMeta?.("workspace_root"))) {
+      const resolution = this.resolveImport(targetStatement,sourceFilePath);
+      if (resolution.status !== "resolved" || resolution.coverage === "conditional") return null;
+      const domains = [...new Set(resolution.targets.flatMap(target => target.files.map(file => this.matchDomainByPath(file,config))).filter((d): d is string => !!d))];
+      return domains.length === 1 ? domains[0]! : null;
+    }
+    // Legacy index-only/path-policy callers have no physical source evidence.
     this.ensureConfigLoaded();
 
     const normalizedTarget = targetStatement.trim().replace(/^['"]|['"]$/g, "");

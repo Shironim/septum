@@ -28,8 +28,8 @@ describe("Vertical Slice Output Standardization (JSON Contracts)", () => {
     db.close();
   });
 
-  it("returns parseable JSON string in content[0].text when slice is not found", () => {
-    const result = handleTraceVerticalSlice(repo, mockConfig, {
+  it("returns parseable JSON string in content[0].text when slice is not found", async () => {
+    const result = await handleTraceVerticalSlice(repo, mockConfig, {
       query: "POST /unregistered/order",
     });
 
@@ -44,7 +44,7 @@ describe("Vertical Slice Output Standardization (JSON Contracts)", () => {
     expect(json.alternatives).toEqual([]);
   });
 
-  it("returns parseable structured JSON with comprehensive metadata when slice is found", () => {
+  it("returns parseable structured JSON with comprehensive metadata when slice is found", async () => {
     repo.upsertVerticalSlice({
       domain_id: null,
       feature_key: null,
@@ -64,7 +64,7 @@ describe("Vertical Slice Output Standardization (JSON Contracts)", () => {
       ]),
     });
 
-    const result = handleTraceVerticalSlice(repo, mockConfig, {
+    const result = await handleTraceVerticalSlice(repo, mockConfig, {
       query: "POST /orders/{id}/status",
     });
 
@@ -81,8 +81,8 @@ describe("Vertical Slice Output Standardization (JSON Contracts)", () => {
     );
   });
 
-  it("accepts custom workspaceRoot parameter gracefully", () => {
-    const result = handleTraceVerticalSlice(
+  it("accepts custom workspaceRoot parameter gracefully", async () => {
+    const result = await handleTraceVerticalSlice(
       repo,
       mockConfig,
       { query: "GET /health" },
@@ -94,7 +94,7 @@ describe("Vertical Slice Output Standardization (JSON Contracts)", () => {
     expect(json.query).toBe("GET /health");
   });
 
-  it("rejects empty query by throwing actionable error", () => {
+  it("rejects empty query by throwing actionable error", async () => {
     expect(() =>
       handleTraceVerticalSlice(repo, mockConfig, { query: "" })
     ).toThrow("Missing required argument: 'query'");

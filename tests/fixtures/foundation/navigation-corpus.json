@@ -1,0 +1,36 @@
+{
+  "id": "foundation-navigation-v1",
+  "description": "Small static fixture corpus, not a language accuracy benchmark. Holdout PHP/workspace edges are evaluated after implementation, without tuning on their results.",
+  "files": {
+    "package.json": "{\"name\":\"foundation-fixture\",\"private\":true,\"workspaces\":[\"packages/*\"]}",
+    "tsconfig.json": "{\"compilerOptions\":{\"paths\":{\"@core/*\":[\"shared/*\"]}}}",
+    "go.mod": "module example.local/foundation\n\ngo 1.22\n",
+    "composer.json": "{\"autoload\":{\"psr-4\":{\"Fleet\\\\Billing\\\\\":\"modules/billing/\"}}}",
+    "requirements.txt": "fastapi==0.115.0\n",
+    "app/main.ts": "import { UnusedService } from '@core/UnusedService';\nexport function run() { return 1; }\n",
+    "shared/UnusedService.ts": "export class UnusedService { save() {} }\n",
+    "app/go.go": "package app\nimport \"example.local/foundation/shared\"\nfunc RunGo() {}\n",
+    "shared/a.go": "package shared\nfunc A() {}\n",
+    "shared/b.go": "package shared\nfunc B() {}\n",
+    "app/Overload.java": "class Overload {\n public int save(int id) { return id; }\n public String save(String id) { return id; }\n}\n",
+    "app/dynamic.ts": "export async function loadDynamic(name: string) { return import(name); }\n",
+    "app/start.php": "<?php\nuse Fleet\\Billing\\Receipt;\nfunction startReceipt() {}\n",
+    "modules/billing/Receipt.php": "<?php\nnamespace Fleet\\Billing;\nclass Receipt {}\n",
+    "packages/stock/package.json": "{\"name\":\"@fixture/stock\",\"main\":\"src/index.ts\"}",
+    "packages/stock/src/index.ts": "export class Stock {}\n",
+    "app/workspace.ts": "import { Stock } from '@fixture/stock';\nexport function inventory() {}\n",
+    "api/main.py": "from fastapi import APIRouter\nrouter = APIRouter(prefix=\"/one\")\n@router.get(\"/items\")\ndef items():\n    return 1\n",
+    "api/other.py": "from fastapi import APIRouter\nrouter = APIRouter(prefix=\"/two\")\n@router.get(\"/items\")\ndef other():\n    return 2\n"
+  },
+  "domains": {"app":"app","shared":"shared","modules":"modules","packages":"packages","api":"api"},
+  "edges": [
+    {"source":"app/main.ts","target":"shared/UnusedService.ts","kind":"imports","partition":"development"},
+    {"source":"app/go.go","target":"shared/a.go","kind":"imports","partition":"development"},
+    {"source":"app/go.go","target":"shared/b.go","kind":"imports","partition":"development"},
+    {"source":"app/start.php","target":"modules/billing/Receipt.php","kind":"imports","partition":"holdout"},
+    {"source":"app/workspace.ts","target":"packages/stock/src/index.ts","kind":"imports","partition":"holdout"}
+  ],
+  "selection": {"query":"Overload.save","file":"app/Overload.java","signature":"public String save(String id)","start_line":3,"end_line":3},
+  "dynamic_source":"app/dynamic.ts",
+  "route":"GET /one/items"
+}

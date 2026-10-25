@@ -1,3 +1,4 @@
+import { ImportResolver } from "./import-resolver.ts";
 import { readOptionalSourceFile } from "../resources/source-files.ts";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, normalize, relative, resolve } from "node:path";
@@ -21,6 +22,7 @@ export interface DiscoveredRoute {
 }
 
 export class CallGraphTracer {
+  private importEvidence?: ReturnType<SeptumRepository["getImportRelationships"]>;
   private fileMapByNormPath: Map<string, FileRecord> = new Map();
   private fileMapById: Map<number, FileRecord> = new Map();
   private symbolsByFileId: Map<number, SymbolRecord[]> = new Map();
@@ -37,6 +39,7 @@ export class CallGraphTracer {
   public initMaps(): void {
     const allSymbolsWithFiles = this.repo.getAllSymbolsWithFiles();
     const allDeps = this.repo.getAllDependenciesWithDomains();
+    this.importEvidence = this.repo.getMeta?.("workspace_root") ? this.repo.getImportRelationships(this.projectRoot) : undefined;
 
     // Map files
     const allFiles = this.repo.getAllFiles();
@@ -384,10 +387,6 @@ export class CallGraphTracer {
     const effectiveMaxDepth = Math.min(Math.max(Math.trunc(maxDepth || 5), 1), 8);
     const visitedFiles = new Set<string>();
     visitedFiles.add(startFile.path);
-    for (const node of chain) {
-      if (node.file) visitedFiles.add(node.file);
-    }
-
     const queue: Array<{ file: FileRecord; depth: number }> = [
       { file: startFile, depth: 1 },
     ];
@@ -400,9 +399,9 @@ export class CallGraphTracer {
 
       for (const dep of deps) {
         if (chain.length >= CallGraphTracer.MAX_CHAIN_NODES) break;
-        if (dep.is_external) continue;
-
-        const resolvedFile = this.resolveImportToFile(current.file.path, dep.target);
+        const resolvedFiles = this.repo.getMeta?.("workspace_root") ? this.resolveImportTargets(current.file.path, dep.target)
+          : dep.is_external ? [] : [this.resolveImportToFile(current.file.path, dep.target)].filter((file): file is FileRecord => !!file);
+        for (const resolvedFile of resolvedFiles) {
         if (!resolvedFile || visitedFiles.has(resolvedFile.path)) continue;
 
         visitedFiles.add(resolvedFile.path);
@@ -429,11 +428,13 @@ export class CallGraphTracer {
             symbol: symbolDisplay,
             file: resolvedFile.path,
             line: mainSymbol?.line_start || 1,
-            description: `${stage.toUpperCase()} (dependency): ${symbolDisplay}`,
+            description: `${stage.toUpperCase()} (dependency, not a proven call): ${symbolDisplay}`,
+            relationship: { kind: "imports", derivation: "source", source: { file: current.file.path, line: dep.line_number, statement: dep.statement }, reason: "static import; stage classification is inferred" },
           });
         }
 
         queue.push({ file: resolvedFile, depth: current.depth + 1 });
+        }
       }
     }
 
@@ -509,7 +510,22 @@ export class CallGraphTracer {
   /**
    * Resolve an import target path (relative or alias) to a FileRecord in the catalog.
    */
+  public resolveImportTargets(sourceFilePath: string, importTarget: string): FileRecord[] {
+    const evidence = this.importEvidence?.find(edge => edge.source.file === sourceFilePath && edge.resolution.source.target === importTarget);
+    if (evidence && (evidence.freshness !== "current" || evidence.index_coverage !== "complete")) return [];
+    const result = evidence?.resolution ?? new ImportResolver(this.projectRoot, this.repo.getAllDomains?.().map(domain => domain.root_path) ?? []).resolve(importTarget,sourceFilePath);
+    if (result.status !== "resolved" || result.coverage === "conditional") return [];
+    return result.targets.flatMap(target => target.files).flatMap(file => {
+      const indexed = this.fileMapByNormPath.get(this.normalizeFilePath(file));
+      return indexed ? [indexed] : [];
+    });
+  }
+
   public resolveImportToFile(sourceFilePath: string, importTarget: string): FileRecord | undefined {
+    if (this.repo.getMeta?.("workspace_root")) {
+      const targets = this.resolveImportTargets(sourceFilePath,importTarget);
+      return targets.length === 1 ? targets[0] : undefined;
+    }
     // 1. Relative import (./ or ../)
     if (importTarget.startsWith(".")) {
       const sourceDir = dirname(sourceFilePath);
