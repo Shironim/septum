@@ -130,7 +130,7 @@ describe("language capability contract", () => {
       expect(compact.languages.kotlin).toBe("unsupported");
       expect(compact.languages.csharp).toBe("tree-sitter");
       expect(full.languages.find((l: any) => l.id === "typescript").extensions).toContain(".tsx");
-      expect(full.semantic_adapters.map((a: any) => a.id).sort()).toEqual(["django", "fastapi", "golang", "laravel", "mcp-cli", "nestjs", "symfony"]);
+      expect(full.semantic_adapters.map((a: any) => a.id).sort()).toEqual(["django", "elysia", "express", "fastapi", "fastify", "flask", "golang", "hono", "laravel", "mcp-cli", "nestjs", "symfony"]);
       expect(full.languages.every((l: any) => l.coverage !== "complete")).toBe(true);
     }
   });

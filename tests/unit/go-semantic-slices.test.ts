@@ -450,4 +450,188 @@ func (s *Server) SetupRoutes() {
       fs.rmSync(tempDir, { recursive: true, force: true });
     }
   });
+
+  it("should extract Fiber routes and c.BodyParser(&req) DTO validation", () => {
+    const tempDir = createTempDir("fiber");
+
+    try {
+      fs.writeFileSync(path.join(tempDir, "go.mod"), "module fiberapp\n\ngo 1.22\nrequire github.com/gofiber/fiber/v2 v2.52.0\n");
+
+      const code = `
+package main
+
+import (
+    "github.com/gofiber/fiber/v2"
+)
+
+type FiberOrderHandler struct {}
+
+type CreateFiberOrderRequest struct {
+    Item string \`json:"item"\`
+}
+
+func (h *FiberOrderHandler) CreateOrder(c *fiber.Ctx) error {
+    var req CreateFiberOrderRequest
+    if err := c.BodyParser(&req); err != nil {
+        return c.Status(400).SendString(err.Error())
+    }
+    return c.SendStatus(201)
+}
+
+func SetupFiber(h *FiberOrderHandler) *fiber.App {
+    app := fiber.New()
+    api := app.Group("/api")
+    api.Post("/fiber-orders", h.CreateOrder)
+    return app
+}
+      `.trim();
+
+      fs.writeFileSync(path.join(tempDir, "main.go"), code);
+
+      const slices = extractor.extractSlices(tempDir);
+      expect(slices.length).toBe(1);
+
+      const slice = slices[0];
+      expect(slice.http_method).toBe("POST");
+      expect(slice.route_uri).toBe("/api/fiber-orders");
+      expect(slice.controller_class).toBe("FiberOrderHandler");
+      expect(slice.action_name).toBe("CreateOrder");
+
+      const chain = JSON.parse(slice.execution_chain_json);
+      expect(chain.some((c: any) => c.stage === "ingress" && c.symbol === "POST /api/fiber-orders")).toBe(true);
+      expect(chain.some((c: any) => c.stage === "validation" && c.symbol === "CreateFiberOrderRequest")).toBe(true);
+      expect(chain.some((c: any) => c.stage === "controller" && c.symbol === "FiberOrderHandler::CreateOrder")).toBe(true);
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("resolves physical service, repository, and entity files across Clean Architecture layers (L5)", () => {
+    const tempDir = createTempDir("go-clean-arch-l5");
+
+    try {
+      fs.writeFileSync(path.join(tempDir, "go.mod"), "module shop\n\ngo 1.22\nrequire github.com/gin-gonic/gin v1.9.1\n");
+
+      // 1. Entity: internal/domain/order.go
+      const domainDir = path.join(tempDir, "internal", "domain");
+      fs.mkdirSync(domainDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(domainDir, "order.go"),
+        `
+package domain
+
+type Order struct {
+    ID    int64
+    Total float64
+}
+        `.trim()
+      );
+
+      // 2. Repository: internal/repository/order_repo.go
+      const repoDir = path.join(tempDir, "internal", "repository");
+      fs.mkdirSync(repoDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(repoDir, "order_repo.go"),
+        `
+package repository
+
+import "shop/internal/domain"
+
+type OrderRepository struct {}
+
+func (r *OrderRepository) Save(order *domain.Order) error {
+    return nil
+}
+        `.trim()
+      );
+
+      // 3. Service: internal/service/order_service.go
+      const serviceDir = path.join(tempDir, "internal", "service");
+      fs.mkdirSync(serviceDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(serviceDir, "order_service.go"),
+        `
+package service
+
+import (
+    "shop/internal/domain"
+    "shop/internal/repository"
+)
+
+type OrderService struct {
+    repo *repository.OrderRepository
+}
+
+func (s *OrderService) ProcessOrder(order *domain.Order) error {
+    return s.repo.Save(order)
+}
+        `.trim()
+      );
+
+      // 4. Handler: internal/handler/order_handler.go
+      const handlerDir = path.join(tempDir, "internal", "handler");
+      fs.mkdirSync(handlerDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(handlerDir, "order_handler.go"),
+        `
+package handler
+
+import (
+    "github.com/gin-gonic/gin"
+    "shop/internal/service"
+)
+
+type OrderHandler struct {
+    orderService *service.OrderService
+}
+
+type CreateOrderRequest struct {
+    Total float64 \`json:"total"\`
+}
+
+func (h *OrderHandler) Create(c *gin.Context) {
+    var req CreateOrderRequest
+    if err := c.ShouldBindJSON(&req); err != nil {
+        return
+    }
+    h.orderService.ProcessOrder(nil)
+}
+
+func SetupRoutes(r *gin.Engine, h *OrderHandler) {
+    r.POST("/orders", h.Create)
+}
+        `.trim()
+      );
+
+      const slices = extractor.extractSlices(tempDir);
+      expect(slices).toHaveLength(1);
+
+      const slice = slices[0];
+      expect(slice.http_method).toBe("POST");
+      expect(slice.route_uri).toBe("/orders");
+      expect(slice.controller_class).toBe("OrderHandler");
+
+      const chain = JSON.parse(slice.execution_chain_json);
+
+      // L4: Service linked to internal/service/order_service.go
+      const svcNode = chain.find((c: any) => c.stage === "service");
+      expect(svcNode).toBeDefined();
+      expect(svcNode?.symbol).toContain("ProcessOrder");
+      expect(svcNode?.file).toBe("internal/service/order_service.go");
+
+      // L5: Repository linked to internal/repository/order_repo.go
+      const repoNode = chain.find((c: any) => c.stage === "repository");
+      expect(repoNode).toBeDefined();
+      expect(repoNode?.symbol).toContain("Save");
+      expect(repoNode?.file).toBe("internal/repository/order_repo.go");
+
+      // L5: Entity linked to internal/domain/order.go
+      const entNode = chain.find((c: any) => c.stage === "entity");
+      expect(entNode).toBeDefined();
+      expect(entNode?.symbol).toBe("Order");
+      expect(entNode?.file).toBe("internal/domain/order.go");
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
 });

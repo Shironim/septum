@@ -47,7 +47,7 @@ export class OrdersController {
   @Get()
   list() { return []; }
 }`);
-    const slices = new NestJsSemanticExtractor().extractSlices(root);
+    const slices = await new NestJsSemanticExtractor().extractSlices(root);
     expect(slices).toHaveLength(2);
     const create = slices.find(s => s.action_name === "create")!;
     expect(create.controller_line).toBe(4);

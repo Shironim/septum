@@ -112,9 +112,9 @@ class InvoiceRepository {
       const ast = await extractor.extract("InvoiceRepository.php", phpCode);
       const symbolNames = ast.symbols.map((s) => s.name);
 
-      expect(symbolNames).toContain("InvoiceRepository");
-      expect(symbolNames).toContain("InvoiceRepository::findPending");
-      expect(symbolNames).toContain("InvoiceRepository::createBatch");
+      expect(symbolNames).toContain("App\\Repositories\\InvoiceRepository");
+      expect(symbolNames).toContain("App\\Repositories\\InvoiceRepository::findPending");
+      expect(symbolNames).toContain("App\\Repositories\\InvoiceRepository::createBatch");
 
       expect(symbolNames.some((n) => n.toUpperCase().includes("VALUES"))).toBe(false);
       expect(symbolNames.some((n) => n.toUpperCase().includes("WHERE"))).toBe(false);

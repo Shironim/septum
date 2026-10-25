@@ -74,6 +74,80 @@ async def get_order_by_id(order_id: str):
         fs.rmSync(tempDir, { recursive: true, force: true });
       }
     });
+
+    it("resolves physical service file and connects to SQLAlchemy ORM model (L5)", async () => {
+      const tempDir = createTempDir("fastapi-l5");
+      const extractor = new FastApiSemanticExtractor();
+
+      try {
+        fs.writeFileSync(path.join(tempDir, "requirements.txt"), "fastapi\nsqlalchemy\n");
+
+        const routersDir = path.join(tempDir, "app", "routers");
+        const servicesDir = path.join(tempDir, "app", "services");
+        const modelsDir = path.join(tempDir, "app", "models");
+        fs.mkdirSync(routersDir, { recursive: true });
+        fs.mkdirSync(servicesDir, { recursive: true });
+        fs.mkdirSync(modelsDir, { recursive: true });
+
+        // 1. Model
+        fs.writeFileSync(
+          path.join(modelsDir, "order.py"),
+          `
+class Order:
+    __tablename__ = "orders"
+          `.trim()
+        );
+
+        // 2. Service
+        fs.writeFileSync(
+          path.join(servicesDir, "order_service.py"),
+          `
+from app.models.order import Order
+
+class OrderService:
+    @staticmethod
+    def create_order(db, payload):
+        order = Order(total=payload.total)
+        db.add(order)
+        return order
+          `.trim()
+        );
+
+        // 3. Router
+        fs.writeFileSync(
+          path.join(routersDir, "orders.py"),
+          `
+from fastapi import APIRouter
+from app.services.order_service import OrderService
+
+router = APIRouter(prefix="/orders")
+
+@router.post("/")
+def place_order(payload: dict):
+    return OrderService.create_order(None, payload)
+          `.trim()
+        );
+
+        const slices = await extractor.extractSlices(tempDir);
+        expect(slices).toHaveLength(1);
+
+        const chain = JSON.parse(slices[0].execution_chain_json);
+
+        // L4: Physical Service link
+        const svcNode = chain.find((c: any) => c.stage === "service");
+        expect(svcNode).toBeDefined();
+        expect(svcNode?.symbol).toBe("OrderService::create_order");
+        expect(svcNode?.file).toBe("app/services/order_service.py");
+
+        // L5: Physical Model persistence link
+        const modelNode = chain.find((c: any) => c.stage === "model");
+        expect(modelNode).toBeDefined();
+        expect(modelNode?.symbol).toBe("Order");
+        expect(modelNode?.file).toBe("app/models/order.py");
+      } finally {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
   });
 
   describe("DjangoSemanticExtractor", () => {

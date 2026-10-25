@@ -8,7 +8,12 @@ import { McpCliSemanticExtractor } from "./mcp-cli-semantic.ts";
 import { NestJsSemanticExtractor } from "./nestjs-semantic.ts";
 import { FastApiSemanticExtractor } from "./fastapi-semantic.ts";
 import { DjangoSemanticExtractor } from "./django-semantic.ts";
+import { FlaskSemanticExtractor } from "./flask-semantic.ts";
 import { GoSemanticExtractor } from "./go-semantic.ts";
+import { ExpressSemanticExtractor } from "./express-semantic.ts";
+import { FastifySemanticExtractor } from "./fastify-semantic.ts";
+import { HonoSemanticExtractor } from "./hono-semantic.ts";
+import { ElysiaSemanticExtractor } from "./elysia-semantic.ts";
 
 export class SemanticSliceExtractorRegistry {
   private static extractors: SemanticSliceExtractor[] = [
@@ -16,8 +21,13 @@ export class SemanticSliceExtractorRegistry {
     new SymfonySemanticExtractor(),
     new McpCliSemanticExtractor(),
     new NestJsSemanticExtractor(),
+    new ExpressSemanticExtractor(),
+    new FastifySemanticExtractor(),
+    new HonoSemanticExtractor(),
+    new ElysiaSemanticExtractor(),
     new FastApiSemanticExtractor(),
     new DjangoSemanticExtractor(),
+    new FlaskSemanticExtractor(),
     new GoSemanticExtractor(),
   ];
 

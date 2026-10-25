@@ -1,4 +1,5 @@
 import { readOptionalSourceFile } from "../../resources/source-files.ts";
+import { isIgnoredDirectory } from "../../resources/ignore.ts";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { SemanticSliceExtractor, VerticalSliceCandidate } from "./semantic-extractor.interface.ts";
@@ -60,8 +61,27 @@ export class GoSemanticExtractor implements SemanticSliceExtractor {
       repoCall?: string;
     }
 
+    interface GoStructInfo {
+      name: string;
+      file: string;
+      relPath: string;
+      line: number;
+      fields: Map<string, string>;
+    }
+
+    interface GoMethodInfo {
+      receiver?: string;
+      name: string;
+      file: string;
+      relPath: string;
+      line: number;
+      body: string;
+    }
+
     // 1. Catalog all handler functions & methods across .go files
     const handlers = new Map<string, HandlerInfo>();
+    const goStructs = new Map<string, GoStructInfo>();
+    const goMethods = new Map<string, GoMethodInfo>();
 
     for (const file of goFiles) {
       const content = readOptionalSourceFile(file, "utf-8");
@@ -97,9 +117,9 @@ export class GoSemanticExtractor implements SemanticSliceExtractor {
         const bodyEnd = this.findGoBraceBlockEnd(content, bodyStart - 1);
         const fnBody = content.slice(bodyStart, bodyEnd);
 
-        // Detect DTO binding: ShouldBindJSON(&req), c.Bind(&req), Decode(&req)
+        // Detect DTO binding: ShouldBindJSON(&req), c.Bind(&req), Decode(&req), c.BodyParser(&req)
         let boundDto: string | undefined;
-        const bindMatch = fnBody.match(/(?:ShouldBind(?:JSON|Query|URI|XML|YAML|Header)?|Bind(?:JSON)?|Decode)\s*\(\s*&([a-zA-Z0-9_]+)\s*\)/);
+        const bindMatch = fnBody.match(/(?:ShouldBind(?:JSON|Query|URI|XML|YAML|Header)?|Bind(?:JSON)?|Decode|(?:Body|Params|Query)Parser)\s*\(\s*&([a-zA-Z0-9_]+)\s*\)/);
         if (bindMatch) {
           const varName = bindMatch[1];
           // Look for explicit type declaration:
@@ -149,6 +169,44 @@ export class GoSemanticExtractor implements SemanticSliceExtractor {
           handlers.set(`${receiver}.${fnName}`, info);
         } else {
           handlers.set(fnName, info);
+        }
+      }
+
+      // Catalog struct definitions
+      const structRegex = /type\s+([A-Z][a-zA-Z0-9_]+)\s+(?:struct|interface)\s*\{/g;
+      let sDeclMatch: RegExpExecArray | null;
+      while ((sDeclMatch = structRegex.exec(content)) !== null) {
+        const sName = sDeclMatch[1];
+        const sLine = content.slice(0, sDeclMatch.index).split("\n").length;
+        const sBodyStart = sDeclMatch.index + sDeclMatch[0].length;
+        const sBodyEnd = this.findGoBraceBlockEnd(content, sBodyStart - 1);
+        const sBody = content.slice(sBodyStart, sBodyEnd);
+
+        const fields = new Map<string, string>();
+        const fieldRegex = /^\s*([a-zA-Z0-9_]+)\s+\*?(?:[a-zA-Z0-9_]+\.)?([A-Z][a-zA-Z0-9_]+)/gm;
+        let fldMatch: RegExpExecArray | null;
+        while ((fldMatch = fieldRegex.exec(sBody)) !== null) {
+          fields.set(fldMatch[1], fldMatch[2]);
+        }
+
+        goStructs.set(sName, { name: sName, file, relPath, line: sLine, fields });
+      }
+
+      // Catalog all methods & functions for call resolution
+      const allFuncRegex =
+        /func\s*(?:\(\s*[a-zA-Z0-9_]+\s+\*?(?:[a-zA-Z0-9_]+\.)?([a-zA-Z0-9_]+)\s*\)\s*)?([A-Z][a-zA-Z0-9_]+)\s*\(([\s\S]*?)\)(?:[^{]*)\{/g;
+      let afMatch: RegExpExecArray | null;
+      while ((afMatch = allFuncRegex.exec(content)) !== null) {
+        const rcv = afMatch[1];
+        const fn = afMatch[2];
+        const fLine = content.slice(0, afMatch.index).split("\n").length;
+        const bStart = afMatch.index + afMatch[0].length;
+        const bEnd = this.findGoBraceBlockEnd(content, bStart - 1);
+        const bText = content.slice(bStart, bEnd);
+        if (rcv) {
+          goMethods.set(`${rcv}.${fn}`, { receiver: rcv, name: fn, file, relPath, line: fLine, body: bText });
+        } else {
+          goMethods.set(fn, { name: fn, file, relPath, line: fLine, body: bText });
         }
       }
     }
@@ -255,6 +313,8 @@ export class GoSemanticExtractor implements SemanticSliceExtractor {
             handlerTarget,
             handlers,
             scopedVarReceivers,
+            goStructs,
+            goMethods,
             domainId
           );
         }
@@ -295,6 +355,8 @@ export class GoSemanticExtractor implements SemanticSliceExtractor {
             handlerTarget,
             handlers,
             scopedVarReceivers,
+            goStructs,
+            goMethods,
             domainId
           );
         }
@@ -314,6 +376,8 @@ export class GoSemanticExtractor implements SemanticSliceExtractor {
     handlerTarget: string,
     handlers: Map<string, any>,
     scopedVarReceivers: Map<string, string>,
+    goStructs: Map<string, any>,
+    goMethods: Map<string, any>,
     domainId?: number
   ): void {
     let handlerInfo: any = undefined;
@@ -373,19 +437,100 @@ export class GoSemanticExtractor implements SemanticSliceExtractor {
       description: `Go Route Handler: ${actionName}`,
     });
 
+    let serviceFile: string | undefined;
+    let serviceLine: number | undefined;
+    let repoCall = handlerInfo?.repoCall;
+    let repoFile: string | undefined;
+    let repoLine: number | undefined;
+    let entityName: string | undefined;
+    let entityFile: string | undefined;
+    let entityLine: number | undefined;
+
+    if (handlerInfo?.serviceCall) {
+      const parts = handlerInfo.serviceCall.split("::");
+      const callVar = parts[0];
+      const callMethod = parts[1];
+
+      const handlerStruct = goStructs.get(controllerClass);
+      const svcType = handlerStruct?.fields.get(callVar) || callVar;
+      const targetMethod = goMethods.get(`${svcType}.${callMethod}`) || goMethods.get(`${callVar}.${callMethod}`);
+      const targetStruct = goStructs.get(svcType);
+
+      serviceFile = targetMethod?.relPath || targetStruct?.relPath;
+      serviceLine = targetMethod?.line || targetStruct?.line;
+
+      // Scan service body for repo or DB persistence
+      if (targetMethod?.body) {
+        const rMatch = targetMethod.body.match(
+          /(?:([a-zA-Z0-9_]+(?:Repo|Repository))\s*\.\s*([A-Z][a-zA-Z0-9_]+)|db\s*\.\s*(?:Create|Save|Find|First|Update|Delete)\s*\(\s*&?([A-Z][a-zA-Z0-9_]+)\s*\))/i
+        );
+        if (rMatch && !repoCall) {
+          repoCall = rMatch[1] ? `${rMatch[1]}::${rMatch[2]}` : `DB::${rMatch[3]}`;
+        }
+      }
+    }
+
+    if (repoCall) {
+      const rParts = repoCall.split("::");
+      const rVar = rParts[0];
+      const rMethod = rParts[1];
+
+      let rType = rVar;
+      const handlerStruct = goStructs.get(controllerClass);
+      if (handlerStruct?.fields?.has(rVar)) {
+        rType = handlerStruct.fields.get(rVar)!;
+      }
+
+      const rMethodInfo = goMethods.get(`${rType}.${rMethod}`) || goMethods.get(`${rVar}.${rMethod}`);
+      const rStructInfo = goStructs.get(rType);
+      repoFile = rMethodInfo?.relPath || rStructInfo?.relPath;
+      repoLine = rMethodInfo?.line || rStructInfo?.line;
+
+      if (rVar === "DB" && rMethod) {
+        entityName = rMethod;
+      } else if (rMethodInfo?.body) {
+        const entMatch = rMethodInfo.body.match(/&?([A-Z][a-zA-Z0-9_]+)\s*\{/);
+        if (entMatch) entityName = entMatch[1];
+      }
+    }
+
+    if (!entityName && handlerInfo?.boundDto) {
+      const candidate = handlerInfo.boundDto.replace(/(?:Request|Req|DTO|Dto)$/, "");
+      if (candidate && goStructs.has(candidate)) {
+        entityName = candidate;
+      }
+    }
+
+    if (entityName && goStructs.has(entityName)) {
+      const entInfo = goStructs.get(entityName)!;
+      entityFile = entInfo.relPath;
+      entityLine = entInfo.line;
+    }
+
     if (handlerInfo?.serviceCall) {
       chain.push({
         stage: "service",
         symbol: handlerInfo.serviceCall,
-        description: `Service / Business Logic`,
+        ...(serviceFile ? { file: serviceFile, line: serviceLine } : {}),
+        description: serviceFile ? "Go Service / Business Logic" : `Service / Business Logic`,
       });
     }
 
-    if (handlerInfo?.repoCall) {
+    if (repoCall) {
       chain.push({
         stage: "repository",
-        symbol: handlerInfo.repoCall,
-        description: `Persistence / Database Operation`,
+        symbol: repoCall,
+        ...(repoFile ? { file: repoFile, line: repoLine } : {}),
+        description: repoFile ? "Go Repository / Persistence Layer" : `Persistence / Database Operation`,
+      });
+    }
+
+    if (entityName) {
+      chain.push({
+        stage: "entity",
+        symbol: entityName,
+        ...(entityFile ? { file: entityFile, line: entityLine } : {}),
+        description: entityFile ? "Go Database / Domain Entity" : `Domain Entity`,
       });
     }
 
@@ -427,15 +572,12 @@ export class GoSemanticExtractor implements SemanticSliceExtractor {
 
   private findGoFiles(dir: string, maxDepth: number = 10): string[] {
     const results: string[] = [];
-    const ignored = new Set(["node_modules", ".git", "vendor", ".septum", "dist", "build"]);
-
     const traverse = (currentDir: string, currentDepth: number) => {
       if (currentDepth > maxDepth || !fs.existsSync(currentDir)) return;
       try {
         const entries = fs.readdirSync(currentDir, { withFileTypes: true });
         for (const entry of entries) {
-          if (entry.name.startsWith(".") && entry.name !== ".septum") continue;
-          if (ignored.has(entry.name)) continue;
+          if (isIgnoredDirectory(entry.name)) continue;
 
           const fullPath = path.join(currentDir, entry.name);
           if (entry.isDirectory()) {

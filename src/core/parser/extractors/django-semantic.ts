@@ -1,6 +1,7 @@
 import type Parser from "web-tree-sitter";
 import { parseSourceWithTreeSitter } from "../wasm-loader.ts";
 import { readOptionalSourceFile } from "../../resources/source-files.ts";
+import { isIgnoredDirectory } from "../../resources/ignore.ts";
 import { ImportResolver } from "../../resolver/import-resolver.ts";
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -662,26 +663,12 @@ export class DjangoSemanticExtractor implements SemanticSliceExtractor {
 
   private findPythonFiles(dir: string): string[] {
     const results: string[] = [];
-    const ignored = new Set([
-      "node_modules",
-      ".git",
-      ".venv",
-      "venv",
-      "env",
-      "__pycache__",
-      ".pytest_cache",
-      ".mypy_cache",
-      "build",
-      "dist",
-    ]);
-
     const traverse = (currentDir: string) => {
       if (!fs.existsSync(currentDir)) return;
       try {
         const entries = fs.readdirSync(currentDir, { withFileTypes: true });
         for (const entry of entries) {
-          if (entry.name.startsWith(".") && entry.name !== ".septum") continue;
-          if (ignored.has(entry.name)) continue;
+          if (isIgnoredDirectory(entry.name)) continue;
 
           const fullPath = path.join(currentDir, entry.name);
           if (entry.isDirectory()) {

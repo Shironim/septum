@@ -1,6 +1,7 @@
 import type Parser from "web-tree-sitter";
 import { parseSourceWithTreeSitter } from "../wasm-loader.ts";
 import { readOptionalSourceFile } from "../../resources/source-files.ts";
+import { isIgnoredDirectory } from "../../resources/ignore.ts";
 import { ImportResolver } from "../../resolver/import-resolver.ts";
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -561,20 +562,89 @@ export class FastApiSemanticExtractor implements SemanticSliceExtractor {
         }
 
         if (route.service) {
+          const serviceName = route.service.symbol.split("::")[0];
+          const serviceMethod = route.service.symbol.split("::")[1];
+          const importsInFile = fileImports.get(route.relPath);
+          const binding = importsInFile?.get(serviceName);
+          let serviceFile: string | undefined;
+          let serviceLine: number = route.service.line;
+          let persistenceModel: { name: string; file?: string; line?: number } | undefined;
+
+          if (binding?.module) {
+            const subTarget = binding.symbol ? `${binding.module}.${binding.symbol}` : binding.module;
+            let res = resolver.resolve(subTarget, route.file);
+            if (res.status !== "resolved" && binding.module) {
+              res = resolver.resolve(binding.module, route.file);
+            }
+            if (res.status === "resolved" && res.targets[0]?.files?.[0]) {
+              serviceFile = res.targets[0].files[0];
+            }
+          }
+
+          if (serviceFile) {
+            const fullServicePath = path.resolve(projectRoot, serviceFile);
+            const serviceContent = readOptionalSourceFile(fullServicePath, "utf-8");
+            if (serviceContent) {
+              const fnMatch = new RegExp(`(?:def|async\\s+def)\\s+${serviceMethod}\\s*\\(`).exec(serviceContent);
+              if (fnMatch) {
+                serviceLine = serviceContent.slice(0, fnMatch.index).split("\n").length;
+              }
+              // Scan service for ORM persistence (SQLAlchemy, Tortoise, SQLModel)
+              const ormMatch =
+                serviceContent.match(/(?:db\.(?:add|query)|session\.(?:query|add)|select)\s*\(\s*([A-Z][a-zA-Z0-9_]+)/) ||
+                serviceContent.match(/\b([A-Z][a-zA-Z0-9_]+)\.(?:create|filter|get|save|all)\s*\(/);
+              if (ormMatch) {
+                const modelName = ormMatch[1];
+                let modelFile: string | undefined;
+                const modelImportMatch = serviceContent.match(
+                  new RegExp(`from\\s+([a-zA-Z0-9_.]+)\\s+import\\s+[^\\n]*\\b${modelName}\\b`)
+                );
+                if (modelImportMatch) {
+                  const mRes = resolver.resolve(modelImportMatch[1], fullServicePath);
+                  if (mRes.status === "resolved" && mRes.targets[0]?.files?.[0]) {
+                    modelFile = mRes.targets[0].files[0];
+                  }
+                }
+                persistenceModel = { name: modelName, file: modelFile };
+              }
+            }
+          }
+
           chain.push({
             stage: "service",
             symbol: route.service.symbol,
-            file: route.relPath,
-            line: route.service.line,
-            description: "Syntactic member call; receiver binding and runtime execution unproven",
+            file: serviceFile || route.relPath,
+            line: serviceLine,
+            description: serviceFile
+              ? "Domain Service Invocation"
+              : "Syntactic member call; receiver binding and runtime execution unproven",
           });
+
+          if (persistenceModel) {
+            chain.push({
+              stage: "model",
+              symbol: persistenceModel.name,
+              ...(persistenceModel.file ? { file: persistenceModel.file } : {}),
+              description: "SQLAlchemy / ORM Model Persistence",
+            });
+          }
         }
 
-        if (route.model) {
+        if (route.model && !chain.some((n) => n.stage === "model")) {
+          const importsInFile = fileImports.get(route.relPath);
+          const binding = importsInFile?.get(route.model);
+          let modelFile: string | undefined;
+          if (binding?.module) {
+            const mRes = resolver.resolve(binding.module, route.file);
+            if (mRes.status === "resolved" && mRes.targets[0]?.files?.[0]) {
+              modelFile = mRes.targets[0].files[0];
+            }
+          }
           chain.push({
             stage: "model",
             symbol: route.model,
-            description: "ORM argument hint; persistence unproven",
+            ...(modelFile ? { file: modelFile } : {}),
+            description: modelFile ? "SQLAlchemy / ORM Model Persistence" : "ORM argument hint; persistence unproven",
           });
         }
 
@@ -623,26 +693,12 @@ export class FastApiSemanticExtractor implements SemanticSliceExtractor {
 
   private findPythonFiles(dir: string): string[] {
     const results: string[] = [];
-    const ignored = new Set([
-      "node_modules",
-      ".git",
-      ".venv",
-      "venv",
-      "env",
-      "__pycache__",
-      ".pytest_cache",
-      ".mypy_cache",
-      "build",
-      "dist",
-    ]);
-
     const traverse = (currentDir: string) => {
       if (!fs.existsSync(currentDir)) return;
       try {
         const entries = fs.readdirSync(currentDir, { withFileTypes: true });
         for (const entry of entries) {
-          if (entry.name.startsWith(".") && entry.name !== ".septum") continue;
-          if (ignored.has(entry.name)) continue;
+          if (isIgnoredDirectory(entry.name)) continue;
 
           const fullPath = path.join(currentDir, entry.name);
           if (entry.isDirectory()) {
