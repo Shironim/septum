@@ -136,6 +136,32 @@ export interface ActiveFeatureSession {
   locked_at: string;
 }
 
+export interface SymbolReference {
+  file_path: string;
+  language: string;
+  name: string;
+  kind: string;
+  signature: string;
+  start_line: number;
+  end_line: number;
+  indexed_content_hash: string;
+  container?: string;
+  receiver?: string;
+}
+
+export interface SymbolSelectionOptions {
+  domain?: string;
+  filePath?: string;
+  reference?: SymbolReference;
+}
+
+export type SymbolCandidate = SymbolRecord & {
+  file_path: string;
+  domain_name: string;
+  indexed_content_hash: string;
+  symbol_ref: SymbolReference;
+};
+
 export interface SymbolRecord {
   id: number;
   file_id: number;
@@ -169,6 +195,27 @@ export interface ExtractedSymbol {
   nesting_depth?: number;
 }
 
+export interface ResolutionTarget { kind: "file" | "package"; files: string[] }
+export interface ImportResolution {
+  status: "resolved" | "external" | "unresolved" | "ambiguous" | "unsupported";
+  targets: ResolutionTarget[];
+  reason: string;
+  coverage: "partial" | "conditional";
+  resolver_revision: string;
+  config_revision: string;
+  source: { file: string; target: string };
+}
+export interface ImportRelationship {
+  kind: "imports";
+  index_coverage: "complete" | "partial";
+  import_binding?: { kind: string; alias?: string };
+  derivation: "source";
+  source: { file: string; line: number; statement: string; indexed_content_hash: string };
+  resolution: ImportResolution;
+  target_domains: string[];
+  freshness: "current" | "stale" | "unavailable";
+}
+
 export interface ExtractedDependency {
   target: string;
   statement: string;
@@ -177,7 +224,14 @@ export interface ExtractedDependency {
   imported_symbols?: string[];
 }
 
+export interface ParserDiagnostic {
+  code: "extractor_unavailable" | "grammar_unsupported" | "runtime_unavailable" | "grammar_missing" | "grammar_invalid" | "parse_failed" | "extraction_failed" | "syntax_recovery";
+  message: string;
+}
+
 export interface ParsedFileAST {
+  extraction?: { method: "tree-sitter" | "fallback" | "template-scanner" | "embedded-script" | "unsupported"; coverage: "partial" | "none" };
+  diagnostics?: ParserDiagnostic[];
   status?: "parsed" | "unsupported" | "degraded";
   symbols: ExtractedSymbol[];
   dependencies: ExtractedDependency[];
@@ -220,6 +274,7 @@ export interface DomainCatalogResponse {
     archetype: ArchetypeKind;
     line_count?: number;
     connections?: FileConnectionsSummary;
+    declarations?: SymbolReference[];
     symbols: Array<{
       name: string;
       kind: SymbolKind;
@@ -235,6 +290,8 @@ export interface DomainCatalogResponse {
 }
 
 export interface ExecutionChainNode {
+  relationship?: { kind: "imports" | "declares" | "member_of" | "calls" | "route_binding" | "schema_binding"; derivation: "source" | "inferred"; source?: { file: string; line: number; statement?: string }; reason: string };
+
   stage:
     | "ingress"
     | "guard"
@@ -286,6 +343,8 @@ export interface VerticalSliceRecord {
 }
 
 export interface VerticalSliceTraceResponse {
+  coverage?: "partial";
+  diagnostics?: string[];
   query: string;
   found: boolean;
   confidence?: "exact" | "inferred";
@@ -314,9 +373,14 @@ export interface VerticalSliceTraceResponse {
 
 export interface GetSymbolArgs {
   symbol: string;
+  symbol_ref?: SymbolReference;
   query?: string;
   domain?: string;
+  file_path?: string;
   include_dependencies?: boolean;
+  include_source?: boolean;
+  source_start_line?: number;
+  source_line_limit?: number;
   workspace_path?: string;
 }
 
@@ -327,6 +391,7 @@ export interface SymbolExactRange {
 }
 
 export interface ResolvedOutboundCall {
+  derivation?: "inferred";
   symbol: string;
   target_file?: string;
   target_range?: SymbolExactRange;
@@ -342,6 +407,8 @@ export interface SymbolComplexitySmell {
 }
 
 export interface GetSymbolDetailsResponse {
+  symbol_ref: SymbolReference;
+  visibility_semantics: "legacy_normalized";
   symbol: string;
   kind: SymbolKind | string;
   file_path: string;
@@ -355,6 +422,7 @@ export interface GetSymbolDetailsResponse {
   complexity_smell?: SymbolComplexitySmell;
   sibling_methods?: string[];
   connected_files?: FileConnectionsSummary;
+  relationships?: ImportRelationship[];
 }
 
 export interface GetSymbolImpactArgs {
