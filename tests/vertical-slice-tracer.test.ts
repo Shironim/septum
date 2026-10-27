@@ -107,6 +107,26 @@ describe("VerticalSliceTracer End-to-End Tracing", () => {
     expect(res.message).toContain("=== VERTICAL SLICE TRACE");
   });
 
+  test("matches route path case exactly and treats placeholder-only matches as inferred", () => {
+    const routes = [
+      { ...mockSlice, id: 2, http_method: "GET", route_uri: "/Users", controller_class: "UpperController" },
+      { ...mockSlice, id: 3, route_uri: "/users", controller_class: "LowerController" },
+      { ...mockSlice, id: 4, http_method: "GET", route_uri: "/users/{userId}", controller_class: "ParamController" },
+      { ...mockSlice, id: 5, http_method: "GET", route_uri: "/users", controller_class: "GetUsersController" },
+    ];
+    const routeTracer = new VerticalSliceTracer({ getAllVerticalSlices: () => routes } as any);
+    expect(routeTracer.trace("get /users").entrypoint?.controller).toBe("GetUsersController");
+    expect(routeTracer.trace("GET /Users").entrypoint?.controller).toBe("UpperController");
+    expect(routeTracer.trace("GET /users/{id}").confidence).toBe("inferred");
+    expect(routeTracer.trace("/users/{id}").confidence).toBe("inferred");
+    expect(routeTracer.trace("/users/{id}").is_exact_match).toBe(false);
+    expect(routeTracer.trace("/users/{userId}").confidence).toBe("exact");
+    expect(routeTracer.trace("/users").alternatives?.length).toBeGreaterThan(0);
+    const multiple = new VerticalSliceTracer({ getAllVerticalSlices: () => [routes[2], { ...routes[2], id: 6, route_uri: "/users/{otherId}" }] } as any);
+    expect(multiple.trace("/users/{id}").confidence).toBe("inferred");
+    expect(multiple.trace("/users/{id}").alternatives?.length).toBe(1);
+  });
+
   test("resolves vertical slice via Controller@action syntax", () => {
     const res = tracer.trace("OrderController@updateStatus");
     expect(res.found).toBe(true);

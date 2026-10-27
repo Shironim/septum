@@ -49,6 +49,9 @@ export async function handleSymbolTool(
           symbol,
           query: symbol,
           domain: args.domain,
+          file_path: args.file_path,
+          symbol_ref: args.symbol_ref,
+          workspace_path: args.workspace_path,
         },
         workspaceRoot
       );

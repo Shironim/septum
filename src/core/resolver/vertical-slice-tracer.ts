@@ -1,7 +1,7 @@
 import { readSourceFile } from "../resources/source-files.ts";
 import { computeContentHash } from "../ingestion/hasher.ts";
 import { assertPathContained } from "./path-resolver.ts";
-import { resolve } from "node:path";
+import { join, relative, resolve } from "node:path";
 import { collectSourceSkips } from "../resources/source-files.ts";
 import type {
   ExecutionChainNode,
@@ -12,9 +12,12 @@ import type { SeptumRepository } from "../database/repository.ts";
 import { CallGraphTracer } from "./call-graph-tracer.ts";
 import { SemanticSliceExtractorRegistry } from "../parser/extractors/registry.ts";
 import { TopologyDetector } from "../discovery/topology-detector.ts";
+import { readdirSync } from "node:fs";
+import { ASTParserEngine } from "../parser/tree-sitter.ts";
+import { shouldIgnoreSourcePath } from "../resources/ignore.ts";
 
 export class VerticalSliceTracer {
-  constructor(private repo: SeptumRepository, private projectRoot: string = process.cwd()) {}
+  constructor(private repo: SeptumRepository, private projectRoot: string = process.cwd(), private ignorePatterns: string[] = [], private verifyMembership = true) {}
 
   public async traceAsync(rawQuery: string, maxDepth = 5, signal?: AbortSignal): Promise<VerticalSliceTraceResponse> {
     signal?.throwIfAborted();
@@ -22,6 +25,7 @@ export class VerticalSliceTracer {
       return { query: rawQuery, found: false, coverage: "partial", diagnostics: ["index_incomplete"], message: "Workspace synchronization is incomplete." };
     }
     let inputsChanged = false;
+    let membershipChanged = false;
     try {
       const inputs = JSON.parse(this.repo.getMeta("semantic_inputs") || "[]") as Array<{path:string;hash:string}>;
       inputsChanged = inputs.some(input => {
@@ -29,8 +33,12 @@ export class VerticalSliceTracer {
         assertPathContained(input.path,this.projectRoot,"Semantic source");
         return computeContentHash(readSourceFile(resolve(this.projectRoot,input.path))) !== input.hash;
       });
+      if (this.verifyMembership) {
+        const files = this.listSourceFiles(this.projectRoot);
+        membershipChanged = JSON.stringify(files) !== (this.repo.getMeta("semantic_catalog_files") || "[]");
+      }
     } catch { signal?.throwIfAborted(); inputsChanged = true; }
-    if (inputsChanged || this.repo.getAllVerticalSlices().length === 0 || this.repo.getMeta("slices_dirty") === "1") {
+    if (inputsChanged || membershipChanged || this.repo.getAllVerticalSlices().length === 0 || this.repo.getMeta("slices_dirty") === "1") {
       try {
         const topology = TopologyDetector.detect(this.projectRoot);
         const extracted = await collectSourceSkips(this.projectRoot, async () => {
@@ -45,6 +53,7 @@ export class VerticalSliceTracer {
           for (const slice of extracted.value) this.repo.upsertVerticalSlice(slice);
           this.repo.setMeta("slices_dirty", "");
           this.repo.setMeta("semantic_inputs", JSON.stringify(extracted.inputs));
+          if (this.verifyMembership) this.repo.setMeta("semantic_catalog_files", JSON.stringify(this.listSourceFiles(this.projectRoot)));
         });
       } catch (error) {
         signal?.throwIfAborted();
@@ -53,6 +62,21 @@ export class VerticalSliceTracer {
       }
     }
     return this.trace(rawQuery,maxDepth);
+  }
+
+  private listSourceFiles(root: string): string[] {
+    const files: string[] = [];
+    const walk = (dir: string) => {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        const fullPath = join(dir, entry.name);
+        const relPath = relative(root, fullPath).replace(/\\/g, "/");
+        if (shouldIgnoreSourcePath(relPath, this.ignorePatterns)) continue;
+        if (entry.isDirectory()) walk(fullPath);
+        else if (entry.isFile() && ASTParserEngine.isSourceFile(fullPath)) files.push(relPath);
+      }
+    };
+    walk(root);
+    return files.sort();
   }
 
   /**
@@ -86,26 +110,31 @@ export class VerticalSliceTracer {
     const methodUriMatch = trimmed.match(/^(GET|POST|PUT|PATCH|DELETE)\s+(\/[^\s]+)$/i);
     if (methodUriMatch) {
       const httpMethod = methodUriMatch[1].toUpperCase();
-      const uri = methodUriMatch[2].toLowerCase();
-      const exact = allSlices.find(
-        (s) =>
-          s.http_method.toUpperCase() === httpMethod &&
-          (s.route_uri.toLowerCase() === uri || this.urisMatch(s.route_uri, uri))
-      );
-      if (exact) {
-        return this.formatSuccessResponse(trimmed, exact, "exact", undefined, effectiveMaxDepth);
+      const uri = methodUriMatch[2];
+      const candidates = allSlices.filter((s) => s.http_method.toUpperCase() === httpMethod && this.urisMatch(s.route_uri, uri));
+      const literal = candidates.filter(s => s.route_uri === uri);
+      if (literal.length === 1) {
+        return this.formatSuccessResponse(trimmed, literal[0], "exact", undefined, effectiveMaxDepth);
+      }
+      if (literal.length > 1 || candidates.length > 1) {
+        return this.formatSuccessResponse(trimmed, literal[0] ?? candidates[0], "inferred", (literal.length ? literal : candidates).slice(1), effectiveMaxDepth);
+      }
+      if (candidates.length === 1) {
+        return this.formatSuccessResponse(trimmed, candidates[0], "inferred", undefined, effectiveMaxDepth);
       }
       return { query: trimmed, found: false, max_depth_applied: effectiveMaxDepth, message: `No vertical slice found matching query '${trimmed}'.` };
     }
 
     // 2. URI-only match: "/orders" or "orders/{id}"
-    const uriMatches = allSlices.filter((s) => s.route_uri.toLowerCase() === lowerTrimmed);
+    const literalUriMatches = allSlices.filter((s) => s.route_uri === trimmed);
+    const uriMatches = literalUriMatches.length ? literalUriMatches : allSlices.filter((s) => this.urisMatch(s.route_uri, trimmed));
     if (uriMatches.length > 0) {
+      const confidence = literalUriMatches.length ? "exact" : "inferred";
       if (uriMatches.length === 1) {
-        return this.formatSuccessResponse(trimmed, uriMatches[0], "exact", undefined, effectiveMaxDepth);
+        return this.formatSuccessResponse(trimmed, uriMatches[0], confidence, undefined, effectiveMaxDepth);
       }
       // Multiple matches (e.g. GET /orders and POST /orders) -> return primary with alternatives
-      return this.formatSuccessResponse(trimmed, uriMatches[0], "exact", uriMatches.slice(1), effectiveMaxDepth);
+      return this.formatSuccessResponse(trimmed, uriMatches[0], confidence, uriMatches.slice(1), effectiveMaxDepth);
     }
 
     // 3. Named Route match: "orders.status.update" or "admin.users.index"
@@ -229,11 +258,9 @@ export class VerticalSliceTracer {
 
   private urisMatch(uriA: string, uriB: string): boolean {
     const normA = uriA
-      .toLowerCase()
       .replace(/\{[^}]+\}/g, ":param")
       .replace(/:[a-zA-Z0-9_]+/g, ":param");
     const normB = uriB
-      .toLowerCase()
       .replace(/\{[^}]+\}/g, ":param")
       .replace(/:[a-zA-Z0-9_]+/g, ":param");
     return normA === normB;

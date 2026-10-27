@@ -12,6 +12,7 @@ import type {
   FileConnectionsSummary,
   GetSymbolImpactResponse,
   InboundCaller,
+  SymbolReference,
   VerticalSliceRecord,
 } from "../../../types/index.ts";
 
@@ -305,7 +306,7 @@ export class DependencyRepository {
 
   public getSymbolImpact(
     symbolQuery: string,
-    options: { domain?: string; workspaceRoot?: string } = {}
+    options: { domain?: string; workspaceRoot?: string; filePath?: string; reference?: SymbolReference } = {}
   ): GetSymbolImpactResponse {
     const trimmed = symbolQuery.trim();
     if (!trimmed) {
@@ -404,6 +405,24 @@ export class DependencyRepository {
       }
     }
 
+    const targetFilePath = (options.filePath ?? options.reference?.file_path)?.replace(/\\/g, "/");
+    if (targetFilePath) {
+      targetSymRows = targetSymRows.filter((r) => r.file_path.replace(/\\/g, "/") === targetFilePath);
+      if (targetSymRows.length === 0) {
+        return {
+          target_symbol: trimmed,
+          found_in_index: false,
+          warning: `Symbol '${trimmed}' was not found in Septum index for file '${targetFilePath}'${options.domain ? ` in domain '${options.domain}'` : ""}.`,
+          impact_summary: {
+            total_dependents: 0,
+            risk_level: "unknown",
+            affected_files_count: 0,
+          },
+          inbound_callers: [],
+        };
+      }
+    }
+
     const definingFiles = new Set<string>(
       targetSymRows.map((r) => r.file_path.replace(/\\/g, "/"))
     );
@@ -447,6 +466,23 @@ export class DependencyRepository {
     `;
     const rawDepRows = this.db.query<any, string[]>(depSql).all(...queryParams);
 
+    const isTargetedFile = Boolean(targetFilePath);
+    const matchesDefiningFile = (df: string, stmt: string, target: string): boolean => {
+      const normStmt = stmt.replace(/\\/g, "/");
+      const normTarget = target.replace(/\\/g, "/");
+      const clean = df.replace(/\.[^.]+$/, "");
+      const parts = clean.split("/");
+      const suffixes: string[] = [];
+      for (let i = 0; i < parts.length; i++) {
+        suffixes.push(parts.slice(i).join("/"));
+      }
+      return suffixes.some((s) => {
+        const escaped = escapeRegExp(s);
+        const r = new RegExp(`(?:^|[\\\\/\"\x27.@:])(?:${escaped})(?:$|[\\\\/\"\x27;:.()\\s]|\\.[^\\\\/]+)`, "i");
+        return r.test(normStmt) || r.test(normTarget);
+      });
+    };
+
     const containerWordRegex = new RegExp(`\\b${escapeRegExp(targetContainer)}\\b`);
     const depRows = rawDepRows.filter((row) => {
       const normCallerFile = String(row.file).replace(/\\/g, "/");
@@ -456,6 +492,12 @@ export class DependencyRepository {
       const target = String(row.target_symbol_or_path || "");
 
       if (containerWordRegex.test(stmt) || containerWordRegex.test(target)) {
+        if (isTargetedFile) {
+          const matchesDefining = Array.from(definingFiles).some((df) => matchesDefiningFile(df, stmt, target));
+          if (!matchesDefining) {
+            return false;
+          }
+        }
         return true;
       }
 

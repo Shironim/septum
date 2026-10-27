@@ -8,23 +8,40 @@ export function handleGetSymbolImpact(
   args: GetSymbolImpactArgs,
   workspaceRoot?: string
 ) {
-  const symbol = (args.symbol || (args as unknown as Record<string, unknown>).query || "").toString().trim();
+  const symbol = (args.symbol_ref?.name || args.symbol || (args as unknown as Record<string, unknown>).query || "").toString().trim();
   if (!symbol) {
     throw new Error(
       "Missing required argument: 'symbol' (e.g. 'OrderService::cancelOrder', 'OrderService', or 'cancelOrder')"
     );
   }
 
-  const candidates = repo.findSymbolsByName(symbol, { domain: args.domain });
+  if (args.symbol_ref) {
+    const file = repo.getFileByPath(args.symbol_ref.file_path);
+    if (!file || file.content_hash !== args.symbol_ref.indexed_content_hash) {
+      return { content: [{ type: "text" as const, text: JSON.stringify({
+        target_symbol: symbol, status: "stale_reference", found_in_index: false,
+        message: "Declaration reference is stale; locate the symbol again.",
+      }) }] };
+    }
+  }
+
+  const candidates = repo.findSymbolsByName(symbol, {
+    domain: args.domain,
+    filePath: args.file_path,
+    reference: args.symbol_ref,
+  });
   if (candidates.length > 1) {
     return { content: [{ type: "text" as const, text: JSON.stringify({
       status: "ambiguous", target_symbol: symbol, found_in_index: false,
-      candidates: candidates.map(candidate => ({ name: candidate.name, symbol_ref: candidate.symbol_ref })),
-      message: "Multiple declarations match; impact cannot establish a complete caller count.",
-    }) }] };
+      candidates: candidates.map(candidate => ({ name: candidate.name, file_path: candidate.file_path, symbol_ref: candidate.symbol_ref })),
+      message: "Multiple declarations match; select a candidate with symbol_ref or narrow with file_path.",
+    }, null, 2) }] };
   }
+  const selectedCandidate = candidates[0];
   const impact = repo.getSymbolImpact(symbol, {
     domain: args.domain,
+    filePath: args.file_path || selectedCandidate?.file_path,
+    reference: args.symbol_ref || selectedCandidate?.symbol_ref,
     workspaceRoot: workspaceRoot || args.workspace_path,
   });
 

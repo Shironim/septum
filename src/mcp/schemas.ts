@@ -987,8 +987,8 @@ export const SymbolToolSchema = z.preprocess(
     source_start_line: z.number().int().positive().optional(),
     source_line_limit: z.number().int().positive().max(200).optional().default(120),
   }).superRefine((args, ctx) => {
-    if (args.symbol_ref && args.action !== "locate" && args.action !== "inspect") {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["symbol_ref"], message: "symbol_ref is supported only for locate and inspect." });
+    if (args.symbol_ref && args.action !== "locate" && args.action !== "inspect" && args.action !== "impact") {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["symbol_ref"], message: "symbol_ref is supported only for locate, inspect, and impact." });
     }
   })
 );

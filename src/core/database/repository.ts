@@ -12,6 +12,7 @@ import type {
   InboundCaller,
   SymbolKind,
   SymbolRecord,
+  SymbolReference,
   SymbolCandidate,
   SymbolSelectionOptions,
   VerticalSliceRecord,
@@ -272,7 +273,7 @@ export class SeptumRepository {
 
   public getSymbolImpact(
     symbolName: string,
-    options: { domain?: string; workspaceRoot?: string } = {}
+    options: { domain?: string; workspaceRoot?: string; filePath?: string; reference?: SymbolReference } = {}
   ): GetSymbolImpactResponse {
     return this.dependencies.getSymbolImpact(symbolName, options);
   }

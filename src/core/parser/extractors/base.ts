@@ -36,16 +36,20 @@ export function detectArchetype(filePath: string, archetypesMap: Record<string, 
   return "unknown";
 }
 
-function matchesSimpleGlob(path: string, pattern: string): boolean {
+export function matchesSimpleGlob(path: string, pattern: string, allowBasename: boolean = true): boolean {
   const normalizedPath = path.replace(/\\/g, "/").replace(/^\.\//, "");
   const normalizedPattern = pattern.replace(/\\/g, "/").replace(/^\.\//, "");
 
   const escaped = normalizedPattern.replace(/[.+^${}()|[\]\\]/g, "\\$&");
   const regexStr = escaped
-    .replace(/\*\*\//g, "(?:.*\\/)?")
-    .replace(/\*\*/g, ".*")
-    .replace(/\*/g, "[^/]*")
-    .replace(/\?/g, "[^/]");
+    .replace(/\*\*\//g, "\0GLOB_GLOB_SLASH\0")
+    .replace(/\*\*/g, "\0GLOB_GLOB\0")
+    .replace(/\*/g, "\0GLOB_STAR\0")
+    .replace(/\?/g, "\0GLOB_Q\0")
+    .replace(/\0GLOB_GLOB_SLASH\0/g, "(?:.*\\/)?")
+    .replace(/\0GLOB_GLOB\0/g, ".*")
+    .replace(/\0GLOB_STAR\0/g, "[^/]*")
+    .replace(/\0GLOB_Q\0/g, "[^/]");
 
   const regex = new RegExp(`^${regexStr}$`, "i");
   if (regex.test(normalizedPath)) {
@@ -53,7 +57,7 @@ function matchesSimpleGlob(path: string, pattern: string): boolean {
   }
 
   // If pattern does not contain directory separators, allow matching against the basename
-  if (!normalizedPattern.includes("/")) {
+  if (allowBasename && !normalizedPattern.includes("/")) {
     const base = normalizedPath.split("/").pop() ?? "";
     return regex.test(base);
   }

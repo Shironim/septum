@@ -45,10 +45,17 @@ export class IngestionPipeline {
     this.repo.setMeta("resolver_revision", RESOLVER_REVISION);
     this.repo.setMeta("sync_state", "running");
     try {
-      const result = await this.runSync(config, options);
+      let result: IngestionMetrics | undefined;
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try { result = await this.runSync(config, options); break; }
+        catch (error) {
+          if (attempt || !(error instanceof Error) || !error.message.startsWith("Source changed during synchronization:")) throw error;
+          options.signal?.throwIfAborted();
+        }
+      }
       this.repo.setMeta("sync_state", "complete");
       this.repo.setMeta("sync_error", "");
-      return result;
+      return result!;
     } catch (error) {
       this.repo.setMeta("sync_state", "error");
       this.repo.setMeta("sync_error", String(error));
@@ -85,6 +92,7 @@ export class IngestionPipeline {
       }
       domainNames = Object.keys(config.domains);
     }
+    const inventory = this.sourceInventory(projectRoot, config.settings.ignore_patterns, options.signal);
 
     const existingFilesMap = new Map<string, import("../../types/index.ts").FileRecord>();
     for (const f of this.repo.getAllFiles()) {
@@ -138,6 +146,8 @@ export class IngestionPipeline {
         id: number;
         mtimeMs: number;
         sizeBytes: number;
+        file: import("../../types/index.ts").FileRecord;
+        archetype: ReturnType<typeof detectArchetype>;
       }> = [];
 
       const pendingUpdates: Array<{
@@ -153,9 +163,22 @@ export class IngestionPipeline {
 
       let batchBytes = 0;
       const commitBatch = () => {
+        for (const item of pendingUpdates) {
+          let currentHash: string | undefined;
+          try { currentHash = existsSync(item.fullPath) ? computeContentHash(readSourceFile(item.fullPath)) : undefined; }
+          catch (error: any) {
+            if (error?.code !== "ENOENT") throw error;
+          }
+          if (currentHash !== item.contentHash) {
+            throw new Error(`Source changed during synchronization: '${item.relPath}'. Run sync again after the file stops changing.`);
+          }
+        }
         this.repo.runInTransaction(() => {
           for (const meta of pendingMetadataUpdates) {
-            this.repo.updateFileMetadataOnly(meta.id, meta.mtimeMs, meta.sizeBytes);
+            if (meta.file.archetype !== meta.archetype) {
+              this.repo.upsertFile(domainId, meta.file.path, meta.archetype, meta.file.content_hash, meta.file.line_count, meta.mtimeMs, meta.sizeBytes);
+              this.repo.setMeta("slices_dirty", "1");
+            } else this.repo.updateFileMetadataOnly(meta.id, meta.mtimeMs, meta.sizeBytes);
           }
 
           if (pendingUpdates.length) this.repo.setMeta("slices_dirty", "1");
@@ -193,27 +216,16 @@ export class IngestionPipeline {
         let stat;
         try {
           stat = statSync(fullPath);
-        } catch {
-          continue;
+        } catch (error: any) {
+          if (error?.code === "ENOENT") continue;
+          throw new Error(`Failed to inspect source '${relPath}': ${error?.message || error}`);
         }
 
         const mtimeMs = stat.mtimeMs;
         const sizeBytes = stat.size;
         const existingFile = existingFilesMap.get(relPath);
 
-        // Tier 1: Fast OS metadata check (inode mtime + size + domain match)
-        if (
-          !options.verifyContent &&
-          existingFile &&
-          existingFile.domain_id === domainId &&
-          existingFile.mtime_ms === mtimeMs &&
-          existingFile.size_bytes === sizeBytes
-        ) {
-          filesSkipped++;
-          continue;
-        }
-
-        // Tier 2: Content Hash verification
+        // Reuse indexed content only after verifying its hash.
         if (sizeBytes > RESOURCE_LIMITS.sourceBytes) {
           skippedFiles.push({path: relPath, reason: "file_too_large"});
           if (existingFile) removedFiles++;
@@ -240,7 +252,7 @@ export class IngestionPipeline {
           existingFile.content_hash === currentHash
         ) {
           // Content identical despite mtime bump (e.g. touch) - queue metadata update for batch transaction
-          pendingMetadataUpdates.push({ id: existingFile.id, mtimeMs, sizeBytes });
+          pendingMetadataUpdates.push({ id: existingFile.id, mtimeMs, sizeBytes, file: existingFile, archetype: detectArchetype(relPath, domainCfg.archetypes ?? {}) });
           filesSkipped++;
           continue;
         }
@@ -289,11 +301,6 @@ export class IngestionPipeline {
       .map(file => { const target = join(projectRoot, file); return existsSync(target) ? readSourceFile(target) : ""; });
     const semanticRevision = computeContentHash(JSON.stringify([config.domains, topologyInputs]));
     // Membership covers newly added semantic files outside registered domains.
-    const inventory = this.collectFiles(projectRoot, projectRoot, config.settings.ignore_patterns, [], options.signal).map(({fullPath, relPath}) => {
-      const stat = statSync(fullPath);
-      const fingerprint = `${stat.size}:${stat.mtimeMs}`;
-      return `${relPath}:${fingerprint}`;
-    }).sort();
     const inventoryRevision = computeContentHash(JSON.stringify(inventory));
     const priorInputs: SourceReadFingerprint[] = JSON.parse(this.repo.getMeta("semantic_inputs") || "[]");
     let semanticInputChanged = false;
@@ -336,6 +343,9 @@ export class IngestionPipeline {
     }
 
     skippedFiles.push(...JSON.parse(this.repo.getMeta("semantic_skipped_files") || "[]"));
+    if (JSON.stringify(inventory) !== JSON.stringify(this.sourceInventory(projectRoot, config.settings.ignore_patterns, options.signal))) {
+      throw new Error("Source changed during synchronization: workspace inventory changed. Run sync again after the files stop changing.");
+    }
     const durationMs = Math.round(performance.now() - startTime);
 
     // Identify uncovered eligible source files outside registered domains
@@ -375,6 +385,19 @@ export class IngestionPipeline {
 
   public autoDiscoverDomains(projectRoot: string): Record<string, import("../../types/index.ts").DomainConfig> {
     return TopologyDetector.detect(projectRoot).domains;
+  }
+
+  private sourceInventory(root: string, ignorePatterns: string[], signal?: AbortSignal): string[] {
+    return this.collectFiles(root, root, ignorePatterns, [], signal).map(({fullPath, relPath}) => {
+      const stat = statSync(fullPath);
+      let hash: string;
+      try { hash = computeContentHash(readSourceFile(fullPath)); }
+      catch (error) {
+        if (!(error instanceof SourceFileLimitError)) throw error;
+        hash = `file_too_large:${stat.size}:${stat.mtimeMs}`;
+      }
+      return `${relPath}:${hash}`;
+    }).sort();
   }
 
   private collectFiles(
@@ -550,15 +573,20 @@ export class IngestionPipeline {
       return false;
     }
     const currentHash = computeContentHash(content);
+    const archetype = detectArchetype(relPath, targetDomainCfg.archetypes ?? {});
 
     // Tier 2: Hash verification
     if (existingFile && existingFile.domain_id === domainId && existingFile.content_hash === currentHash) {
-      this.repo.updateFileMetadataOnly(existingFile.id, mtimeMs, sizeBytes);
+      if (existingFile.archetype !== archetype) {
+        this.repo.runInTransaction(() => {
+          this.repo.upsertFile(domainId, relPath, archetype, currentHash, existingFile.line_count, mtimeMs, sizeBytes);
+          this.repo.setMeta("slices_dirty", "1");
+        });
+      } else this.repo.updateFileMetadataOnly(existingFile.id, mtimeMs, sizeBytes);
       return false;
     }
 
     const lineCount = content.split("\n").length;
-    const archetype = detectArchetype(relPath, targetDomainCfg.archetypes ?? {});
     const ast = await this.parserEngine.parseFile(fullPath, content);
     if (ast.status === "unsupported") {
       this.repo.deleteFileByPath(relPath);

@@ -70,6 +70,13 @@ with tempfile.TemporaryDirectory(prefix='septum-mcp-regression-') as temporary:
                               'clientInfo': {'name': 'septum-regressions', 'version': '1'}})
         server.stdin.write(json.dumps({'jsonrpc': '2.0', 'method': 'notifications/initialized'}) + '\n')
         server.stdin.flush()
+        (a / 'requirements.txt').write_text('fastapi==0.115.0\n')
+        (a / 'main.py').write_text('from fastapi import FastAPI\napp = FastAPI()\n@app.get("/before")\ndef before():\n    return 1\n')
+        before = tool('septum_slice', {'query': 'GET /before'})
+        assert before['status'] == 'success', before
+        (a / 'new_routes.py').write_text('from fastapi import FastAPI\napp = FastAPI()\n@app.get("/after")\ndef after():\n    return 2\n')
+        after = tool('septum_slice', {'query': 'GET /after'})
+        assert after['status'] == 'success', after
         invalid_boundary_inputs = [
             {'scope': scope, 'file_path': 'src/orders/Order.ts',
              **({'domain': 'orders'} if scope == 'domain' else {})}

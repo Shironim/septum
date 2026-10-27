@@ -67,7 +67,7 @@ describe("Two-Tier Ingestion & Reconciliation Pipeline", () => {
     expect(record?.size_bytes).toBeGreaterThan(0);
   });
 
-  it("Tier 1 Fast Check skips re-reading and re-parsing untouched files", async () => {
+  it("skips re-parsing untouched files after content verification", async () => {
     const fileA = join(testDir, "billing/services/InvoiceService.ts");
     writeFileSync(fileA, "export class InvoiceService {}");
 

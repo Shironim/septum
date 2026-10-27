@@ -3,6 +3,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync } from "node
 import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { ModuleResolver } from "../../src/core/resolver/module-resolver.ts";
+import ts from "typescript";
 
 describe("shared import resolution contract", () => {
  let root: string;
@@ -21,6 +22,73 @@ describe("shared import resolution contract", () => {
   expect(before.targets[0].files).toEqual(["src/a.ts"]);
   put("tsconfig.json",JSON.stringify({compilerOptions:{paths:{"@/*":["lib/*"]}}}));
   const after=resolver.resolveImport("@/a","src/main.ts"); expect(after.targets[0].files).toEqual(["lib/a.ts"]); expect(after.config_revision).not.toBe(before.config_revision);
+ });
+ it("uses tsconfig paths substitutions in order", () => {
+  put("src/a.ts"); put("fallback/a.ts");
+  put("tsconfig.json",JSON.stringify({compilerOptions:{baseUrl:".",paths:{"@/*":["src/*","fallback/*"]}}}));
+  expect(resolve("@/a").targets[0].files).toEqual(["src/a.ts"]);
+  rmSync(join(root,"src/a.ts"));
+  expect(resolve("@/a").targets[0].files).toEqual(["fallback/a.ts"]);
+ });
+ it("respects baseUrl and explicit paths before workspace conventions or packages", () => {
+  put("configs/service.ts"); put("service.ts"); put("src/blocked/service.ts");
+  put("tsconfig.json", JSON.stringify({compilerOptions:{baseUrl:"./configs"}}));
+  const configFile = join(root, "tsconfig.json");
+  const typescriptTarget = (target: string) => {
+    const config = ts.readConfigFile(configFile, ts.sys.readFile);
+    const options = ts.parseJsonConfigFileContent(config.config, ts.sys, root, undefined, configFile).options;
+    return ts.resolveModuleName(target, join(root, "src/main.ts"), options, ts.sys).resolvedModule?.resolvedFileName;
+  };
+  expect(typescriptTarget("service")).toBe(join(root, "configs/service.ts"));
+  expect(resolve("service").targets[0].files).toEqual(["configs/service.ts"]);
+  put("tsconfig.json", JSON.stringify({extends:"./configs/base.json"}));
+  put("configs/base.json", JSON.stringify({compilerOptions:{baseUrl:"."}}));
+  expect(resolve("service").targets[0].files).toEqual(["configs/service.ts"]);
+  put("tsconfig.json", JSON.stringify({compilerOptions:{baseUrl:".",paths:{"@/*":["missing/*"]}}}));
+  expect(typescriptTarget("@/blocked/service")).toBeUndefined();
+  expect(resolve("@/blocked/service").status).toBe("unresolved");
+  put("package.json", JSON.stringify({dependencies:{"@/blocked":"1.0.0"}}));
+  expect(resolve("@/blocked/service").status).toBe("external");
+  put("package.json", JSON.stringify({workspaces:["packages/*"]}));
+  put("packages/stock/package.json", JSON.stringify({name:"@scope/stock",main:"src/index.ts"}));
+  put("packages/stock/src/index.ts");
+  put("tsconfig.json", JSON.stringify({compilerOptions:{baseUrl:".",paths:{"@scope/*":["missing/*"]}}}));
+  expect(resolve("@scope/stock").targets[0].files).toEqual(["packages/stock/src/index.ts"]);
+  put("tsconfig.json", "{}");
+  expect(resolve("@/blocked/service").targets[0].files).toEqual(["src/blocked/service.ts"]);
+ });
+ it("matches TypeScript for inherited paths, overrides and wildcard suffixes", () => {
+  const compare = (target: string) => {
+    const file = join(root, "tsconfig.json");
+    const config = ts.readConfigFile(file, ts.sys.readFile);
+    const options = ts.parseJsonConfigFileContent(config.config, ts.sys, root, undefined, file).options;
+    const expected = ts.resolveModuleName(target, join(root, "src/main.ts"), options, ts.sys).resolvedModule?.resolvedFileName;
+    const result = resolve(target);
+    expect(result.targets.flatMap(t => t.files)).toEqual(expected ? [expected.slice(root.length + 1)] : []);
+    return result;
+  };
+  put("configs/base.json", JSON.stringify({ compilerOptions: { baseUrl: ".", paths: { "@x/*": ["lib/*"] } } }));
+  put("tsconfig.json", JSON.stringify({ extends: "./configs/base.json" }));
+  put("configs/lib/a.ts"); put("lib/a.ts");
+  expect(compare("@x/a").status).toBe("resolved");
+  put("tsconfig.json", JSON.stringify({ extends: "./configs/base.json", compilerOptions: { paths: { "@y/*": ["src/*"] } } }));
+  expect(compare("@x/a").status).toBe("unresolved");
+  put("tsconfig.json", JSON.stringify({ compilerOptions: { paths: { "@pkg/*/util": ["lib/*/util"] } } }));
+  put("lib/foo/util.ts"); expect(compare("@pkg/foo/util").status).toBe("resolved");
+  put("tsconfig.json", JSON.stringify({ compilerOptions: { paths: { "@pkg/*": ["lib/*"], "@pkg/*/util": ["other/*/util"] } } }));
+  put("other/foo/util.ts"); expect(compare("@pkg/foo/util").targets[0].files).toEqual(["lib/foo/util.ts"]);
+  put("configs/second.json", JSON.stringify({ compilerOptions: { paths: { "@y/*": ["src/*"] } } }));
+  put("tsconfig.json", JSON.stringify({ extends: ["./configs/base.json", "./configs/second.json"] }));
+  expect(compare("@x/a").status).toBe("unresolved");
+  put("node_modules/@config/base/package.json", JSON.stringify({ tsconfig: "tsconfig.json" }));
+  put("node_modules/@config/base/tsconfig.json", JSON.stringify({ compilerOptions: { baseUrl: ".", paths: { "@x/*": ["lib/*"] } } }));
+  put("node_modules/@config/base/lib/a.ts");
+  put("tsconfig.json", JSON.stringify({ extends: "@config/base" }));
+  expect(compare("@x/a").status).toBe("resolved");
+  put("tsconfig.json", JSON.stringify({ extends: "./missing.json" }));
+  expect(resolve("@x/a").status).toBe("unsupported");
+  put("src/tsconfig.json", JSON.stringify({ compilerOptions: { paths: { "@x/*": ["lib/*"] } } }));
+  expect(resolve("@x/a").reason).toBe("nested_tsconfig_project_selection_unknown");
  });
  it("handles PSR-4 arrays and distinguishes manifest-backed external from unknown", () => {
   put("composer.json",JSON.stringify({autoload:{"psr-4":{"App\\":["app/","lib/"]}},require:{"vendor/package":"^1"}}));

@@ -429,6 +429,8 @@ export interface GetSymbolImpactArgs {
   domain?: string;
   symbol: string;
   query?: string;
+  file_path?: string;
+  symbol_ref?: SymbolReference;
   workspace_path?: string;
 }
 

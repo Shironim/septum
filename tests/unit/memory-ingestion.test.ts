@@ -74,6 +74,18 @@ describe('bounded ingestion and incomplete index safety', () => {
 });
 
 describe('source read admission',()=>{
+ it('retries once when a parsed source changes before commit',async()=>{
+  const root=mkdtempSync(join(tmpdir(),'septum-source-race-'));mkdirSync(join(root,'src'));const db=new SeptumDatabase(':memory:'),repo=new SeptumRepository(db.raw);
+  try{const file=join(root,'src/a.ts');writeFileSync(file,'export function first() {}');const c=ConfigLoader.getDefaultConfig();c.domains={src:{root:'src',allowed_dependencies:[],forbidden_dependencies:[],archetypes:{}}};const pipeline=new IngestionPipeline(repo,root);const engine=(pipeline as any).parserEngine,parse=engine.parseFile.bind(engine);let changed=false;engine.parseFile=async(...args:any[])=>{const result=await parse(...args);if(!changed){changed=true;writeFileSync(file,'export function newer() {}');}return result;};await pipeline.run(c);expect(repo.getMeta('sync_state')).toBe('complete');expect(repo.getAllSymbolsWithFiles().some(s=>s.name==='newer')).toBe(true);}finally{db.close();rmSync(root,{recursive:true,force:true});}
+ });
+ it('retries when the source inventory gains a file during semantic indexing',async()=>{
+  const root=mkdtempSync(join(tmpdir(),'septum-inventory-race-'));mkdirSync(join(root,'src'));const db=new SeptumDatabase(':memory:'),repo=new SeptumRepository(db.raw);
+  try{writeFileSync(join(root,'src/a.ts'),'export function first() {}');const c=ConfigLoader.getDefaultConfig();c.domains={src:{root:'src',allowed_dependencies:[],forbidden_dependencies:[],archetypes:{}}};const pipeline=new IngestionPipeline(repo,root);const engine=(pipeline as any).parserEngine,parse=engine.parseFile.bind(engine);let changed=false;engine.parseFile=async(...args:any[])=>{const result=await parse(...args);if(!changed){changed=true;writeFileSync(join(root,'src/b.ts'),'export function added() {}');}return result;};await pipeline.run(c);expect(repo.getMeta('sync_state')).toBe('complete');expect(repo.getFileByPath('src/b.ts')).not.toBeNull();}finally{db.close();rmSync(root,{recursive:true,force:true});}
+ });
+ it('leaves sync incomplete when the source keeps changing after the single retry',async()=>{
+  const root=mkdtempSync(join(tmpdir(),'septum-repeat-race-'));mkdirSync(join(root,'src'));const db=new SeptumDatabase(':memory:'),repo=new SeptumRepository(db.raw);
+  try{const file=join(root,'src/a.ts');writeFileSync(file,'export function first() {}');const c=ConfigLoader.getDefaultConfig();c.domains={src:{root:'src',allowed_dependencies:[],forbidden_dependencies:[],archetypes:{}}};const pipeline=new IngestionPipeline(repo,root);const engine=(pipeline as any).parserEngine,parse=engine.parseFile.bind(engine);let n=0;engine.parseFile=async(...args:any[])=>{const result=await parse(...args);writeFileSync(file,`export function changed${++n}() {}`);return result;};await expect(pipeline.run(c)).rejects.toThrow('Source changed during synchronization');expect(repo.getMeta('sync_state')).toBe('error');}finally{db.close();rmSync(root,{recursive:true,force:true});}
+ });
  it('does not read oversized semantic files outside indexed domains',async()=>{
   const root=mkdtempSync(join(tmpdir(),'septum-semantic-limit-'));mkdirSync(join(root,'src/mcp/tools'),{recursive:true});mkdirSync(join(root,'other'));
   const db=new SeptumDatabase(':memory:'),repo=new SeptumRepository(db.raw);

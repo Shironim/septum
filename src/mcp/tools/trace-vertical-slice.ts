@@ -32,7 +32,7 @@ export function handleTraceVerticalSlice(
     ((config.settings as Record<string, unknown>)?.workspace_root as string) ||
     process.cwd();
   const maxDepth = Math.min(Math.max(Math.trunc(Number(args.max_depth ?? 5)), 1), 8);
-  const tracer = new VerticalSliceTracer(repo, root);
+  const tracer = new VerticalSliceTracer(repo, root, config.settings.ignore_patterns, false);
   return tracer.traceAsync(query, maxDepth, signal).then((result: VerticalSliceTraceResponse) => {
   const chain = result.chain || result.slice || [];
 
@@ -43,8 +43,10 @@ export function handleTraceVerticalSlice(
       .join(" ➔ ");
   } else if (result.found && result.entrypoint) {
     summary = `[ENTRYPOINT] ${result.entrypoint.method} ${result.entrypoint.uri} ➔ ${result.entrypoint.controller}@${result.entrypoint.action}`;
+  } else if (result.diagnostics?.length || result.coverage === "partial") {
+    summary = ` [UNKNOWN] ${result.message || `No matching slice in the available static catalog for '${query}'.`}`.trim();
   } else {
-    summary = `[NOT FOUND] No vertical slice matching '${query}'`;
+    summary = `[NOT FOUND] No matching slice in the available static catalog for '${query}'; this does not prove the route is absent at runtime.`;
   }
 
   const payload = {

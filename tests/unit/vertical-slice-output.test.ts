@@ -39,9 +39,19 @@ describe("Vertical Slice Output Standardization (JSON Contracts)", () => {
     expect(json.status).toBe("not_found");
     expect(json.found).toBe(false);
     expect(json.query).toBe("POST /unregistered/order");
-    expect(json.summary).toBe("[NOT FOUND] No vertical slice matching 'POST /unregistered/order'");
+    expect(json.summary).toContain("available static catalog");
+    expect(json.summary).toContain("does not prove the route is absent at runtime");
     expect(json.chain).toEqual([]);
     expect(json.alternatives).toEqual([]);
+  });
+
+  it("does not label incomplete extraction as not found", async () => {
+    repo.setMeta("sync_state", "error");
+    const result = await handleTraceVerticalSlice(repo, mockConfig, { query: "GET /orders" });
+    const json = JSON.parse(result.content[0].text);
+    expect(json.status).toBe("unknown");
+    expect(json.summary).toContain("UNKNOWN");
+    expect(json.summary).not.toContain("NOT FOUND");
   });
 
   it("returns parseable structured JSON with comprehensive metadata when slice is found", async () => {

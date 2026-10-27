@@ -19,6 +19,16 @@ describe("async semantic lifecycle",()=>{
   const tracer=new VerticalSliceTracer(repo,root);expect((await tracer.traceAsync("GET /async")).found).toBe(true);expect(repo.getAllVerticalSlices()).toHaveLength(1);
   expect((await tracer.traceAsync("GET /async")).found).toBe(true);expect(calls).toBe(1);
  });
+ it("re-extracts a direct tracer catalog when semantic source membership changes",async()=>{
+  writeFileSync(join(root,"first.py"),"# first");
+  let calls=0;cleanup=Registry.register({id:"membership",name:"membership",canHandle:r=>r===root,extractSlices:()=>{calls++;return[candidate];}});
+  const tracer=new VerticalSliceTracer(repo,root);
+  await tracer.traceAsync("GET /async"); expect(calls).toBe(1);
+  writeFileSync(join(root,"new.py"),"# new");
+  await tracer.traceAsync("GET /async"); expect(calls).toBe(2);
+  rmSync(join(root,"first.py"));
+  await tracer.traceAsync("GET /async"); expect(calls).toBe(3);
+ });
  it("does not persist a partial adapter result when another adapter rejects",async()=>{
   const undo=Registry.register({id:"good",name:"good",canHandle:r=>r===root,extractSlices:()=>[candidate]});
   cleanup=Registry.register({id:"bad",name:"bad",canHandle:r=>r===root,extractSlices:async()=>{throw new Error("fixture rejection");}});

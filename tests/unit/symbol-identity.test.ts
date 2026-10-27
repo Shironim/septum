@@ -140,7 +140,8 @@ describe("declaration identity and source selection", () => {
     expect(SymbolToolSchema.safeParse({ action: "inspect", symbol_ref: { name: "save" } }).success).toBe(false);
     const ref = { name: "save", file_path: "a.ts", language: "typescript", kind: "function", signature: "save()", start_line: 3, end_line: 2, indexed_content_hash: "fixture" };
     expect(SymbolToolSchema.safeParse({ action: "inspect", symbol_ref: ref }).success).toBe(false);
-    expect(SymbolToolSchema.safeParse({ action: "impact", symbol_ref: { ...ref, end_line: 3 } }).success).toBe(false);
+    expect(SymbolToolSchema.safeParse({ action: "hotspots", symbol_ref: { ...ref, end_line: 3 } }).success).toBe(false);
+    expect(SymbolToolSchema.safeParse({ action: "impact", symbol_ref: { ...ref, end_line: 3 } }).success).toBe(true);
   });
   it("reads references from an existing v4 database without losing configuration", async () => {
     db.close();
