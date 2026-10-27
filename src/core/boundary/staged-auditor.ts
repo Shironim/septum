@@ -1,6 +1,6 @@
 import { RESOURCE_LIMITS } from "../resources/limits.ts";
 import { execFileSync } from "node:child_process";
-import { resolve } from "node:path";
+import { resolve, relative, sep } from "node:path";
 import type { ImportResolution, BoundaryViolation } from "../../types/index.ts";
 import type { ValidatedSeptumConfig } from "../config/schema.ts";
 import { ASTParserEngine } from "../parser/tree-sitter.ts";
@@ -14,14 +14,15 @@ export async function auditStagedFiles(
   featureKey?: string,
   repo?: SeptumRepository
 ): Promise<{ files: string[]; violations: BoundaryViolation[]; resolution_issues: ImportResolution[] }> {
-  const output = execFileSync("git", ["diff", "--cached", "--name-only", "--diff-filter=ACMR", "-z"], {
-    cwd: workspaceRoot, encoding: "utf-8", timeout: 5000, maxBuffer: 10 * 1024 * 1024,
-  });
-  const files = output.split("\0").filter(Boolean);
-  const deletedOutput = execFileSync("git", ["diff", "--cached", "--name-only", "--diff-filter=D", "-z"], {
-    cwd: workspaceRoot, encoding: "utf-8", timeout: 5000, maxBuffer: 10 * 1024 * 1024,
-  });
-  const deleted = deletedOutput.split("\0").filter(Boolean);
+  const gitRoot = execFileSync("git", ["rev-parse", "--show-toplevel"], { cwd: workspaceRoot, encoding: "utf8" }).trim();
+  const rawPrefix = relative(gitRoot, workspaceRoot).replace(/\\/g, "/");
+  const prefix = rawPrefix === "." ? "" : rawPrefix;
+  const inside = (file: string) => !prefix || file === prefix || file.startsWith(prefix + "/");
+  const stagedPaths = (filter: string) => execFileSync("git", ["diff", "--cached", "--name-only", `--diff-filter=${filter}`, "-z"], {
+    cwd: gitRoot, encoding: "utf-8", timeout: 5000, maxBuffer: 10 * 1024 * 1024,
+  }).split("\0").filter(Boolean).map(f => f.replace(/\\/g, "/")).filter(inside);
+  const files = stagedPaths("ACMR").map(file => (prefix ? relative(prefix, file) : file).replace(/\\/g, "/"));
+  const deleted = stagedPaths("D").map(file => (prefix ? relative(prefix, file) : file).replace(/\\/g, "/"));
   const violations: BoundaryViolation[] = [];
   const resolutionIssues: ImportResolution[] = [];
   if (featureKey) for (const file of deleted) violations.push(...evaluator.checkFeatureTouchpoints(featureKey, file, config));
@@ -30,10 +31,11 @@ export async function auditStagedFiles(
   for (const file of files) {
     if (featureKey) violations.push(...evaluator.checkFeatureTouchpoints(featureKey, file, config));
     if (!ASTParserEngine.isSourceFile(file) || !evaluator.resolveSourceDomain(file, config)) continue;
-    const size = Number(execFileSync("git", ["cat-file", "-s", `:${file}`], {cwd:workspaceRoot,encoding:"utf8",timeout:5000,maxBuffer:1024}));
+    const gitFile = prefix ? `${prefix}/${file}` : file;
+    const size = Number(execFileSync("git", ["cat-file", "-s", `:${gitFile}`], {cwd:gitRoot,encoding:"utf8",timeout:5000,maxBuffer:1024}));
     if (!Number.isFinite(size) || size > RESOURCE_LIMITS.sourceBytes) throw new Error(`Staged source exceeds resource limit: '${file}'.`);
-    const content = execFileSync("git", ["show", `:${file}`], {
-      cwd: workspaceRoot, encoding: "utf-8", timeout: 5000, maxBuffer: RESOURCE_LIMITS.sourceBytes + 1,
+    const content = execFileSync("git", ["show", `:${gitFile}`], {
+      cwd: gitRoot, encoding: "utf-8", timeout: 5000, maxBuffer: RESOURCE_LIMITS.sourceBytes + 1,
     });
     const parsed = await parser.parseFile(resolve(workspaceRoot, file), content);
     if (parsed.status === "unsupported" || parsed.status === "degraded") {

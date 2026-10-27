@@ -14,9 +14,17 @@ export class SeptumDatabase {
       mkdirSync(dir, { recursive: true });
     }
 
-    this.db = new Database(dbPath, { create: true });
-    this.configurePragmas();
-    this.initSchema();
+    try {
+      this.db = new Database(dbPath, { create: true });
+      this.configurePragmas();
+      this.initSchema();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (/not a database|database disk image is malformed|file is not a database|malformed database schema/i.test(message)) {
+        throw new Error(`SQLite database at '${dbPath}' appears corrupt: ${message}. Stop Septum, back up the database and any matching -wal/-shm files, then diagnose or restore the backup manually. Septum did not remove or replace the files.`);
+      }
+      throw error;
+    }
   }
 
   private configurePragmas(): void {

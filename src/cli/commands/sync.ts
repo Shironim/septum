@@ -12,7 +12,7 @@ export interface SyncCommandOptions {
 }
 
 export async function handleSyncCommand(options: SyncCommandOptions = {}): Promise<void> {
-  const root = options.workspaceRoot || resolveWorkspaceRoot();
+  const root = resolveWorkspaceRoot(options.workspaceRoot || process.cwd());
   const config = ConfigLoader.load(options.dbPath, root);
   const resolvedDbPath = options.dbPath
     ? (path.isAbsolute(options.dbPath) ? options.dbPath : path.join(root, options.dbPath))

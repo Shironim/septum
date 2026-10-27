@@ -189,7 +189,7 @@ export function configureHarness(
             {
               type: "command",
               command:
-                "sh -c 'ROOT=\"$(git rev-parse --show-toplevel 2>/dev/null || pwd)\"; for d in .claude .gemini .codex opencode .agents; do if [ -f \"$ROOT/$d/hooks/septum-pre-write.sh\" ]; then exec \"$ROOT/$d/hooks/septum-pre-write.sh\" --exit-code-2 \"$@\"; fi; done; exit 0'",
+                "sh -c 'ROOT=\"$(pwd -P)\"; for d in .claude .gemini .codex opencode .agents; do if [ -f \"$ROOT/$d/hooks/septum-pre-write.sh\" ]; then exec \"$ROOT/$d/hooks/septum-pre-write.sh\" --exit-code-2 \"$@\"; fi; done; exit 0'",
             },
           ],
         };
@@ -267,7 +267,7 @@ export function configureHarness(
             {
               type: "command",
               command:
-                "sh -c 'ROOT=\"$(git rev-parse --show-toplevel 2>/dev/null || pwd)\"; for d in .codex .gemini .claude opencode .agents; do if [ -f \"$ROOT/$d/hooks/septum-pre-write.sh\" ]; then exec \"$ROOT/$d/hooks/septum-pre-write.sh\" --exit-code-2 \"$@\"; fi; done; exit 0'",
+                "sh -c 'ROOT=\"$(pwd -P)\"; for d in .codex .gemini .claude opencode .agents; do if [ -f \"$ROOT/$d/hooks/septum-pre-write.sh\" ]; then exec \"$ROOT/$d/hooks/septum-pre-write.sh\" --exit-code-2 \"$@\"; fi; done; exit 0'",
             },
           ],
         };

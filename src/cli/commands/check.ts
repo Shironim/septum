@@ -5,6 +5,9 @@ import { SeptumRepository } from "../../core/database/repository.ts";
 import type { BoundaryViolation } from "../../types/index.ts";
 import { IngestionPipeline } from "../../core/ingestion/pipeline.ts";
 import { auditStagedFiles } from "../../core/boundary/staged-auditor.ts";
+import { resolveWorkspaceRoot } from "../../core/resolver/path-resolver.ts";
+import { ModuleResolver } from "../../core/resolver/module-resolver.ts";
+import { join, isAbsolute } from "node:path";
 
 export interface CheckCommandOptions {
   strict?: boolean;
@@ -27,11 +30,12 @@ export async function handleCheckCommand(
     );
   }
 
-  const config = ConfigLoader.load();
+  const workspaceRoot = resolveWorkspaceRoot(process.cwd());
+  const config = ConfigLoader.load(undefined, workspaceRoot);
   if (options.strict) config.settings.enforcement = "strict";
-  const db = new SeptumDatabase(config.settings.db_path);
+  const db = new SeptumDatabase(isAbsolute(config.settings.db_path) ? config.settings.db_path : join(workspaceRoot, config.settings.db_path));
   const repo = new SeptumRepository(db.raw);
-  const evaluator = new BoundaryEvaluator(repo);
+  const evaluator = new BoundaryEvaluator(repo, new ModuleResolver(workspaceRoot, repo));
 
   try {
     let violations: BoundaryViolation[] = [];
@@ -54,7 +58,7 @@ export async function handleCheckCommand(
     }
 
     if (options.staged) {
-      const staged = await auditStagedFiles(evaluator, config, process.cwd(), options.feature, repo);
+      const staged = await auditStagedFiles(evaluator, config, workspaceRoot, options.feature, repo);
       violations = staged.violations;
       if (staged.resolution_issues.length && violations.length === 0) {
         console.warn(options.json ? JSON.stringify({ status: "unknown", resolution_issues: staged.resolution_issues }) : "Staged import resolution is incomplete; approval is unknown.");
@@ -62,7 +66,7 @@ export async function handleCheckCommand(
         return;
       }
     } else {
-      await new IngestionPipeline(repo).run(config, { verifyContent: true });
+      await new IngestionPipeline(repo, workspaceRoot).run(config, { verifyContent: true });
       const unsupported = JSON.parse(repo.getMeta("unsupported_files") || "[]") as string[];
       if (unsupported.length > 0) {
         throw new Error(`Cannot complete boundary audit: unsupported source files: ${unsupported.join(", ")}`);
@@ -70,7 +74,7 @@ export async function handleCheckCommand(
       const skipped = JSON.parse(repo.getMeta("skipped_files") || "[]") as {path: string}[];
       if (skipped.length) throw new Error(`Cannot complete boundary audit: files exceed resource limits: ${skipped.map(file => file.path).join(", ")}`);
       violations = evaluator.auditCodebase(config);
-      const incomplete = repo.getImportRelationships(process.cwd()).filter(edge => edge.freshness !== "current" || edge.index_coverage !== "complete" || !["resolved","external"].includes(edge.resolution.status) || edge.resolution.coverage === "conditional");
+      const incomplete = repo.getImportRelationships(workspaceRoot).filter(edge => edge.freshness !== "current" || edge.index_coverage !== "complete" || !["resolved","external"].includes(edge.resolution.status) || edge.resolution.coverage === "conditional");
       if (incomplete.length && violations.length === 0) {
         const strict = options.strict || config.settings.enforcement === "strict";
         const payload = { status: "unknown", relationships: incomplete, message: "Import resolution is incomplete; boundary approval is unknown." };

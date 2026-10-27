@@ -13,7 +13,7 @@ import { promptSelectHarnesses } from "../ui/prompts.ts";
 import { configureHarness, SUPPORTED_HARNESSES } from "../scaffold/harness-config.ts";
 
 export async function handleInitCommand(force: boolean = false): Promise<void> {
-  const workspaceRoot = resolveWorkspaceRoot();
+  const workspaceRoot = resolveWorkspaceRoot(process.cwd());
   const septumDir = path.join(workspaceRoot, ".septum");
   if (!fs.existsSync(septumDir)) {
     fs.mkdirSync(septumDir, { recursive: true });
@@ -21,6 +21,7 @@ export async function handleInitCommand(force: boolean = false): Promise<void> {
   const dbPath = path.join(workspaceRoot, ".septum", "septum.db");
 
   console.log("\n\x1b[36m◆\x1b[0m  \x1b[1mSeptum Architecture Guard & SSOT Initializer\x1b[0m\n\x1b[36m│\x1b[0m");
+  console.log(`\x1b[36m│\x1b[0m  Workspace: ${workspaceRoot}`);
 
   // 1. Auto-discover project topology and persist to SQLite SSOT
   console.log("\x1b[36m◇\x1b[0m  Analyzing codebase topology, modular boundaries, and deployment infrastructure...");
@@ -374,9 +375,11 @@ export function installGitHook(cwd: string, force: boolean = false): GitHookInst
     }
   };
 
+  const workspaceCd = `cd '${cwd.replace(/'/g, "'\\''")}' || exit 1`;
   if (isHuskyActive) {
     const huskyPreCommit = path.join(huskyDir, "pre-commit");
     const hookCommand = `# Septum deterministic boundary pre-commit hook
+${workspaceCd}
 if [ -f "./bin/septum.ts" ] && command -v bun >/dev/null 2>&1; then
   bun run ./bin/septum.ts check --staged || exit $?
 elif command -v septum >/dev/null 2>&1; then
@@ -432,6 +435,7 @@ fi`;
   const displayPath = path.relative(cwd, preCommitHook);
   const hookScript = `#!/usr/bin/env sh
 # Septum deterministic boundary pre-commit hook
+${workspaceCd}
 echo "[Septum Hook] Auditing staged changes against domain boundaries..."
 
 if command -v bun >/dev/null 2>&1 && [ -f "./bin/septum.ts" ]; then

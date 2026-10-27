@@ -6,7 +6,7 @@ export const SEPTUM_HOOKS_CONFIG = {
         "hooks": [
           {
             "type": "command",
-            "command": "sh -c 'ROOT=\"$(git rev-parse --show-toplevel 2>/dev/null || pwd)\"; for d in .gemini .claude .codex opencode .agents; do if [ -f \"$ROOT/$d/hooks/septum-pre-write.sh\" ]; then exec \"$ROOT/$d/hooks/septum-pre-write.sh\" \"$@\"; fi; done; exit 0'",
+            "command": "sh -c 'ROOT=\"$(pwd -P)\"; for d in .gemini .claude .codex opencode .agents; do if [ -f \"$ROOT/$d/hooks/septum-pre-write.sh\" ]; then exec \"$ROOT/$d/hooks/septum-pre-write.sh\" \"$@\"; fi; done; exit 0'",
             "timeout": 10,
           },
         ],
@@ -18,7 +18,7 @@ export const SEPTUM_HOOKS_CONFIG = {
         "hooks": [
           {
             "type": "command",
-            "command": "sh -c 'ROOT=\"$(git rev-parse --show-toplevel 2>/dev/null || pwd)\"; for d in .gemini .claude .codex opencode .agents; do if [ -f \"$ROOT/$d/hooks/septum-post-write.sh\" ]; then exec \"$ROOT/$d/hooks/septum-post-write.sh\" \"$@\"; fi; done; exit 0'",
+            "command": "sh -c 'ROOT=\"$(pwd -P)\"; for d in .gemini .claude .codex opencode .agents; do if [ -f \"$ROOT/$d/hooks/septum-post-write.sh\" ]; then exec \"$ROOT/$d/hooks/septum-post-write.sh\" \"$@\"; fi; done; exit 0'",
             "timeout": 15,
           },
         ],
@@ -31,7 +31,7 @@ export const SEPTUM_PRE_WRITE_SCRIPT = `#!/usr/bin/env sh
 # Septum 3-Gate Boundary Guard Pre-Write Hook
 # Intercepts write_to_file and replace_file_content before disk mutation
 
-ROOT_DIR="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+ROOT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd -P)"
 if [ ! -f "$ROOT_DIR/.septum/septum.db" ]; then
   exit 0
 fi
@@ -54,7 +54,7 @@ export const SEPTUM_POST_WRITE_SCRIPT = `#!/usr/bin/env sh
 # Septum Automated Incremental Post-Write Hook
 # Syncs modified AST into SQLite SSOT after file mutations
 
-ROOT_DIR="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+ROOT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd -P)"
 if [ ! -f "$ROOT_DIR/.septum/septum.db" ]; then
   exit 0
 fi

@@ -4,6 +4,7 @@ import type { ValidatedSeptumConfig } from "../config/schema.ts";
 import { ConfigLoader } from "../config/loader.ts";
 import type { SeptumRepository } from "../database/repository.ts";
 import { ModuleResolver } from "../resolver/module-resolver.ts";
+import { matchesSimpleGlob } from "../parser/extractors/base.ts";
 
 export class BoundaryEvaluator {
   private repo: SeptumRepository;
@@ -410,6 +411,7 @@ export class BoundaryEvaluator {
     const domainRoot = domainCfg?.root ? domainCfg.root.replace(/\\/g, "/").replace(/^\.\//, "") : "";
 
     const matches = (pattern: string): boolean => {
+      if (normalizedTarget === pattern) return true;
       if (pattern.endsWith("/**")) {
         return normalizedTarget.startsWith(pattern.slice(0, -3) + "/");
       }
@@ -417,7 +419,7 @@ export class BoundaryEvaluator {
         const prefix = pattern.slice(0, -2) + "/";
         return normalizedTarget.startsWith(prefix) && !normalizedTarget.slice(prefix.length).includes("/");
       }
-      return normalizedTarget === pattern;
+      return matchesSimpleGlob(normalizedTarget, pattern, false);
     };
     const isAllowed = allowedTouchpoints.some(pattern =>
       matches(pattern) || Boolean(domainRoot && matches(posix.normalize(`${domainRoot}/${pattern}`)))

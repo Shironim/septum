@@ -12,6 +12,22 @@ export class SessionManager {
     return process.env.SEPTUM_SESSION_ID || `process:${process.pid}`;
   }
 
+  public static isOwnerAlive(ownerId?: string): boolean {
+    if (!ownerId) return false;
+    const match = ownerId.match(/^process:(\d+)$/);
+    if (!match) {
+      // If it's a custom SEPTUM_SESSION_ID or UUID, we cannot inspect OS PID; treat as active.
+      return true;
+    }
+    const pid = parseInt(match[1], 10);
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch (error: any) {
+      return error?.code === "EPERM";
+    }
+  }
+
   private static mutate<T>(workspaceRoot: string, fn: () => T, repo?: SeptumRepository): T {
     if (repo) return repo.runInTransaction(fn, true);
     const db = new SeptumDatabase(join(workspaceRoot, ".septum/septum.db"));
@@ -32,7 +48,9 @@ export class SessionManager {
     SessionManager.mutate(workspaceRoot, () => {
       const current = SessionManager.getActiveSession(workspaceRoot);
       if (current && current.owner_id !== ownerId) {
-        throw new Error(`Workspace already has an active feature session owned by '${current.owner_id || "legacy-session"}'. Release it with its owner, or explicitly run 'septum feature clear --force'.`);
+        if (SessionManager.isOwnerAlive(current.owner_id)) {
+          throw new Error(`Workspace already has an active feature session owned by '${current.owner_id || "legacy-session"}'. Release it with its owner, or explicitly run 'septum feature clear --force'.`);
+        }
       }
       const septumDir = join(workspaceRoot, ".septum");
       mkdirSync(septumDir, { recursive: true });
@@ -76,7 +94,11 @@ export class SessionManager {
       if (!existsSync(sessionPath)) return false;
       if (!force) {
         const current = SessionManager.getActiveSession(workspaceRoot);
-        if (current?.owner_id !== ownerId) throw new Error("Only the active session owner can release it. Use 'septum feature clear --force' for explicit recovery.");
+        if (current?.owner_id && current.owner_id !== ownerId) {
+          if (SessionManager.isOwnerAlive(current.owner_id)) {
+            throw new Error("Only the active session owner can release it. Use 'septum feature clear --force' for explicit recovery.");
+          }
+        }
       }
       rmSync(sessionPath, { force: true });
       return true;

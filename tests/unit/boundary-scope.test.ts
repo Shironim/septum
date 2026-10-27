@@ -85,6 +85,46 @@ describe("boundary scope contract", () => {
     expect(payload.violations[0].rule).toBe("forbidden_dependency");
   });
 
+  it("rejects forbidden imports through inherited and middle-wildcard aliases", async () => {
+    mkdirSync(join(root, "configs"), { recursive: true });
+    mkdirSync(join(root, "configs/billing"), { recursive: true });
+    mkdirSync(join(root, "billing"), { recursive: true });
+    writeFileSync(join(root, "configs/billing/Invoice.ts"), "export const invoice = 1;\n");
+    writeFileSync(join(root, "billing/Invoice.ts"), "export const invoice = 2;\n");
+    config.domains.billing.root = "configs/billing";
+    for (const [alias, tsconfig] of [
+      ["@x/Invoice", { extends: "./configs/base.json" }],
+      ["@pkg/billing/Invoice", { compilerOptions: { baseUrl: ".", paths: { "@pkg/*/Invoice": ["configs/*/Invoice"] } } }],
+    ] as const) {
+      writeFileSync(join(root, "configs/base.json"), JSON.stringify({ compilerOptions: { baseUrl: ".", paths: { "@x/*": ["billing/*"] } } }));
+      writeFileSync(join(root, "tsconfig.json"), JSON.stringify(tsconfig));
+      writeFileSync(join(root, "src/orders/Order.ts"), `import { invoice } from '${alias}';\nexport const total = invoice;\n`);
+      await new IngestionPipeline(repo, root).run(config, { verifyContent: true });
+      const result = await handleCheckBoundary(evaluator, config, { scope: "all" }, repo, root);
+      const payload = JSON.parse(result.content[0].text);
+      expect(payload.status).toBe("rejected");
+      expect(payload.violations.some((violation: any) => violation.target_domain === "billing")).toBe(true);
+    }
+  });
+
+  it("honors baseUrl and missing explicit paths in full, staged and proposed checks", async () => {
+    expect(Bun.spawnSync(["git", "init", "-q"], { cwd: root }).exitCode).toBe(0);
+    writeFileSync(join(root, "Invoice.ts"), "export const invoice = 1;\n");
+    for (const [alias, tsconfig, expected] of [
+      ["Invoice", { compilerOptions: { baseUrl: "./src/billing" } }, "rejected"],
+      ["@/billing/Invoice", { compilerOptions: { baseUrl: ".", paths: { "@/*": ["missing/*"] } } }, "unknown"],
+    ] as const) {
+      writeFileSync(join(root, "tsconfig.json"), JSON.stringify(tsconfig));
+      writeFileSync(join(root, "src/orders/Order.ts"), `import { invoice } from '${alias}';\nexport const total = invoice;\n`);
+      await new IngestionPipeline(repo, root).run(config, { verifyContent: true });
+      expect(Bun.spawnSync(["git", "add", "src/orders/Order.ts"], { cwd: root }).exitCode).toBe(0);
+      for (const args of [{ scope: "all" }, { scope: "staged" }, { file_path: "src/orders/Order.ts", proposed_imports: [alias] }]) {
+        const result = await handleCheckBoundary(evaluator, config, args as any, repo, root);
+        expect(JSON.parse(result.content[0].text).status).toBe(expected);
+      }
+    }
+  });
+
   it("keeps an implicit file preflight and its proposed imports", async () => {
     const result = await handleCheckBoundary(evaluator, config, {
       file_path: "src/orders/Other.ts", proposed_imports: ["../billing/Invoice"],
