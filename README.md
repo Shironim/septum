@@ -2,7 +2,7 @@
 
 > **Architecture boundary guard and codebase intelligence for AI coding agents.**
 
-[![Version: 0.2.0](https://img.shields.io/badge/Version-0.2.0-blue)](package.json)
+[![Version: 0.2.1](https://img.shields.io/badge/Version-0.2.1-blue)](package.json)
 [![Runtime: Bun](https://img.shields.io/badge/Runtime-Bun-black?logo=bun)](https://bun.sh)
 [![Protocol: Model Context Protocol](https://img.shields.io/badge/Protocol-MCP-green)](https://modelcontextprotocol.io/)
 [![Database: SQLite WAL](https://img.shields.io/badge/Database-SQLite%20(bun:sqlite)-003B57?logo=sqlite)](https://sqlite.org/)
@@ -20,25 +20,25 @@ No need to install Bun, Node.js, or package managers. Download and install the p
 
 **Linux & macOS:**
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Shironim/septum/master/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/Shironim/septum-mcp/master/install.sh | bash
 ```
 
 **Windows (PowerShell):**
 ```powershell
-irm https://raw.githubusercontent.com/Shironim/septum/master/install.ps1 | iex
+irm https://raw.githubusercontent.com/Shironim/septum-mcp/master/install.ps1 | iex
 ```
 
-> **Manual Downloads:** Precompiled binaries are also available on [GitHub Releases](https://github.com/Shironim/septum/releases) for `linux-x64`, `linux-arm64`, `darwin-x64`, `darwin-arm64`, and `windows-x64.exe`.
+> **Manual Downloads:** Precompiled binaries are also available on [GitHub Releases](https://github.com/Shironim/septum-mcp/releases) for `linux-x64`, `linux-arm64`, `darwin-x64`, `darwin-arm64`, and `windows-x64.exe`.
 
 ### Option 2: Via Bun
 
 If you already use [Bun](https://bun.sh):
 
 ```bash
-bun add -g septum
+bun add -g @dimassetoid/septum-mcp
 ```
 
-> **Zero-Install:** You can also run commands directly using `bunx septum <command>`.
+> **Zero-Install:** You can also run commands directly using `bunx @dimassetoid/septum-mcp <command>`.
 
 ---
 
@@ -46,7 +46,7 @@ bun add -g septum
 
 ### 1. Initialize in Any Project
 
-Run `septum init` in your project root:
+Run `septum init` from the workspace directory you want Septum to manage:
 
 ```bash
 septum init

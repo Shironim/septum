@@ -1,10 +1,14 @@
 {
-  "name": "septum",
-  "version": "0.2.0",
+  "name": "@dimassetoid/septum-mcp",
+  "version": "0.2.1",
   "description": "Deterministic Bounded-Context, Structural File Catalog & Anti-Poisoning Partition for AI Agents",
+  "publishConfig": {
+    "access": "public"
+  },
   "type": "module",
   "main": "src/index.ts",
   "bin": {
+    "septum-mcp": "./bin/septum.ts",
     "septum": "./bin/septum.ts"
   },
   "engines": {
@@ -33,11 +37,11 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/shironim/septum.git"
+    "url": "git+https://github.com/shironim/septum-mcp.git"
   },
-  "homepage": "https://github.com/shironim/septum#readme",
+  "homepage": "https://github.com/shironim/septum-mcp#readme",
   "bugs": {
-    "url": "https://github.com/shironim/septum/issues"
+    "url": "https://github.com/shironim/septum-mcp/issues"
   },
   "keywords": [
     "mcp",

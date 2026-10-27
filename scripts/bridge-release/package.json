@@ -1,0 +1,33 @@
+{
+  "name": "septum",
+  "version": "0.2.1",
+  "description": "[DEPRECATED] Septum has moved to @dimassetoid/septum-mcp. This is a transition bridge package.",
+  "type": "module",
+  "main": "index.js",
+  "bin": {
+    "septum": "./bin/septum.js"
+  },
+  "dependencies": {
+    "@dimassetoid/septum-mcp": "^0.2.1"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/shironim/septum-mcp.git"
+  },
+  "homepage": "https://github.com/shironim/septum-mcp#readme",
+  "bugs": {
+    "url": "https://github.com/shironim/septum-mcp/issues"
+  },
+  "keywords": [
+    "mcp",
+    "septum",
+    "septum-mcp",
+    "deprecated"
+  ],
+  "files": [
+    "bin",
+    "index.js",
+    "README.md"
+  ]
+}

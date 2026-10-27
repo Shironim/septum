@@ -1,6 +1,6 @@
 # ==============================================================================
 # Septum Standalone Binary Installer (Windows PowerShell)
-# https://github.com/Shironim/septum
+# https://github.com/Shironim/septum-mcp
 # ==============================================================================
 
 [CmdletBinding()]
@@ -11,7 +11,7 @@ param (
 
 $ErrorActionPreference = "Stop"
 
-$Repo = "Shironim/septum"
+$Repo = "Shironim/septum-mcp"
 $BinaryName = "septum.exe"
 
 function Write-Info {

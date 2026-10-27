@@ -3,10 +3,10 @@ set -e
 
 # ==============================================================================
 # Septum Standalone Binary Installer (Linux & macOS)
-# https://github.com/Shironim/septum
+# https://github.com/Shironim/septum-mcp
 # ==============================================================================
 
-REPO="Shironim/septum"
+REPO="Shironim/septum-mcp"
 BINARY_NAME="septum"
 
 # Color support
